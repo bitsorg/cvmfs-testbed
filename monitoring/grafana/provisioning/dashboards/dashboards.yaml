@@ -1,0 +1,10 @@
+apiVersion: 1
+
+providers:
+  - name: cvmfs-prepub
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
+    orgId: 1
+    folder: CVMFS
+    updateIntervalSeconds: 30

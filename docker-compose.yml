@@ -1,0 +1,217 @@
+version: '3.9'
+
+services:
+  gateway:
+    image: cvmfs-gateway:latest
+    container_name: cvmfs-gateway
+    build:
+      context: ./gateway
+    environment:
+      CVMFS_GATEWAY_KEY_ID: ${CVMFS_GATEWAY_KEY_ID}
+      CVMFS_GATEWAY_SECRET: ${CVMFS_GATEWAY_SECRET}
+    volumes:
+      - ${SOFTWARE_ROOT}/cvmfs_gateway:/usr/local/bin/cvmfs_gateway:ro
+      - ${TESTBED_ROOT}/config/gateway:/etc/cvmfs/gateway:ro
+      - ${TESTBED_ROOT}/cvmfs/${REPO_NAME}:/srv/cvmfs/${REPO_NAME}
+      - ${TESTBED_ROOT}/config/keys:/etc/cvmfs/keys:ro
+    ports:
+      - "4929:4929"
+    networks:
+      - cvmfs-net
+    command: /usr/local/bin/cvmfs_gateway
+
+  stratum0:
+    image: cvmfs-stratum0:latest
+    container_name: cvmfs-stratum0
+    build:
+      context: ./stratum0
+    volumes:
+      - ${TESTBED_ROOT}/cvmfs:/usr/local/apache2/htdocs/cvmfs:ro
+    ports:
+      - "8090:80"
+    networks:
+      - cvmfs-net
+    depends_on:
+      - gateway
+
+  cvmfs-prepub:
+    image: cvmfs-prepub:latest
+    container_name: cvmfs-prepub
+    build:
+      context: ./cvmfs-prepub
+    environment:
+      PREPUB_API_TOKEN: ${PREPUB_API_TOKEN}
+      CVMFS_GATEWAY_SECRET: ${CVMFS_GATEWAY_SECRET}
+      CVMFS_GATEWAY_KEY_ID: ${CVMFS_GATEWAY_KEY_ID}
+      PREPUB_HMAC_SECRET: ${PREPUB_HMAC_SECRET}
+    volumes:
+      - ${SOFTWARE_ROOT}/cvmfs-prepub:/usr/local/bin/cvmfs-prepub:ro
+      - ${TESTBED_ROOT}/cvmfs/${REPO_NAME}:/data/cas
+      - ${TESTBED_ROOT}/data/spool:/data/spool
+      - ${TESTBED_ROOT}/config/cvmfs-prepub/config.yaml:/etc/cvmfs-prepub/config.yaml:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - cvmfs-net
+    depends_on:
+      - gateway
+      - stratum0
+    command: /usr/local/bin/cvmfs-prepub --config /etc/cvmfs-prepub/config.yaml
+
+  stratum1-a:
+    image: cvmfs-stratum1:latest
+    container_name: cvmfs-stratum1-a
+    build:
+      context: ./stratum1
+    environment:
+      PREPUB_HMAC_SECRET: ${PREPUB_HMAC_SECRET}
+      NODE_ID: stratum1-a
+    volumes:
+      - ${SOFTWARE_ROOT}/cvmfs-prepub:/usr/local/bin/cvmfs-prepub:ro
+      - ${TESTBED_ROOT}/data/s1a:/data/cas
+      - ${TESTBED_ROOT}/config/stratum1-a/config.yaml:/etc/cvmfs-prepub/config.yaml:ro
+    ports:
+      - "9101:9100"
+      - "9111:9101"
+    networks:
+      - cvmfs-net
+    command: /usr/local/bin/cvmfs-prepub --config /etc/cvmfs-prepub/config.yaml
+
+  stratum1-b:
+    image: cvmfs-stratum1:latest
+    container_name: cvmfs-stratum1-b
+    build:
+      context: ./stratum1
+    environment:
+      PREPUB_HMAC_SECRET: ${PREPUB_HMAC_SECRET}
+      NODE_ID: stratum1-b
+    volumes:
+      - ${SOFTWARE_ROOT}/cvmfs-prepub:/usr/local/bin/cvmfs-prepub:ro
+      - ${TESTBED_ROOT}/data/s1b:/data/cas
+      - ${TESTBED_ROOT}/config/stratum1-b/config.yaml:/etc/cvmfs-prepub/config.yaml:ro
+    ports:
+      - "9102:9100"
+      - "9112:9101"
+    networks:
+      - cvmfs-net
+    command: /usr/local/bin/cvmfs-prepub --config /etc/cvmfs-prepub/config.yaml
+
+  publisher:
+    image: cvmfs-publisher:latest
+    container_name: cvmfs-publisher
+    build:
+      context: ./publisher
+    environment:
+      PREPUB_API_TOKEN: ${PREPUB_API_TOKEN}
+      PREPUB_URL: http://cvmfs-prepub:8080
+      REPO_NAME: ${REPO_NAME}
+    networks:
+      - cvmfs-net
+    depends_on:
+      - cvmfs-prepub
+    command: ["sleep", "infinity"]
+
+  # ── CVMFS client ─────────────────────────────────────────────────────────
+  # Mounts the CVMFS repository via FUSE so that verify-publish.sh can check
+  # that published files are actually visible after a job completes.
+  #
+  # Requires SYS_ADMIN capability and /dev/fuse access for the FUSE mount;
+  # apparmor must be unconfined to allow the cvmfs2 mount syscalls.
+  #
+  # The cvmfs2 and cvmfs_talk binaries are injected from SOFTWARE_ROOT rather
+  # than baked into the image so they can be swapped without rebuilding.
+  cvmfs-client:
+    image: cvmfs-client:latest
+    container_name: cvmfs-client
+    build:
+      context: ./cvmfs-client
+    environment:
+      REPO_NAME: ${REPO_NAME}
+      STRATUM0_URL: http://stratum0
+      PREPUB_URL: http://cvmfs-prepub:8080
+      PREPUB_API_TOKEN: ${PREPUB_API_TOKEN}
+    volumes:
+      # cvmfs2 and cvmfs_talk binaries from the software partition
+      - ${SOFTWARE_ROOT}/cvmfs2:/usr/local/bin/cvmfs2:ro
+      - ${SOFTWARE_ROOT}/cvmfs_talk:/usr/local/bin/cvmfs_talk:ro
+      # Repository public key for signature verification
+      - ${TESTBED_ROOT}/config/keys/${REPO_NAME}.crt:/etc/cvmfs/keys/${REPO_NAME}.crt:ro
+      # Client-side disk cache backed by the testbed data directory
+      - ${TESTBED_ROOT}/data/cvmfs-client:/var/cache/cvmfs
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    security_opt:
+      - apparmor:unconfined
+    networks:
+      - cvmfs-net
+    depends_on:
+      - cvmfs-prepub
+      - stratum0
+
+  # ── Mosquitto MQTT broker ─────────────────────────────────────────────────
+  # Provides the MQTT control plane for Option B MQTT mode.  Not used in the
+  # default HTTP-only configuration; activated by running docker compose with
+  # the docker-compose.mqtt.yml override file.
+  #
+  # Not exposed on any host port — only reachable by containers on cvmfs-net.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: cvmfs-mosquitto
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ${TESTBED_ROOT}/data/mosquitto:/mosquitto/data
+      - ${TESTBED_ROOT}/data/mosquitto-log:/mosquitto/log
+    networks:
+      - cvmfs-net
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.99.0
+    container_name: cvmfs-victoriametrics
+    volumes:
+      - ${TESTBED_ROOT}/data/monitoring/vm:/victoria-metrics-data
+    networks:
+      - cvmfs-net
+    command:
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-retentionPeriod=1"
+      - "-selfScrapeInterval=10s"
+
+  vmagent:
+    image: victoriametrics/vmagent:v1.99.0
+    container_name: cvmfs-vmagent
+    volumes:
+      - ./monitoring/scrape.yml:/etc/vmagent/scrape.yml:ro
+      - ${TESTBED_ROOT}/data/monitoring/vmagent:/vmagentdata
+    networks:
+      - cvmfs-net
+    depends_on:
+      - victoriametrics
+    command:
+      - "-promscrape.config=/etc/vmagent/scrape.yml"
+      - "-remoteWrite.url=http://victoriametrics:8428/api/v1/write"
+      - "-promscrape.maxScrapeSize=64MiB"
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: cvmfs-grafana
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ${TESTBED_ROOT}/data/monitoring/grafana:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    ports:
+      - "3000:3000"
+    networks:
+      - cvmfs-net
+    depends_on:
+      - victoriametrics
+
+networks:
+  cvmfs-net:
+    driver: bridge

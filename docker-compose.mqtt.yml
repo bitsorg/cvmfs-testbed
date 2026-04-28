@@ -1,0 +1,49 @@
+version: '3.9'
+
+# docker-compose.mqtt.yml — Override file that enables the MQTT control-plane
+# path for the cvmfs-prepub testbed.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.mqtt.yml up -d
+#
+# What this changes vs the base compose file:
+#   - Adds the Mosquitto broker as a dependency for cvmfs-prepub and both
+#     Stratum 1 receivers.
+#   - Passes --broker-url to cvmfs-prepub so it uses MQTT for the announce/
+#     ready exchange instead of direct HTTP.
+#   - Passes --broker-url, --node-id, and --repos to both Stratum 1 receivers
+#     so they subscribe to the broker for job notifications.
+#
+# The data plane (CAS object PUTs from publisher to receivers on TCP 9101)
+# is unchanged; MQTT replaces only the control-plane signalling.
+
+services:
+  cvmfs-prepub:
+    depends_on:
+      - gateway
+      - stratum0
+      - mosquitto
+    command: >
+      /usr/local/bin/cvmfs-prepub
+      --config /etc/cvmfs-prepub/config.yaml
+      --broker-url tcp://mosquitto:1883
+
+  stratum1-a:
+    depends_on:
+      - mosquitto
+    command: >
+      /usr/local/bin/cvmfs-prepub
+      --config /etc/cvmfs-prepub/config.yaml
+      --broker-url tcp://mosquitto:1883
+      --node-id stratum1-a
+      --repos ${REPO_NAME}
+
+  stratum1-b:
+    depends_on:
+      - mosquitto
+    command: >
+      /usr/local/bin/cvmfs-prepub
+      --config /etc/cvmfs-prepub/config.yaml
+      --broker-url tcp://mosquitto:1883
+      --node-id stratum1-b
+      --repos ${REPO_NAME}

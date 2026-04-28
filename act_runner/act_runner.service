@@ -1,0 +1,59 @@
+# act_runner.service — systemd unit for the Gitea act_runner on the physical host
+#
+# Installation:
+#   1. Copy act_runner binary to /usr/local/bin/act_runner
+#   2. Copy this file to /etc/systemd/system/act_runner.service
+#   3. Adjust User= below to match the user who has Docker socket access
+#   4. Copy act_runner/config.yaml to /etc/act_runner/config.yaml
+#   5. Register the runner (see config.yaml header for the command)
+#   6. Enable and start:
+#        systemctl daemon-reload
+#        systemctl enable act_runner
+#        systemctl start act_runner
+#        systemctl status act_runner
+
+[Unit]
+Description=Gitea act_runner — cvmfs-bits testbed CI runner
+Documentation=https://gitea.com/gitea/act_runner
+# Start after Docker is available (runner spawns Docker containers for jobs)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+
+# Run as a regular user who is a member of the 'docker' group.
+# Adjust to match the testbed operator's username.
+User=cvmfs-testbed
+Group=docker
+
+# Path to the runner binary
+ExecStart=/usr/local/bin/act_runner daemon --config /etc/act_runner/config.yaml
+
+# Working directory — the .runner file (registration token store) is kept here
+WorkingDirectory=/var/lib/act_runner
+
+# Restart on failure; back off up to 1 minute between attempts
+Restart=on-failure
+RestartSec=10s
+StartLimitInterval=60s
+StartLimitBurst=5
+
+# Give the runner time to finish active jobs before stopping
+TimeoutStopSec=120
+
+# Environment
+Environment=HOME=/var/lib/act_runner
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Pass bits build tools into the runner's PATH if they live in a custom location.
+# Adjust if your bits binary is elsewhere.
+Environment=PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+
+# Log to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=act_runner
+
+[Install]
+WantedBy=multi-user.target
