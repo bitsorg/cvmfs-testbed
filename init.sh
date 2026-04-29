@@ -534,11 +534,14 @@ else
         fi
 
         # -- mkfs --
-        info "Running: sudo $CVMFS_SERVER_BIN mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
-        # -I  force-initialise even when storage already contains data.
-        # sudo strips PATH; CVMFS_SERVER_BIN is the resolved absolute path.
+        info "Running: sudo env PATH=$SOFTWARE_ROOT:... $CVMFS_SERVER_BIN mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
+        # sudo strips PATH to its own secure_path.  cvmfs_server calls some
+        # binaries with hardcoded /usr/bin/ paths (handled by the copies above)
+        # and others with bare names that rely on PATH (e.g. cvmfs_swissknife at
+        # line 198).  Pass SOFTWARE_ROOT explicitly so both styles resolve.
         _mkfs_ok=false
-        if sudo "$CVMFS_SERVER_BIN" mkfs -I \
+        if sudo env PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+                "$CVMFS_SERVER_BIN" mkfs -I \
                 -w "http://stratum0/cvmfs/$REPO_NAME" \
                 -o "$USER" "$REPO_NAME"; then
             _mkfs_ok=true
