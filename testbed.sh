@@ -72,9 +72,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── .env helpers ──────────────────────────────────────────────────────────────
+# .env lives in TESTBED_ROOT (the script dir may be read-only).
+# Bootstrap: use TESTBED_ROOT from the environment, then re-read it from .env.
+_env_file() {
+    local root="${TESTBED_ROOT:-$HOME/cvmfs-testbed}"
+    echo "$root/.env"
+}
+
 load_env() {
-    if [[ -f "$SCRIPT_DIR/.env" ]]; then
-        set -a; source "$SCRIPT_DIR/.env"; set +a
+    local env_file
+    env_file="$(_env_file)"
+    if [[ -f "$env_file" ]]; then
+        set -a; source "$env_file"; set +a
+    else
+        warn ".env not found at $env_file — run: ./testbed.sh init"
     fi
     # Allow command-line override of BITS_CONSOLE_SRC
     if [[ -n "$BITS_SRC_OVERRIDE" ]]; then
@@ -100,18 +111,10 @@ run_compose() {
 cmd_init() {
     section "Initialising testbed"
 
-    # If bits-src override given, write it into .env before running init.sh
-    if [[ -n "$BITS_SRC_OVERRIDE" ]] && [[ -f "$SCRIPT_DIR/.env" ]]; then
-        if grep -q "^BITS_CONSOLE_SRC=" "$SCRIPT_DIR/.env"; then
-            sed -i "s|^BITS_CONSOLE_SRC=.*|BITS_CONSOLE_SRC=$BITS_SRC_OVERRIDE|" "$SCRIPT_DIR/.env"
-        else
-            echo "BITS_CONSOLE_SRC=$BITS_SRC_OVERRIDE" >> "$SCRIPT_DIR/.env"
-        fi
-        info "Set BITS_CONSOLE_SRC=$BITS_SRC_OVERRIDE in .env"
-    elif [[ -n "$BITS_SRC_OVERRIDE" ]] && [[ ! -f "$SCRIPT_DIR/.env" ]]; then
-        cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
-        echo "BITS_CONSOLE_SRC=$BITS_SRC_OVERRIDE" >> "$SCRIPT_DIR/.env"
-        info "Created .env with BITS_CONSOLE_SRC=$BITS_SRC_OVERRIDE"
+    # If bits-src override given, export it so init.sh picks it up
+    if [[ -n "$BITS_SRC_OVERRIDE" ]]; then
+        export BITS_CONSOLE_SRC="$BITS_SRC_OVERRIDE"
+        info "BITS_CONSOLE_SRC=$BITS_SRC_OVERRIDE (will be written to .env by init.sh)"
     fi
 
     bash "$SCRIPT_DIR/init.sh"

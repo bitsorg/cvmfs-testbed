@@ -64,20 +64,24 @@ fi
 # Determine script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Load or create .env
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-    info "Loading existing .env"
-    source "$SCRIPT_DIR/.env"
-else
-    info "No .env found, using defaults"
+# ── Determine TESTBED_ROOT early (before we know where .env lives) ─────────────
+# Priority: environment variable > existing .env in TESTBED_ROOT > prompt
+TESTBED_ROOT="${TESTBED_ROOT:-$HOME/cvmfs-testbed}"
+if [[ -z "${TESTBED_ROOT:-}" ]]; then
+    read -p "Enter TESTBED_ROOT [$HOME/cvmfs-testbed]: " TESTBED_ROOT
     TESTBED_ROOT="${TESTBED_ROOT:-$HOME/cvmfs-testbed}"
-    REPO_NAME="${REPO_NAME:-test.cvmfs.io}"
 fi
 
-# Validate TESTBED_ROOT and REPO_NAME
-if [[ -z "${TESTBED_ROOT:-}" ]]; then
-    read -p "Enter TESTBED_ROOT [/srv/cvmfs-testbed]: " TESTBED_ROOT
-    TESTBED_ROOT="${TESTBED_ROOT:-$HOME/cvmfs-testbed}"
+# .env lives in TESTBED_ROOT, not next to the script (the script dir may be read-only)
+ENV_FILE="$TESTBED_ROOT/.env"
+
+# Load existing .env if present
+if [[ -f "$ENV_FILE" ]]; then
+    info "Loading existing .env from $ENV_FILE"
+    source "$ENV_FILE"
+else
+    info "No .env found; will create $ENV_FILE"
+    REPO_NAME="${REPO_NAME:-test.cvmfs.io}"
 fi
 
 if [[ -z "${REPO_NAME:-}" ]]; then
@@ -86,9 +90,10 @@ if [[ -z "${REPO_NAME:-}" ]]; then
 fi
 
 info "TESTBED_ROOT: $TESTBED_ROOT"
-info "REPO_NAME: $REPO_NAME"
+info "REPO_NAME:    $REPO_NAME"
+info ".env file:    $ENV_FILE"
 
-# Create directory tree
+# Create directory tree (must happen before writing .env there)
 info "Creating directory structure..."
 mkdir -p "$TESTBED_ROOT/software"
 mkdir -p "$TESTBED_ROOT/cvmfs"
@@ -112,12 +117,12 @@ success "Directory structure created"
 # Validate BITS_CONSOLE_SRC if provided
 if [[ -z "${BITS_CONSOLE_SRC:-}" ]]; then
     warn "BITS_CONSOLE_SRC not set — bits-console overlay (Gitea/act_runner) will be skipped."
-    warn "Set BITS_CONSOLE_SRC in .env or pass it on the command line to enable it."
+    warn "Set BITS_CONSOLE_SRC in $ENV_FILE or pass it on the command line to enable it."
 fi
 
 # Generate secrets if not present
 info "Handling secrets..."
-if [[ ! -f "$SCRIPT_DIR/.env" ]] || [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
+if [[ ! -f "$ENV_FILE" ]] || [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
     CVMFS_GATEWAY_SECRET=$(openssl rand -hex 32)
     PREPUB_API_TOKEN=$(openssl rand -hex 24)
     PREPUB_HMAC_SECRET=$(openssl rand -hex 32)
@@ -128,8 +133,9 @@ if [[ ! -f "$SCRIPT_DIR/.env" ]] || [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
     GITEA_SECRET_KEY=$(openssl rand -hex 32)
     GITEA_INTERNAL_TOKEN=$(openssl rand -hex 32)
 
-    cat "$SCRIPT_DIR/.env.example" | sed \
+    sed \
         -e "s|^TESTBED_ROOT=.*|TESTBED_ROOT=$TESTBED_ROOT|" \
+        -e "s|^SOFTWARE_ROOT=.*|SOFTWARE_ROOT=$TESTBED_ROOT/software|" \
         -e "s|^REPO_NAME=.*|REPO_NAME=$REPO_NAME|" \
         -e "s|^CVMFS_GATEWAY_SECRET=|CVMFS_GATEWAY_SECRET=$CVMFS_GATEWAY_SECRET|" \
         -e "s|^PREPUB_API_TOKEN=|PREPUB_API_TOKEN=$PREPUB_API_TOKEN|" \
@@ -138,59 +144,18 @@ if [[ ! -f "$SCRIPT_DIR/.env" ]] || [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
         -e "s|^GITEA_ADMIN_PASSWORD=|GITEA_ADMIN_PASSWORD=$GITEA_ADMIN_PASSWORD|" \
         -e "s|^GITEA_SECRET_KEY=|GITEA_SECRET_KEY=$GITEA_SECRET_KEY|" \
         -e "s|^GITEA_INTERNAL_TOKEN=|GITEA_INTERNAL_TOKEN=$GITEA_INTERNAL_TOKEN|" \
-        > "$SCRIPT_DIR/.env"
-    success "Generated secrets and wrote .env"
+        -e "s|^BITS_CONSOLE_SRC=.*|BITS_CONSOLE_SRC=${BITS_CONSOLE_SRC:-}|" \
+        "$SCRIPT_DIR/.env.example" > "$ENV_FILE"
+    success "Generated secrets and wrote $ENV_FILE"
 else
-    warn "Reusing existing secrets from .env"
+    warn "Reusing existing secrets from $ENV_FILE"
 fi
 
 # Source the .env to get all values
-source "$SCRIPT_DIR/.env"
+source "$ENV_FILE"
 
-# Initialize CVMFS repository
-info "Checking CVMFS repository..."
-if [[ -f "$TESTBED_ROOT/cvmfs/$REPO_NAME/.cvmfspublished" ]]; then
-    success "CVMFS repository already initialized"
-else
-    info "Initializing CVMFS repository..."
-
-    # Create symlink if needed
-    if [[ ! -L "/srv/cvmfs" ]]; then
-        if [[ -d "/srv/cvmfs" ]]; then
-            error "/srv/cvmfs exists and is not a symlink. Please remove it or use a different TESTBED_ROOT."
-            exit 1
-        fi
-        info "Creating symlink /srv/cvmfs → $TESTBED_ROOT/cvmfs"
-        sudo ln -s "$TESTBED_ROOT/cvmfs" /srv/cvmfs
-    fi
-
-    # Run cvmfs_server mkfs
-    info "Running: sudo $CVMFS_SERVER_BIN mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
-    sudo "$CVMFS_SERVER_BIN" mkfs -I -w "http://stratum0/cvmfs/$REPO_NAME" -o "$USER" "$REPO_NAME"
-
-    # Copy signing keys
-    info "Copying signing keys..."
-    if [[ -f "/etc/cvmfs/keys/$REPO_NAME.crt" ]]; then
-        sudo cp "/etc/cvmfs/keys/$REPO_NAME.crt" "$TESTBED_ROOT/config/keys/"
-        sudo chown "$USER:$USER" "$TESTBED_ROOT/config/keys/$REPO_NAME.crt"
-    fi
-
-    if [[ -f "/etc/cvmfs/keys/$REPO_NAME.key" ]]; then
-        sudo cp "/etc/cvmfs/keys/$REPO_NAME.key" "$TESTBED_ROOT/config/keys/"
-        sudo chown "$USER:$USER" "$TESTBED_ROOT/config/keys/$REPO_NAME.key"
-    fi
-
-    if [[ -f "/etc/cvmfs/keys/master.pub" ]]; then
-        sudo cp "/etc/cvmfs/keys/master.pub" "$TESTBED_ROOT/config/keys/"
-        sudo chown "$USER:$USER" "$TESTBED_ROOT/config/keys/master.pub"
-    fi
-
-    # Fix permissions
-    info "Setting permissions..."
-    sudo chown -R "$USER:$USER" "$TESTBED_ROOT/cvmfs/$REPO_NAME"
-
-    success "CVMFS repository initialized"
-fi
+# ── Write service configs first ───────────────────────────────────────────────
+# These are independent of the CVMFS repo and must exist before containers start.
 
 # Write gateway config
 info "Writing gateway config..."
@@ -290,6 +255,51 @@ node_id: "stratum1-b"
 EOFCONFIG
 
 success "stratum1-b config written"
+
+# ── Initialize CVMFS repository ───────────────────────────────────────────────
+# This step requires cvmfs_server and a writable /srv (for the symlink).
+# If it fails the configs above are already written; containers that don't need
+# the CVMFS repo (gateway, monitoring, etc.) will still start correctly.
+info "Checking CVMFS repository..."
+if [[ -f "$TESTBED_ROOT/cvmfs/$REPO_NAME/.cvmfspublished" ]]; then
+    success "CVMFS repository already initialized"
+else
+    info "Initializing CVMFS repository..."
+
+    # Create /srv/cvmfs symlink if needed.
+    # Skip gracefully when /srv is read-only (common on immutable distros).
+    CVMFS_REPO_INIT_OK=true
+    if [[ ! -L "/srv/cvmfs" ]]; then
+        if [[ -d "/srv/cvmfs" ]]; then
+            warn "/srv/cvmfs exists and is not a symlink — skipping repo init."
+            warn "Remove /srv/cvmfs or use a different TESTBED_ROOT, then re-run init."
+            CVMFS_REPO_INIT_OK=false
+        elif ! sudo ln -s "$TESTBED_ROOT/cvmfs" /srv/cvmfs 2>/dev/null; then
+            warn "Cannot create /srv/cvmfs symlink (/srv is read-only)."
+            warn "CVMFS repository init skipped. Run manually when /srv is writable."
+            CVMFS_REPO_INIT_OK=false
+        else
+            info "Created symlink /srv/cvmfs → $TESTBED_ROOT/cvmfs"
+        fi
+    fi
+
+    if $CVMFS_REPO_INIT_OK; then
+        info "Running: sudo $CVMFS_SERVER_BIN mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
+        if sudo "$CVMFS_SERVER_BIN" mkfs -I -w "http://stratum0/cvmfs/$REPO_NAME" -o "$USER" "$REPO_NAME"; then
+            # Copy signing keys
+            for keyfile in "/etc/cvmfs/keys/$REPO_NAME.crt" "/etc/cvmfs/keys/$REPO_NAME.key" "/etc/cvmfs/keys/master.pub"; do
+                if [[ -f "$keyfile" ]]; then
+                    sudo cp "$keyfile" "$TESTBED_ROOT/config/keys/"
+                    sudo chown "$USER:$USER" "$TESTBED_ROOT/config/keys/$(basename "$keyfile")"
+                fi
+            done
+            sudo chown -R "$USER:$USER" "$TESTBED_ROOT/cvmfs/$REPO_NAME"
+            success "CVMFS repository initialized"
+        else
+            warn "cvmfs_server mkfs failed — you may need to run it manually."
+        fi
+    fi
+fi
 
 # Print summary
 echo ""
