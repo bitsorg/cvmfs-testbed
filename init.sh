@@ -452,24 +452,19 @@ else
     fi
 
     if $CVMFS_REPO_INIT_OK; then
-        # ── Populate SOFTWARE_ROOT via install.sh ─────────────────────────────────
-        # install.sh copies cvmfs_* binaries and libcvmfs_* libraries from
-        # cvmfs/build/ into software/ and rebuilds cvmfs_server from the patched
-        # source.  Nothing is written to /usr/bin or any system directory.
-        if [[ -f "$SCRIPT_DIR/cvmfs/cvmfs/make_cvmfs_server.sh" ]]; then
-            info "Running install.sh to populate $SOFTWARE_ROOT ..."
-            if bash "$SCRIPT_DIR/install.sh" --software-root "$SOFTWARE_ROOT"; then
-                # install.sh always produces software/cvmfs_server when it succeeds.
-                CVMFS_SERVER_BIN="$SOFTWARE_ROOT/cvmfs_server"
-            else
-                warn "install.sh failed — mkfs will use whatever is already in SOFTWARE_ROOT."
-            fi
+        # ── Rebuild cvmfs_server from patched source via install.sh ─────────────
+        # install.sh finds the CVMFS source (cvmfs/ subdir or ../cvmfs sibling),
+        # copies cvmfs_* binaries and libcvmfs_* libraries, and rebuilds the
+        # cvmfs_server shell script with CVMFS_TESTBED support.
+        # Nothing is written to /usr/bin or any system directory.
+        # We always run it so the assembled script stays in sync with the patched
+        # server/*.sh source files.
+        info "Running install.sh to rebuild cvmfs_server from patched source ..."
+        if bash "$SCRIPT_DIR/install.sh" --software-root "$SOFTWARE_ROOT"; then
+            # install.sh always produces software/cvmfs_server when it succeeds.
+            CVMFS_SERVER_BIN="$SOFTWARE_ROOT/cvmfs_server"
         else
-            warn "CVMFS source tree not found at $SCRIPT_DIR/cvmfs"
-            warn "Run: git clone https://github.com/cvmfs/cvmfs $SCRIPT_DIR/cvmfs"
-            warn "Then: cmake -S $SCRIPT_DIR/cvmfs -B $SCRIPT_DIR/cvmfs/build && make -C $SCRIPT_DIR/cvmfs/build -j\$(nproc)"
-            warn "Then: $SCRIPT_DIR/install.sh"
-            warn "Falling back to any cvmfs_server already in SOFTWARE_ROOT."
+            warn "install.sh failed — mkfs will use whatever is already in SOFTWARE_ROOT."
         fi
 
         # ── Clean up any partial registration from a previous failed run ─────────
