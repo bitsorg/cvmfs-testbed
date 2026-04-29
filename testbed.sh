@@ -265,7 +265,7 @@ cmd_start() {
 
     # ── Build and launch ───────────────────────────────────────────────────────
     info "Building images (if needed) ..."
-    run_compose build --parallel
+    run_compose build
 
     info "Starting services ..."
     run_compose up -d
