@@ -40,8 +40,16 @@ info "Checking prerequisites..."
 check_command "docker" "Docker"
 check_command "docker compose" "Docker Compose" || check_command "docker-compose" "Docker Compose"
 check_command "openssl" "OpenSSL"
-check_command "cvmfs_server" "CVMFS Server"
-success "All prerequisites found"
+# cvmfs_server may live outside PATH (e.g. /opt/cvmfs/bin/)
+CVMFS_SERVER_BIN=""
+for _p in "$(command -v cvmfs_server 2>/dev/null)" /opt/cvmfs/bin/cvmfs_server /usr/bin/cvmfs_server /usr/local/bin/cvmfs_server; do
+    [[ -x "$_p" ]] && { CVMFS_SERVER_BIN="$_p"; break; }
+done
+if [[ -z "$CVMFS_SERVER_BIN" ]]; then
+    error "cvmfs_server not found in PATH or /opt/cvmfs/bin. Please install CVMFS server tools."
+    exit 1
+fi
+success "All prerequisites found (cvmfs_server: $CVMFS_SERVER_BIN)"
 
 # Check optional prerequisites for the bits overlay
 BITS_OVERLAY=false
@@ -157,8 +165,8 @@ else
     fi
 
     # Run cvmfs_server mkfs
-    info "Running: sudo /opt/cvmfs/bin/cvmfs_server mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
-    sudo /opt/cvmfs/bin/cvmfs_server mkfs -I -w "http://stratum0/cvmfs/$REPO_NAME" -o "$USER" "$REPO_NAME"
+    info "Running: sudo $CVMFS_SERVER_BIN mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
+    sudo "$CVMFS_SERVER_BIN" mkfs -I -w "http://stratum0/cvmfs/$REPO_NAME" -o "$USER" "$REPO_NAME"
 
     # Copy signing keys
     info "Copying signing keys..."
