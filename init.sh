@@ -522,34 +522,63 @@ else
         fi
 
         # -- Patch cvmfs_server to skip Apache configuration --
-        # cvmfs_server mkfs calls a sub-function to write Apache vhost config and
-        # run a2enmod.  That step is not needed here — the testbed serves the repo
-        # via the stratum0 Docker container.  The sub-function is identified by the
-        # "fail (Apache configuration)" error message it guards; we extract its name
-        # and append an override that returns 0 (bash last-definition-wins rule).
+        # cvmfs_server mkfs calls a sub-function (e.g. setup_apache_config) to write
+        # an Apache vhost and run a2enmod/reload.  That step is not needed here —
+        # the testbed serves the repo via the stratum0 Docker container.
+        #
+        # Two-stage patch strategy:
+        #   1. (Preferred) Find the function called just before the fail line,
+        #      append a no-op override at the end of the script (last-definition-wins).
+        #   2. (Fallback) Directly replace the fail call with a no-op so execution
+        #      continues even if stage 1 cannot identify the function.
+        # Both stages use the correct grep target: fail "Apache configuration"
+        # (the literal call site in cvmfs_server — no outer double-quotes, no parens).
         _patched_server="$(mktemp /tmp/cvmfs_server.XXXXXX)"
         cp "$CVMFS_SERVER_BIN" "$_patched_server"
         chmod +x "$_patched_server"
 
-        # || true on every grep/pipeline assignment: grep returns exit 1 on no match,
-        # which under set -eo pipefail would silently kill the script.
-        _fail_line=$(grep -n '"fail (Apache configuration)"' "$_patched_server" 2>/dev/null \
+        # Find the line number of the fail call site.
+        # grep returns exit 1 on no match; || true prevents set -eo pipefail from
+        # killing the script silently.
+        _fail_line=$(grep -n 'fail "Apache configuration"' "$_patched_server" 2>/dev/null \
             | head -1 | cut -d: -f1) || true
+
         if [[ -n "$_fail_line" ]]; then
-            # The line just before the fail message is:  if ! <apache_func> ...; then
-            # Extract the function name from the surrounding 10 lines.
-            _apache_fn=$(awk "NR>$(( _fail_line - 10 )) && NR<$_fail_line" "$_patched_server" \
-                | grep -oE '! [a-zA-Z_][a-zA-Z0-9_]*' | tail -1 | sed 's/! //') || true
+            # Stage 1: extract the function name from the surrounding context.
+            # The call site looks like one of:
+            #   setup_apache_config $name          || fail "Apache configuration"
+            #   if ! setup_apache_config $name; then … fail "Apache configuration"
+            # Scan the 15 lines up to (and including) the fail line for:
+            #   a function name preceded by "|| " or "! "
+            _apache_fn=$(awk "NR>$(( _fail_line - 15 )) && NR<=${_fail_line}" "$_patched_server" \
+                | grep -oE '(\|\| |! )[a-zA-Z_][a-zA-Z0-9_]+' \
+                | tail -1 \
+                | sed 's/^[|! ]*//') || true
+
             if [[ -n "$_apache_fn" ]]; then
                 {
-                    printf '\n# Testbed override: Apache served via stratum0 container.\n'
-                    printf '%s() { echo "  [testbed] Apache config skipped (stratum0 container handles serving)"; return 0; }\n' \
+                    printf '\n# Testbed override: Apache vhost is served by the stratum0 container.\n'
+                    printf '%s() { echo "  [testbed] Apache config skipped"; return 0; }\n' \
                         "$_apache_fn"
                 } >> "$_patched_server"
-                info "Patched cvmfs_server: Apache config function '$_apache_fn' → no-op"
+                info "Patched cvmfs_server: Apache config function '$_apache_fn' → no-op (stage 1)"
             else
-                warn "Could not identify Apache config function — mkfs may still fail at that step."
+                warn "Stage 1 patch: could not identify Apache config function name."
             fi
+
+            # Stage 2 (belt-and-suspenders): replace the fail call itself with a
+            # no-op so mkfs continues even if stage 1 didn't fire or its override
+            # didn't take effect.  awk -v avoids sed special-character issues.
+            awk 'BEGIN{p=0} {
+                gsub(/fail "Apache configuration"/, "echo \"  [testbed] Apache config step skipped\"")
+                print
+            }' "$_patched_server" > "${_patched_server}.tmp" \
+                && mv "${_patched_server}.tmp" "$_patched_server" \
+                && chmod +x "$_patched_server"
+            info "Patched cvmfs_server: 'fail \"Apache configuration\"' call → no-op (stage 2)"
+        else
+            warn "Could not find 'fail \"Apache configuration\"' in $CVMFS_SERVER_BIN."
+            warn "mkfs may still fail at the Apache configuration step."
         fi
 
         # -- Clean up partial registration if present --
