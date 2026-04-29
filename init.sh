@@ -145,53 +145,6 @@ if [[ -z "$CVMFS_SERVER_BIN" ]]; then
 fi
 success "Prerequisites OK  (cvmfs_server: $CVMFS_SERVER_BIN)"
 
-# ── Apache check ──────────────────────────────────────────────────────────────
-# cvmfs_server mkfs requires a local Apache (apache2/httpd) to be installed and
-# running on this host.  It writes a vhost config and reloads Apache.
-# The testbed itself serves the repository through the stratum0 Docker container
-# (port 8090), so Apache is only needed for the duration of the mkfs call.
-# init.sh starts it automatically if needed and stops it again after mkfs.
-info "Checking for Apache (required by cvmfs_server mkfs)..."
-
-APACHE_SVC=""
-for _svc in apache2 httpd; do
-    if command -v "$_svc" &>/dev/null || systemctl list-unit-files "${_svc}.service" &>/dev/null 2>&1; then
-        APACHE_SVC="$_svc"
-        break
-    fi
-done
-
-if [[ -z "$APACHE_SVC" ]]; then
-    error "Apache is not installed.  cvmfs_server mkfs requires it."
-    error "Install it with:"
-    error "  sudo apt-get install -y apache2     # Debian / Ubuntu"
-    error "  sudo yum install -y httpd           # RHEL / CentOS"
-    error "Then re-run:  ./testbed.sh init"
-    error ""
-    error "Note: after a successful init you can stop Apache — the testbed"
-    error "serves the repository via the stratum0 Docker container."
-    exit 1
-fi
-
-# Apache does not need to be running now — init.sh will start it automatically
-# just before mkfs and stop it again immediately after.
-if systemctl is-active --quiet "${APACHE_SVC}" 2>/dev/null; then
-    info "Apache (${APACHE_SVC}) is already running — will leave it running after mkfs."
-else
-    info "Apache (${APACHE_SVC}) is installed and will be started automatically for mkfs."
-fi
-
-# Check for port 80 conflicts: if something other than Apache is already bound
-# to port 80, the Apache vhost reload after mkfs will fail or be unreachable.
-if command -v ss &>/dev/null; then
-    _port80=$(ss -tlnp 2>/dev/null | awk '$4 ~ /:80$/ {print $NF}' | head -1)
-    if [[ -n "$_port80" ]] && ! echo "$_port80" | grep -qi 'apache\|httpd'; then
-        warn "Something other than Apache appears to be listening on port 80:"
-        warn "  $_port80"
-        warn "cvmfs_server mkfs may fail to reload Apache. Proceed with caution."
-    fi
-fi
-
 # Check optional act_runner for the bits overlay.
 if command -v act_runner &>/dev/null; then
     success "act_runner found — bits overlay fully supported."
@@ -448,7 +401,6 @@ else
 
     if $CVMFS_REPO_INIT_OK; then
         # cvmfs_server mkfs refuses to run when autofs is mounted on /cvmfs.
-        # That automount is used by the CVMFS client and must be stopped first.
         if mount | grep -q 'autofs.*on /cvmfs'; then
             warn "autofs is mounted on /cvmfs — cvmfs_server will refuse to run."
             read -rp "Stop autofs now (sudo systemctl stop autofs)? [y/N] " _stop_autofs
@@ -468,125 +420,56 @@ else
     fi
 
     if $CVMFS_REPO_INIT_OK; then
-        # ── Symlink SOFTWARE_ROOT binaries that cvmfs_server hard-codes ──────────
-        # cvmfs_server is a shell script that hard-codes absolute paths like
-        # /usr/bin/cvmfs_publish, /usr/bin/cvmfs_swissknife, etc.  It never uses
-        # PATH for these calls.  When using a custom build in SOFTWARE_ROOT we must
-        # make those paths resolvable.
-        #
-        # Strategy: extract every /usr/(local/)bin/cvmfs_* token from the script,
-        # and for any that are missing at the hard-coded location but present in
-        # SOFTWARE_ROOT, create a symlink under /usr/local/bin/ (preferred over
-        # /usr/bin/ to avoid replacing system packages accidentally).
-        # ── Copy binaries, start Apache, run mkfs, then undo both ───────────────
-        # cvmfs_server is a shell script that hard-codes /usr/(local/)bin/cvmfs_*
-        # paths and never consults PATH.  For each binary that is absent at its
-        # hard-coded location but present in SOFTWARE_ROOT we copy (not symlink)
-        # it to the expected path.
-        #
-        # Copies are required — not symlinks — because cvmfs_server mkfs runs
-        #   setcap cap_sys_admin+ep /usr/bin/cvmfs_swissknife
-        # and setcap(8) refuses to operate on symbolic links.  A regular-file
-        # copy at the hard-coded path is the only approach that works.
-        #
-        # cvmfs_server mkfs also requires Apache to be running (writes a vhost
-        # config and reloads the daemon).  The testbed serves the repo via the
-        # stratum0 Docker container, so Apache is started only for the duration
-        # of mkfs and stopped again immediately after.
+        # ── Rebuild cvmfs_server from source if the source tree is available ─────
+        # cvmfs_server_mkfs.sh honours CVMFS_TESTBED=true to skip Apache vhost
+        # setup (the Docker stratum0 container handles serving).  For this to take
+        # effect the binary must be rebuilt from the modified source.
+        # We look for the source tree relative to this script (common dev layout:
+        # cvmfs-testbed/ and cvmfs/ are siblings), and rebuild automatically.
+        _cvmfs_src=""
+        for _try in \
+            "${CVMFS_SRC:-}" \
+            "$SCRIPT_DIR/../cvmfs"; do
+            if [[ -n "$_try" && -f "$_try/cvmfs/make_cvmfs_server.sh" ]]; then
+                _cvmfs_src="$_try"
+                break
+            fi
+        done
 
-        # -- Copies --
-        _symlinked=()   # paths created by us; removed after mkfs
+        if [[ -n "$_cvmfs_src" ]]; then
+            info "Rebuilding cvmfs_server from source: $_cvmfs_src/cvmfs/make_cvmfs_server.sh"
+            ( cd "$_cvmfs_src/cvmfs" && ./make_cvmfs_server.sh "$CVMFS_SERVER_BIN" ) \
+                && info "cvmfs_server rebuilt → $CVMFS_SERVER_BIN" \
+                || warn "Rebuild failed — using existing binary (CVMFS_TESTBED support may be missing)"
+        else
+            warn "CVMFS source tree not found; cannot rebuild cvmfs_server."
+            warn "If cvmfs_server predates the CVMFS_TESTBED patch, mkfs may fail."
+            warn "Set CVMFS_SRC=/path/to/cvmfs and re-run, or rebuild manually:"
+            warn "  cd /path/to/cvmfs/cvmfs && ./make_cvmfs_server.sh $CVMFS_SERVER_BIN"
+        fi
+
+        # ── Copy missing hard-coded binaries to their expected paths ─────────────
+        # cvmfs_server mkfs hard-codes /usr/(local/)bin/cvmfs_* paths for some
+        # calls and also runs:
+        #   setcap cap_sys_admin+ep /usr/bin/cvmfs_swissknife
+        # setcap refuses symlinks, so we copy (not symlink) any binary that is
+        # absent at its hard-coded location but present in SOFTWARE_ROOT.
+        # Copies are removed after mkfs.
+        _copied=()
         info "Checking for hard-coded CVMFS binary paths in $CVMFS_SERVER_BIN ..."
         while IFS= read -r _hpath; do
             _bname="$(basename "$_hpath")"
             if [[ ! -e "$_hpath" ]] && [[ -x "$SOFTWARE_ROOT/$_bname" ]]; then
-                # Copy to the exact hard-coded path so setcap can operate on it.
                 if sudo cp "$SOFTWARE_ROOT/$_bname" "$_hpath" 2>/dev/null; then
-                    _symlinked+=("$_hpath")
+                    _copied+=("$_hpath")
                     info "  Copied (temporary): $_hpath ← $SOFTWARE_ROOT/$_bname"
                 else
                     warn "Could not copy to $_hpath — mkfs may fail."
-                    warn "Try manually: sudo cp $SOFTWARE_ROOT/$_bname $_hpath"
                 fi
             fi
         done < <(grep -oE '/usr(/local)?/bin/cvmfs_[a-z_]+' "$CVMFS_SERVER_BIN" 2>/dev/null | sort -u || true)
 
-        # -- Apache --
-        _apache_was_running=false
-        if systemctl is-active --quiet "${APACHE_SVC}" 2>/dev/null; then
-            _apache_was_running=true
-        else
-            info "Starting ${APACHE_SVC} for mkfs ..."
-            sudo systemctl start "${APACHE_SVC}" 2>/dev/null \
-                || warn "Could not start ${APACHE_SVC} — mkfs may fail."
-        fi
-
-        # -- Patch cvmfs_server to skip Apache configuration --
-        # cvmfs_server mkfs calls a sub-function (e.g. setup_apache_config) to write
-        # an Apache vhost and run a2enmod/reload.  That step is not needed here —
-        # the testbed serves the repo via the stratum0 Docker container.
-        #
-        # Two-stage patch strategy:
-        #   1. (Preferred) Find the function called just before the fail line,
-        #      append a no-op override at the end of the script (last-definition-wins).
-        #   2. (Fallback) Directly replace the fail call with a no-op so execution
-        #      continues even if stage 1 cannot identify the function.
-        # Both stages use the correct grep target: fail "Apache configuration"
-        # (the literal call site in cvmfs_server — no outer double-quotes, no parens).
-        _patched_server="$(mktemp /tmp/cvmfs_server.XXXXXX)"
-        cp "$CVMFS_SERVER_BIN" "$_patched_server"
-        chmod +x "$_patched_server"
-
-        # Find the line number of the fail call site.
-        # grep returns exit 1 on no match; || true prevents set -eo pipefail from
-        # killing the script silently.
-        _fail_line=$(grep -n 'fail "Apache configuration"' "$_patched_server" 2>/dev/null \
-            | head -1 | cut -d: -f1) || true
-
-        if [[ -n "$_fail_line" ]]; then
-            # Stage 1: extract the function name from the surrounding context.
-            # The call site looks like one of:
-            #   setup_apache_config $name          || fail "Apache configuration"
-            #   if ! setup_apache_config $name; then … fail "Apache configuration"
-            # Scan the 15 lines up to (and including) the fail line for:
-            #   a function name preceded by "|| " or "! "
-            _apache_fn=$(awk "NR>$(( _fail_line - 15 )) && NR<=${_fail_line}" "$_patched_server" \
-                | grep -oE '(\|\| |! )[a-zA-Z_][a-zA-Z0-9_]+' \
-                | tail -1 \
-                | sed 's/^[|! ]*//') || true
-
-            if [[ -n "$_apache_fn" ]]; then
-                {
-                    printf '\n# Testbed override: Apache vhost is served by the stratum0 container.\n'
-                    printf '%s() { echo "  [testbed] Apache config skipped"; return 0; }\n' \
-                        "$_apache_fn"
-                } >> "$_patched_server"
-                info "Patched cvmfs_server: Apache config function '$_apache_fn' → no-op (stage 1)"
-            else
-                warn "Stage 1 patch: could not identify Apache config function name."
-            fi
-
-            # Stage 2 (belt-and-suspenders): replace the fail call itself with a
-            # no-op so mkfs continues even if stage 1 didn't fire or its override
-            # didn't take effect.  awk -v avoids sed special-character issues.
-            awk 'BEGIN{p=0} {
-                gsub(/fail "Apache configuration"/, "echo \"  [testbed] Apache config step skipped\"")
-                print
-            }' "$_patched_server" > "${_patched_server}.tmp" \
-                && mv "${_patched_server}.tmp" "$_patched_server" \
-                && chmod +x "$_patched_server"
-            info "Patched cvmfs_server: 'fail \"Apache configuration\"' call → no-op (stage 2)"
-        else
-            warn "Could not find 'fail \"Apache configuration\"' in $CVMFS_SERVER_BIN."
-            warn "mkfs may still fail at the Apache configuration step."
-        fi
-
-        # -- Clean up partial registration if present --
-        # cvmfs_server stores per-repo metadata in /etc/cvmfs/repositories.d/<repo>/.
-        # If a previous mkfs run failed mid-way, that directory exists but the repo
-        # is not fully initialised (no .cvmfspublished).  A fresh mkfs will then
-        # refuse with "The repository already exists" before -I has any effect.
-        # Detect this and wipe the partial registration with rmfs -f first.
+        # ── Clean up any partial registration from a previous failed run ─────────
         if [[ -d "/etc/cvmfs/repositories.d/$REPO_NAME" ]]; then
             warn "Partial repository registration found in /etc/cvmfs/repositories.d/$REPO_NAME"
             warn "Running: sudo $CVMFS_SERVER_BIN rmfs -f $REPO_NAME"
@@ -594,32 +477,30 @@ else
                 "$CVMFS_SERVER_BIN" rmfs -f "$REPO_NAME" 2>/dev/null || true
         fi
 
-        # -- mkfs (using patched script) --
-        info "Running: sudo env PATH=$SOFTWARE_ROOT:... [patched cvmfs_server] mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
-        # sudo strips PATH to its own secure_path.  cvmfs_server calls some
-        # binaries with hardcoded /usr/bin/ paths (handled by the copies above)
-        # and others with bare names that rely on PATH (e.g. cvmfs_swissknife).
-        # Pass SOFTWARE_ROOT explicitly so both call styles resolve correctly.
+        # ── Run mkfs ─────────────────────────────────────────────────────────────
+        # CVMFS_TESTBED=true tells cvmfs_server_mkfs to skip Apache vhost setup
+        # (configure_apache=0): no reload_apache, no wait_for_apache poll against
+        # the Docker-internal stratum0 URL.
+        # sudo strips PATH; pass SOFTWARE_ROOT explicitly so bare binary names
+        # (e.g. cvmfs_swissknife) resolve correctly alongside the hard-coded paths.
+        info "Running: sudo env CVMFS_TESTBED=true PATH=$SOFTWARE_ROOT:... cvmfs_server mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
         _mkfs_ok=false
-        if sudo env PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-                "$_patched_server" mkfs -I \
+        if sudo env \
+                CVMFS_TESTBED=true \
+                PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+                "$CVMFS_SERVER_BIN" mkfs -I \
                 -w "http://stratum0/cvmfs/$REPO_NAME" \
                 -o "$USER" "$REPO_NAME"; then
             _mkfs_ok=true
         fi
 
-        # -- Teardown: stop Apache, remove binary copies, remove patched script --
-        if ! $_apache_was_running; then
-            info "Stopping ${APACHE_SVC} (started only for mkfs) ..."
-            sudo systemctl stop "${APACHE_SVC}" 2>/dev/null || true
-        fi
-        if [[ ${#_symlinked[@]} -gt 0 ]]; then
+        # ── Remove temporary binary copies ────────────────────────────────────────
+        if [[ ${#_copied[@]} -gt 0 ]]; then
             info "Removing temporary binary copies ..."
-            for _dest in "${_symlinked[@]}"; do
+            for _dest in "${_copied[@]}"; do
                 sudo rm -f "$_dest" 2>/dev/null || true
             done
         fi
-        rm -f "$_patched_server" 2>/dev/null || true
 
         if $_mkfs_ok; then
             # Copy signing keys produced by mkfs into our config tree.
