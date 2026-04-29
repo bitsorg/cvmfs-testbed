@@ -518,6 +518,18 @@ else
                 || warn "Could not start ${APACHE_SVC} — mkfs may fail."
         fi
 
+        # -- Clean up partial registration if present --
+        # cvmfs_server stores per-repo metadata in /etc/cvmfs/repositories.d/<repo>/.
+        # If a previous mkfs run failed mid-way, that directory exists but the repo
+        # is not fully initialised (no .cvmfspublished).  A fresh mkfs will then
+        # refuse with "The repository already exists" before -I has any effect.
+        # Detect this and wipe the partial registration with rmfs -f first.
+        if [[ -d "/etc/cvmfs/repositories.d/$REPO_NAME" ]]; then
+            warn "Partial repository registration found in /etc/cvmfs/repositories.d/$REPO_NAME"
+            warn "Running: sudo $CVMFS_SERVER_BIN rmfs -f $REPO_NAME"
+            sudo "$CVMFS_SERVER_BIN" rmfs -f "$REPO_NAME" 2>/dev/null || true
+        fi
+
         # -- mkfs --
         info "Running: sudo $CVMFS_SERVER_BIN mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
         # -I  force-initialise even when storage already contains data.
