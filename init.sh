@@ -509,7 +509,7 @@ else
                     warn "Try manually: sudo cp $SOFTWARE_ROOT/$_bname $_hpath"
                 fi
             fi
-        done < <(grep -oE '/usr(/local)?/bin/cvmfs_[a-z_]+' "$CVMFS_SERVER_BIN" 2>/dev/null | sort -u)
+        done < <(grep -oE '/usr(/local)?/bin/cvmfs_[a-z_]+' "$CVMFS_SERVER_BIN" 2>/dev/null | sort -u || true)
 
         # -- Apache --
         _apache_was_running=false
@@ -531,13 +531,15 @@ else
         cp "$CVMFS_SERVER_BIN" "$_patched_server"
         chmod +x "$_patched_server"
 
+        # || true on every grep/pipeline assignment: grep returns exit 1 on no match,
+        # which under set -eo pipefail would silently kill the script.
         _fail_line=$(grep -n '"fail (Apache configuration)"' "$_patched_server" 2>/dev/null \
-            | head -1 | cut -d: -f1)
+            | head -1 | cut -d: -f1) || true
         if [[ -n "$_fail_line" ]]; then
             # The line just before the fail message is:  if ! <apache_func> ...; then
             # Extract the function name from the surrounding 10 lines.
             _apache_fn=$(awk "NR>$(( _fail_line - 10 )) && NR<$_fail_line" "$_patched_server" \
-                | grep -oE '! [a-zA-Z_][a-zA-Z0-9_]*' | tail -1 | sed 's/! //')
+                | grep -oE '! [a-zA-Z_][a-zA-Z0-9_]*' | tail -1 | sed 's/! //') || true
             if [[ -n "$_apache_fn" ]]; then
                 {
                     printf '\n# Testbed override: Apache served via stratum0 container.\n'
@@ -634,59 +636,3 @@ echo "  Gitea admin user:     ${GITEA_ADMIN_USER:-gitea-admin}"
 echo "  Gitea admin password: ${GITEA_ADMIN_PASSWORD:0:8}...  (see $ENV_FILE for full value)"
 fi
 echo "========================================================"
-echo ""
-echo "──────────────────────────────────────────────────────────"
-echo "  NEXT STEPS — core testbed"
-echo "──────────────────────────────────────────────────────────"
-echo ""
-echo "1. Ensure binaries are in SOFTWARE_ROOT:"
-echo "   ls -1 $SOFTWARE_ROOT"
-echo "   # must contain: cvmfs-prepub  cvmfs_gateway  cvmfs2  cvmfs_talk"
-echo "   chmod +x $SOFTWARE_ROOT/*"
-echo ""
-echo "2. Start containers:"
-echo "   cd $SCRIPT_DIR"
-echo "   ./testbed.sh start"
-echo ""
-echo "   Or with MQTT control-plane:"
-echo "   ./testbed.sh start --mqtt"
-echo ""
-echo "3. Run smoke test:"
-echo "   ./testbed.sh test"
-echo ""
-echo "4. Verify end-to-end file visibility after a publish job:"
-echo "   ./testbed.sh verify <job-uuid> usr/share/test/hello.txt"
-echo ""
-echo "5. Open Grafana (core stack):"
-echo "   http://localhost:${GRAFANA_PORT}  (admin / admin)"
-echo ""
-echo "6. Query cvmfs-prepub API directly:"
-echo "   curl -s -H 'Authorization: Bearer ${PREPUB_API_TOKEN}' \\"
-echo "        http://localhost:8080/api/v1/metrics"
-echo ""
-if [[ -n "${BITS_CONSOLE_SRC:-}" ]]; then
-echo "──────────────────────────────────────────────────────────"
-echo "  NEXT STEPS — bits-console overlay (Gitea + act_runner)"
-echo "──────────────────────────────────────────────────────────"
-echo ""
-echo "7. Start with the bits overlay:"
-echo "   ./testbed.sh start --bits"
-echo "   (Seeder container prints the act_runner registration token on first run.)"
-echo ""
-echo "8. Register act_runner on this host (requires Docker group access):"
-echo "   sudo cp $SCRIPT_DIR/act_runner/act_runner.service /etc/systemd/system/"
-echo "   sudo mkdir -p /var/lib/act_runner /etc/act_runner"
-echo "   sudo cp $SCRIPT_DIR/act_runner/config.yaml /etc/act_runner/"
-echo "   act_runner register \\"
-echo "     --instance http://localhost:3000 \\"
-echo "     --token <TOKEN_FROM_SEEDER> \\"
-echo "     --name bits-host-runner \\"
-echo "     --labels self-hosted,bits,ubuntu-latest \\"
-echo "     --no-interactive"
-echo "   sudo systemctl daemon-reload && sudo systemctl enable --now act_runner"
-echo ""
-echo "9. Open bits-console:"
-echo "   http://testbed.localhost:3000/bits-project/testbed/"
-echo "   (Add '127.0.0.1 testbed.localhost' to /etc/hosts if needed.)"
-echo ""
-fi
