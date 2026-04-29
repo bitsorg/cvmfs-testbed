@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # testbed.sh — Top-level bootstrap and management script for the cvmfs-prepub testbed.
 #
+# Directory convention:
+#   <cvmfs-testbed>/cvmfs/          CVMFS source tree  (git clone or symlink)
+#   <cvmfs-testbed>/bits-console/   bits-console source (git clone or symlink)
+#   <cvmfs-testbed>/software/       built CVMFS binaries (populated by install.sh)
+#
 # Usage:
 #   ./testbed.sh [command] [options] [args]
 #
 # Commands:
 #   init      One-time host setup: create directories, generate secrets,
-#             initialise CVMFS repository, write service configs.
+#             run install.sh, initialise CVMFS repository, write service configs.
 #   start     Build images (if needed) and start containers.
 #   stop      Stop containers without removing state.
 #   restart   Stop then start.
@@ -20,30 +25,31 @@
 #
 # Options (accepted by all commands):
 #   --bits                Include the bits-console overlay (Gitea + seeder).
+#                         Requires bits-console/ to be present in this directory.
 #   --mqtt                Include the MQTT control-plane overlay.
-#   --bits-src PATH       Path to bits-console source tree (overrides BITS_CONSOLE_SRC).
-#   --software-root PATH  Path to directory containing CVMFS binaries under test
-#                         (overrides SOFTWARE_ROOT from .env).
+#   --software-root PATH  Override the default software/ destination.
 #   --testbed-root PATH   Path to testbed data root (overrides TESTBED_ROOT from .env).
 #
 # .env location:
 #   The .env file is stored in TESTBED_ROOT, NOT next to this script.
-#   The script directory (/opt/bits/cvmfs-testbed) may be read-only.
+#   The script directory may be read-only.
 #   Bootstrap order for TESTBED_ROOT: --testbed-root flag > $TESTBED_ROOT env var
 #   > value read from an existing .env > default $HOME/cvmfs-testbed.
 #
 # Examples:
-#   # First-time setup (core stack):
+#   # First-time setup — clone sources, build, then init:
+#   git clone https://github.com/cvmfs/cvmfs cvmfs
+#   cmake -S cvmfs -B cvmfs/build && make -C cvmfs/build -j$(nproc)
+#   git clone https://github.com/your-org/bits-console bits-console  # optional
 #   ./testbed.sh init
 #   ./testbed.sh start
 #   ./testbed.sh test
 #
 #   # Override binary and data locations:
 #   ./testbed.sh init  --testbed-root /data/tb --software-root /data/tb/software
-#   ./testbed.sh start --software-root ~/cvmfs-testbed/software
 #
-#   # With bits-console and Gitea:
-#   ./testbed.sh init  --bits --bits-src /path/to/bits-console
+#   # With bits-console and Gitea (bits-console/ must already be present):
+#   ./testbed.sh init  --bits
 #   ./testbed.sh start --bits
 #
 #   # Tail logs for a single service:
@@ -73,7 +79,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ── Default flags ─────────────────────────────────────────────────────────────
 USE_BITS=false
 USE_MQTT=false
-BITS_SRC_OVERRIDE=""
 SOFTWARE_ROOT_OVERRIDE=""
 TESTBED_ROOT_OVERRIDE=""
 
@@ -90,10 +95,12 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --bits)                USE_BITS=true;                    shift ;;
         --mqtt)                USE_MQTT=true;                    shift ;;
+        # --bits-src is no longer needed: bits-console lives at $SCRIPT_DIR/bits-console.
+        # Accept it silently for backward compatibility.
         --bits-src)
-            [[ $# -ge 2 ]] || { error "--bits-src requires a value"; exit 1; }
-            BITS_SRC_OVERRIDE="$2"; shift 2 ;;
-        --bits-src=*)          BITS_SRC_OVERRIDE="${1#*=}";      shift ;;
+            warn "--bits-src is no longer needed; bits-console/ is expected at $SCRIPT_DIR/bits-console"
+            [[ $# -ge 2 ]] && shift 2 || shift ;;
+        --bits-src=*)          warn "--bits-src is no longer needed; bits-console/ is expected at $SCRIPT_DIR/bits-console"; shift ;;
         --software-root)
             [[ $# -ge 2 ]] || { error "--software-root requires a value"; exit 1; }
             SOFTWARE_ROOT_OVERRIDE="$2"; shift 2 ;;
@@ -141,11 +148,13 @@ load_env() {
     # 3. Re-apply command-line overrides (highest priority, beat .env values).
     [[ -n "$TESTBED_ROOT_OVERRIDE"  ]] && TESTBED_ROOT="$TESTBED_ROOT_OVERRIDE"
     [[ -n "$SOFTWARE_ROOT_OVERRIDE" ]] && SOFTWARE_ROOT="$SOFTWARE_ROOT_OVERRIDE"
-    [[ -n "$BITS_SRC_OVERRIDE"      ]] && BITS_CONSOLE_SRC="$BITS_SRC_OVERRIDE"
 
-    # 4. Prepend SOFTWARE_ROOT to PATH so locally built binaries take precedence
+    # 4. Derive BITS_CONSOLE_SRC from the conventional location (no .env entry needed).
+    BITS_CONSOLE_SRC="$SCRIPT_DIR/bits-console"
+
+    # 5. Prepend SOFTWARE_ROOT to PATH so locally built binaries take precedence
     #    over any system-wide CVMFS installation in a potentially read-only area.
-    local sw="${SOFTWARE_ROOT:-${TESTBED_ROOT:-$HOME/cvmfs-testbed}/software}"
+    local sw="${SOFTWARE_ROOT:-$SCRIPT_DIR/software}"
     if [[ -d "$sw" ]] && [[ ":$PATH:" != *":$sw:"* ]]; then
         export PATH="$sw:$PATH"
     fi
@@ -174,8 +183,6 @@ cmd_init() {
     local init_args=()
     [[ -n "$TESTBED_ROOT_OVERRIDE"  ]] && init_args+=(--testbed-root  "$TESTBED_ROOT_OVERRIDE")
     [[ -n "$SOFTWARE_ROOT_OVERRIDE" ]] && init_args+=(--software-root "$SOFTWARE_ROOT_OVERRIDE")
-    # BITS_CONSOLE_SRC is passed via environment so init.sh writes it into .env.
-    [[ -n "$BITS_SRC_OVERRIDE" ]] && export BITS_CONSOLE_SRC="$BITS_SRC_OVERRIDE"
 
     bash "$SCRIPT_DIR/init.sh" "${init_args[@]}"
     ok "Init complete"
@@ -203,7 +210,7 @@ cmd_start() {
     fi
 
     # All required binaries must be regular executable files (not directories).
-    local sw="${SOFTWARE_ROOT:-$TESTBED_ROOT/software}"
+    local sw="${SOFTWARE_ROOT:-$SCRIPT_DIR/software}"
     local missing=()
     for bin in cvmfs_gateway cvmfs-prepub cvmfs2 cvmfs_talk; do
         local bp="$sw/$bin"
@@ -249,8 +256,10 @@ cmd_start() {
         exit 1
     fi
 
-    if $USE_BITS && [[ -z "${BITS_CONSOLE_SRC:-}" ]]; then
-        error "--bits requires BITS_CONSOLE_SRC to be set in .env or via --bits-src"
+    if $USE_BITS && [[ ! -d "$SCRIPT_DIR/bits-console" ]]; then
+        error "--bits requires bits-console/ to be present at $SCRIPT_DIR/bits-console"
+        error "Clone or symlink it there:"
+        error "  git clone https://github.com/your-org/bits-console $SCRIPT_DIR/bits-console"
         exit 1
     fi
 

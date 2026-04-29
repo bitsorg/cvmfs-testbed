@@ -133,83 +133,104 @@ publisher ──POST /api/v1/jobs──► cvmfs-prepub:8080
 
 ## Directory Layout
 
+The testbed uses a **fixed directory convention** so that no path variables need to be set in `.env`. Clone or symlink the source trees directly inside the `cvmfs-testbed/` checkout, then run `install.sh` once to populate `software/`.
+
 ```
-testbed/
-├── testbed.sh                   # Top-level bootstrap and management script
-├── docker-compose.yml           # Core services (HTTP mode)
-├── docker-compose.mqtt.yml      # Overlay: switch control plane to MQTT
-├── docker-compose.bits.yml      # Overlay: add Gitea + seeder for bits-console
-├── .env.example                 # Environment template (copy to .env)
-├── init.sh                      # Low-level host setup (called by testbed.sh init)
-├── README.md                    # This file
+cvmfs-testbed/               ← this repository
+├── testbed.sh               # Top-level management script
+├── install.sh               # Populates software/ from cvmfs/build/
+├── init.sh                  # One-time host setup (called by testbed.sh init)
+├── docker-compose.yml       # Core services (HTTP mode)
+├── docker-compose.mqtt.yml  # Overlay: MQTT control plane
+├── docker-compose.bits.yml  # Overlay: Gitea + seeder for bits-console
+├── .env.example             # Environment template (secrets only)
+├── README.md                # This file
+│
+├── cvmfs/                   # ← CVMFS source tree (git clone or symlink HERE)
+│   ├── cvmfs/
+│   │   ├── make_cvmfs_server.sh
+│   │   └── server/          # Patched server shell scripts
+│   └── build/               # cmake build output (run cmake + make here)
+│       ├── cvmfs_publish
+│       ├── cvmfs_swissknife
+│       └── libcvmfs_server.so.*
+│
+├── bits-console/            # ← bits-console source (git clone or symlink HERE)
+│   │                        #   Required only for the --bits overlay
+│   └── build-communities.sh
+│
+├── software/                # ← Populated by install.sh (never edit manually)
+│   ├── cvmfs_server         # Rebuilt from patched cvmfs/cvmfs/server/
+│   ├── cvmfs_publish
+│   ├── cvmfs_swissknife
+│   ├── libcvmfs_server.so.*
+│   ├── cvmfs-prepub         # ← copy your built binary here manually
+│   ├── cvmfs_gateway        # ← copy your built binary here manually
+│   ├── cvmfs2               # ← copy your built binary here manually
+│   └── cvmfs_talk           # ← copy your built binary here manually
+│
 ├── gateway/
-│   └── Dockerfile               # cvmfs_gateway base image
+│   └── Dockerfile
 ├── stratum0/
-│   ├── Dockerfile               # Apache Stratum 0 base image
-│   └── httpd.conf               # Apache configuration
+│   ├── Dockerfile
+│   └── httpd.conf
 ├── cvmfs-prepub/
-│   └── Dockerfile               # cvmfs-prepub publisher base image
+│   └── Dockerfile
 ├── stratum1/
-│   └── Dockerfile               # Stratum 1 receiver base image (used for both)
+│   └── Dockerfile
 ├── publisher/
-│   ├── Dockerfile               # Test job submitter
+│   ├── Dockerfile
 │   └── scripts/
-│       ├── smoke-test.sh        # Single job smoke test
-│       └── stress-test.sh       # Multi-job stress test
+│       ├── smoke-test.sh
+│       └── stress-test.sh
 ├── cvmfs-client/
-│   ├── Dockerfile               # CVMFS FUSE client image
-│   ├── entrypoint.sh            # Generates config, mounts repo, keeps alive
+│   ├── Dockerfile
+│   ├── entrypoint.sh
 │   └── scripts/
-│       └── verify-publish.sh    # Pipeline timing + file visibility checker
+│       └── verify-publish.sh
 ├── mosquitto/
-│   └── mosquitto.conf           # Mosquitto MQTT broker config (MQTT mode)
+│   └── mosquitto.conf
 ├── seeder/
-│   ├── Dockerfile               # One-shot Python seeder image
-│   └── seed.py                  # Creates Gitea org/repo, pushes source,
-│                                #   builds Pages, sets CI vars, prints runner token
+│   ├── Dockerfile
+│   └── seed.py
 ├── act_runner/
-│   ├── config.yaml              # act_runner configuration template
-│   └── act_runner.service       # systemd unit for the host runner
+│   ├── config.yaml
+│   └── act_runner.service
 └── monitoring/
-    ├── scrape.yml               # vmagent Prometheus scrape config
+    ├── scrape.yml
     └── grafana/
         ├── provisioning/
         │   ├── datasources/
-        │   │   └── victoriametrics.yaml  # Datasource configuration
+        │   │   └── victoriametrics.yaml
         │   └── dashboards/
-        │       └── dashboards.yaml       # Dashboard provisioning
+        │       └── dashboards.yaml
         └── dashboards/
-            └── cvmfs-prepub.json        # Main monitoring dashboard
+            └── cvmfs-prepub.json
 
-${TESTBED_ROOT}/                 # All persistent state (host)
-├── software/                    # Binaries under test (user-populated)
-│   ├── cvmfs-prepub
-│   ├── cvmfs_gateway
-│   ├── cvmfs2
-│   └── cvmfs_talk
-├── cvmfs/                       # CVMFS repository (created by cvmfs_server mkfs)
+${TESTBED_ROOT}/             ← All persistent runtime state (default: $HOME/cvmfs-testbed)
+├── cvmfs/                   # CVMFS repository (created by cvmfs_server mkfs)
 │   └── ${REPO_NAME}/
 │       ├── .cvmfspublished
 │       ├── .cvmfswhitelist
 │       └── data/
 ├── data/
-│   ├── spool/                   # cvmfs-prepub WAL journal and job state
-│   ├── s1a/                     # Stratum 1 receiver A CAS
-│   ├── s1b/                     # Stratum 1 receiver B CAS
-│   ├── cvmfs-client/            # CVMFS client disk cache
-│   ├── mosquitto/               # Mosquitto persistence (MQTT mode)
-│   ├── mosquitto-log/           # Mosquitto logs (MQTT mode)
-│   ├── gitea/                   # Gitea database + repos (bits overlay)
+│   ├── spool/               # cvmfs-prepub WAL journal and job state
+│   ├── s1a/                 # Stratum 1 receiver A CAS
+│   ├── s1b/                 # Stratum 1 receiver B CAS
+│   ├── cvmfs-client/        # CVMFS client disk cache
+│   ├── mosquitto/           # Mosquitto persistence (MQTT mode)
+│   ├── mosquitto-log/       # Mosquitto logs (MQTT mode)
+│   ├── gitea/               # Gitea database + repos (bits overlay)
 │   └── monitoring/
-│       ├── vm/                  # VictoriaMetrics data
-│       ├── vmagent/             # vmagent data
-│       └── grafana/             # Grafana data
-└── config/                      # Generated configs (init.sh writes these)
+│       ├── vm/              # VictoriaMetrics data
+│       ├── vmagent/         # vmagent data
+│       └── grafana/         # Grafana data
+└── config/                  # Generated configs (init.sh writes these)
     ├── gateway/
     │   ├── gw.json
     │   ├── user.json
     │   └── repo.json
-    ├── keys/                    # CVMFS signing keys
+    ├── keys/                # CVMFS signing keys
     ├── cvmfs-prepub/
     │   └── config.yaml
     ├── stratum1-a/
@@ -223,18 +244,21 @@ ${TESTBED_ROOT}/                 # All persistent state (host)
 ### Core testbed
 
 - **Docker** ≥ 24 with Compose v2 plugin — check: `docker compose version`
-- **cvmfs-server** on the host (one-time `cvmfs_server mkfs`)
-  - Ubuntu/Debian: `sudo apt install cvmfs-server`
-  - AlmaLinux/RHEL: `sudo dnf install cvmfs-server`
 - **openssl** (secret generation) — usually pre-installed
-- **Compiled binaries**: `cvmfs-prepub`, `cvmfs_gateway`, `cvmfs2`, `cvmfs_talk`
 - **FUSE kernel module** loaded — check: `lsmod | grep fuse`; if absent: `sudo modprobe fuse`
+- **CVMFS source tree** cloned (or symlinked) at `cvmfs-testbed/cvmfs/`
+  - `git clone https://github.com/cvmfs/cvmfs cvmfs`
+  - `cmake -S cvmfs -B cvmfs/build && make -C cvmfs/build -j$(nproc)`
+  - `./install.sh`   ← copies binaries to `software/` and rebuilds `cvmfs_server`
+- **Compiled binaries** for cvmfs-prepub, cvmfs_gateway, cvmfs2, cvmfs_talk copied to `software/`
 
 ### bits-console overlay (optional)
 
+- **bits-console** source tree cloned (or symlinked) at `cvmfs-testbed/bits-console/`
+  - `git clone https://github.com/your-org/bits-console bits-console`
+  - No `.env` change needed — the path is fixed by convention.
 - **act_runner** binary on the host — download from https://gitea.com/gitea/act_runner/releases
 - **bits** build toolchain installed on the host
-- **bits-console** source tree checked out — set `BITS_CONSOLE_SRC` in `.env`
 - The operator's Unix user must be in the **docker** group (runner spawns Docker containers)
 - Modern browser for the SPA (Chrome, Firefox, Edge). Safari requires adding `127.0.0.1 testbed.localhost` to `/etc/hosts`.
 
@@ -243,12 +267,12 @@ ${TESTBED_ROOT}/                 # All persistent state (host)
 `testbed.sh` is the recommended entry point for all testbed operations. It wraps `init.sh` and `docker compose` to give a single, consistent interface.
 
 ```
-./testbed.sh <command> [--bits] [--mqtt] [--bits-src PATH]
+./testbed.sh <command> [--bits] [--mqtt]
 ```
 
 | Command       | Description                                              |
 |---------------|----------------------------------------------------------|
-| `init`        | Create directories, generate secrets, write configs      |
+| `init`        | Create directories, run install.sh, generate secrets, write configs, run mkfs |
 | `start`       | Build images (if needed) and start all services          |
 | `stop`        | Stop containers (preserves state)                        |
 | `restart`     | Stop then start                                          |
@@ -261,11 +285,10 @@ ${TESTBED_ROOT}/                 # All persistent state (host)
 
 **Flags:**
 
-| Flag             | Effect                                                      |
-|------------------|-------------------------------------------------------------|
-| `--bits`         | Include the bits-console overlay (Gitea + seeder)           |
-| `--mqtt`         | Include the MQTT control-plane overlay                      |
-| `--bits-src PATH`| Set (or override) `BITS_CONSOLE_SRC` in `.env`             |
+| Flag             | Effect                                                                |
+|------------------|-----------------------------------------------------------------------|
+| `--bits`         | Include the bits-console overlay (requires `bits-console/` to exist)  |
+| `--mqtt`         | Include the MQTT control-plane overlay                                |
 
 **Examples:**
 
@@ -279,15 +302,15 @@ ${TESTBED_ROOT}/                 # All persistent state (host)
 # Core stack + MQTT control plane
 ./testbed.sh start --mqtt
 
-# Full stack with bits-console (first time)
-./testbed.sh init  --bits --bits-src /path/to/bits-console
+# Full stack with bits-console (bits-console/ must already be present)
+./testbed.sh init  --bits
 ./testbed.sh start --bits
 
 # Check what is running
 ./testbed.sh status --bits
 
 # Tear down everything and start fresh
-./testbed.sh reset --bits --bits-src /path/to/bits-console
+./testbed.sh reset --bits
 ```
 
 ---
@@ -296,28 +319,42 @@ ${TESTBED_ROOT}/                 # All persistent state (host)
 
 The recommended way to use the testbed is via `testbed.sh`. See the section above for all available commands.
 
-1. **Clone/enter the repository**
+1. **Clone the repository and enter it**
    ```bash
-   cd /path/to/testbed
-   chmod +x testbed.sh
+   git clone https://github.com/your-org/cvmfs-testbed
+   cd cvmfs-testbed
+   chmod +x testbed.sh install.sh
    ```
 
-2. **Initialise** (requires sudo for `cvmfs_server mkfs`)
+2. **Clone and build CVMFS** (inside cvmfs-testbed)
+   ```bash
+   git clone https://github.com/cvmfs/cvmfs cvmfs
+   cmake -S cvmfs -B cvmfs/build
+   make -C cvmfs/build -j$(nproc)
+   ```
+
+3. **Populate software/ from the CVMFS build tree**
+   ```bash
+   ./install.sh
+   ```
+   This copies `cvmfs_publish`, `cvmfs_swissknife`, `libcvmfs_server.so.*`, and rebuilds the patched `cvmfs_server` script — all into `software/`.
+
+4. **Copy the remaining service binaries**
+   ```bash
+   cp /path/to/cvmfs-prepub  software/
+   cp /path/to/cvmfs_gateway software/
+   cp /path/to/cvmfs2        software/
+   cp /path/to/cvmfs_talk    software/
+   chmod +x software/*
+   ```
+
+5. **Initialise** (requires sudo for `cvmfs_server mkfs`)
    ```bash
    sudo ./testbed.sh init
    ```
-   This creates the directory structure, initialises the CVMFS repository, generates secrets, and writes service configs.
+   Creates directory structure, generates secrets, writes service configs, and initialises the CVMFS repository.
 
-3. **Copy binaries**
-   ```bash
-   cp /path/to/cvmfs-prepub      ${TESTBED_ROOT}/software/
-   cp /path/to/cvmfs_gateway     ${TESTBED_ROOT}/software/
-   cp /path/to/cvmfs2            ${TESTBED_ROOT}/software/
-   cp /path/to/cvmfs_talk        ${TESTBED_ROOT}/software/
-   chmod +x ${TESTBED_ROOT}/software/*
-   ```
-
-4. **Start containers**
+6. **Start containers**
    ```bash
    # HTTP mode (default)
    ./testbed.sh start
@@ -326,17 +363,17 @@ The recommended way to use the testbed is via `testbed.sh`. See the section abov
    ./testbed.sh start --mqtt
    ```
 
-5. **Run smoke test**
+7. **Run smoke test**
    ```bash
    ./testbed.sh test
    ```
 
-6. **Verify file visibility through the CVMFS client**
+8. **Verify file visibility through the CVMFS client**
    ```bash
    ./testbed.sh verify <uuid_from_smoke_test> usr/share/test/hello.txt
    ```
 
-7. **Open Grafana**
+9. **Open Grafana**
    ```
    http://localhost:3000  (core stack)
    http://localhost:3001  (when --bits overlay is active)
@@ -489,11 +526,12 @@ The overlay also remaps Grafana from port 3000 to port 3001 to avoid conflict wi
 
 ### Quick start (bits overlay)
 
-1. **Set `BITS_CONSOLE_SRC` in `.env`**
+1. **Clone (or symlink) bits-console inside cvmfs-testbed**
    ```bash
-   # Edit .env and set:
-   BITS_CONSOLE_SRC=/path/to/your/bits-console
+   git clone https://github.com/your-org/bits-console bits-console
+   # or: ln -s /path/to/your/bits-console bits-console
    ```
+   No `.env` change needed — the path is fixed by convention.
 
 2. **Start all services** (core + Gitea + seeder)
    ```bash
@@ -609,8 +647,8 @@ The easiest way is via `testbed.sh reset`:
 # Core stack
 sudo ./testbed.sh reset
 
-# With bits overlay
-sudo ./testbed.sh reset --bits --bits-src /path/to/bits-console
+# With bits overlay (bits-console/ must already be present)
+sudo ./testbed.sh reset --bits
 ```
 
 `reset` runs `clean` (stops containers, removes all host state) then `init` then `start`.
@@ -620,10 +658,10 @@ sudo ./testbed.sh reset --bits --bits-src /path/to/bits-console
 docker compose down -v
 source .env
 sudo rm -rf ${TESTBED_ROOT}/data ${TESTBED_ROOT}/cvmfs ${TESTBED_ROOT}/config
-rm -f .env
+rm -f "$HOME/cvmfs-testbed/.env"
 
+./install.sh             # re-populate software/ from cvmfs/build/
 sudo ./testbed.sh init   # or: sudo ./init.sh
-# Copy binaries to ${TESTBED_ROOT}/software/
 ./testbed.sh start
 ```
 

@@ -1,19 +1,35 @@
 #!/usr/bin/env bash
 # init.sh — One-time host setup for the cvmfs-prepub testbed.
 #
-# What it does (in order):
+# Directory convention (enforced here):
+#   <cvmfs-testbed>/cvmfs/          CVMFS source tree  (git clone or symlink)
+#   <cvmfs-testbed>/bits-console/   bits-console source (git clone or symlink)
+#   <cvmfs-testbed>/software/       built CVMFS binaries (populated by install.sh)
+#
+# Before running init.sh for the first time:
+#   1. Clone / symlink the CVMFS source:
+#        git clone https://github.com/cvmfs/cvmfs cvmfs
+#        cmake -S cvmfs -B cvmfs/build && make -C cvmfs/build -j$(nproc)
+#   2. Run install.sh to populate software/:
+#        ./install.sh
+#   3. (bits overlay) Clone / symlink bits-console:
+#        git clone https://github.com/your-org/bits-console bits-console
+#
+# What init.sh does (in order):
 #   1. Parse command-line arguments.
 #   2. Determine TESTBED_ROOT and locate .env (in TESTBED_ROOT, not next to
 #      this script — the script directory may be read-only).
 #   3. Load existing .env so SOFTWARE_ROOT and other overrides are available
 #      before PATH is modified.
 #   4. Apply --software-root / --testbed-root overrides over .env values.
-#   5. Prepend SOFTWARE_ROOT to PATH (locally built binaries win over system ones).
-#   6. Check prerequisites (docker, openssl, cvmfs_server).
-#   7. Create directory tree under TESTBED_ROOT.
-#   8. Generate secrets and write .env (idempotent — reuses existing secrets).
-#   9. Write all service config files (gateway, cvmfs-prepub, stratum1-a/b).
-#  10. Optionally initialise the CVMFS repository via cvmfs_server mkfs.
+#   5. Check that the conventional subdirectories exist (cvmfs/, bits-console/).
+#   6. Prepend SOFTWARE_ROOT to PATH (locally built binaries win over system ones).
+#   7. Check prerequisites (docker, openssl, cvmfs_server).
+#   8. Create directory tree under TESTBED_ROOT.
+#   9. Generate secrets and write .env (idempotent — reuses existing secrets).
+#  10. Write all service config files (gateway, cvmfs-prepub, stratum1-a/b).
+#  11. Run install.sh to (re-)populate software/ from the build tree.
+#  12. Optionally initialise the CVMFS repository via cvmfs_server mkfs.
 #
 # Usage:
 #   ./init.sh [--testbed-root PATH] [--software-root PATH]
@@ -22,18 +38,14 @@
 #   --testbed-root PATH   Root directory for testbed data (default: $HOME/cvmfs-testbed).
 #                         Overrides the TESTBED_ROOT environment variable and any
 #                         value already in .env.
-#   --software-root PATH  Directory containing the CVMFS binaries under test
-#                         (cvmfs_gateway, cvmfs-prepub, cvmfs2, cvmfs_talk,
-#                         optionally cvmfs_server).
+#   --software-root PATH  Directory containing the CVMFS binaries under test.
 #                         Overrides SOFTWARE_ROOT from .env.
-#                         Default: $TESTBED_ROOT/software
+#                         Default: <cvmfs-testbed>/software  (next to this script)
 #
 # Environment variables (all can also be set in .env):
 #   TESTBED_ROOT          See --testbed-root above.
 #   SOFTWARE_ROOT         See --software-root above.
 #   REPO_NAME             CVMFS repository FQDN (default: test.cvmfs.io).
-#   BITS_CONSOLE_SRC      Path to checked-out bits-console source tree.
-#                         Required only for the Gitea/bits overlay.
 #
 # Idempotency:
 #   Re-running init.sh is safe.  Secrets are reused if .env already contains
@@ -62,6 +74,9 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { error "--testbed-root requires a value"; exit 1; }
             TESTBED_ROOT_ARG="$2"; shift 2 ;;
         --testbed-root=*)  TESTBED_ROOT_ARG="${1#*=}"; shift ;;
+        # --bits-src is no longer needed: bits-console lives at $SCRIPT_DIR/bits-console
+        # Accept it silently for backward compatibility with any existing scripts.
+        --bits-src|--bits-src=*) shift; [[ "$1" == --bits-src ]] && shift || true ;;
         *)                 shift ;;   # silently skip unknown flags from testbed.sh
     esac
 done
@@ -93,7 +108,29 @@ fi
 [[ -n "$SOFTWARE_ROOT_ARG"  ]] && SOFTWARE_ROOT="$SOFTWARE_ROOT_ARG"
 
 # ── Resolve SOFTWARE_ROOT ─────────────────────────────────────────────────────
-SOFTWARE_ROOT="${SOFTWARE_ROOT:-$TESTBED_ROOT/software}"
+# Default: software/ lives next to this script (within the cvmfs-testbed repo),
+# not inside TESTBED_ROOT.  This keeps source/binaries together and eliminates
+# the need to set SOFTWARE_ROOT in .env.
+SOFTWARE_ROOT="${SOFTWARE_ROOT:-$SCRIPT_DIR/software}"
+
+# ── Check conventional subdirectories ────────────────────────────────────────
+# cvmfs/ must exist (contains source and build tree used by install.sh).
+if [[ ! -d "$SCRIPT_DIR/cvmfs" ]]; then
+    warn "CVMFS source not found at $SCRIPT_DIR/cvmfs"
+    warn "Clone or symlink it before running install.sh:"
+    warn "  git clone https://github.com/cvmfs/cvmfs $SCRIPT_DIR/cvmfs"
+    warn "  cmake -S $SCRIPT_DIR/cvmfs -B $SCRIPT_DIR/cvmfs/build"
+    warn "  make -C $SCRIPT_DIR/cvmfs/build -j\$(nproc)"
+    warn "  $SCRIPT_DIR/install.sh"
+fi
+
+# bits-console/ is optional (needed for the --bits overlay only).
+BITS_CONSOLE_SRC="$SCRIPT_DIR/bits-console"
+if [[ ! -d "$BITS_CONSOLE_SRC" ]]; then
+    warn "bits-console source not found at $BITS_CONSOLE_SRC"
+    warn "Clone or symlink it if you need the bits/Gitea overlay:"
+    warn "  git clone https://github.com/your-org/bits-console $BITS_CONSOLE_SRC"
+fi
 
 # Prompt for REPO_NAME only if still unset (not in .env, not in environment).
 if [[ -z "${REPO_NAME:-}" ]]; then
@@ -175,11 +212,8 @@ mkdir -p \
     "$TESTBED_ROOT/config/stratum1-b"
 success "Directory structure created."
 
-# Warn (do not fail) if BITS_CONSOLE_SRC is missing — it is optional.
-if [[ -z "${BITS_CONSOLE_SRC:-}" ]]; then
-    warn "BITS_CONSOLE_SRC not set — Gitea/bits overlay will be skipped."
-    warn "Set it in $ENV_FILE or pass --bits-src to testbed.sh."
-fi
+# (BITS_CONSOLE_SRC is derived from the conventional path $SCRIPT_DIR/bits-console
+# and has already been checked above — no further action needed here.)
 
 # ── Generate secrets and write .env ──────────────────────────────────────────
 # Idempotent: if CVMFS_GATEWAY_SECRET is already set (loaded from .env above),
@@ -212,7 +246,6 @@ if [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
         -v GITEA_ADMIN_PASSWORD="$GITEA_ADMIN_PASSWORD" \
         -v GITEA_SECRET_KEY="$GITEA_SECRET_KEY" \
         -v GITEA_INTERNAL_TOKEN="$GITEA_INTERNAL_TOKEN" \
-        -v BITS_CONSOLE_SRC="${BITS_CONSOLE_SRC:-}" \
         'BEGIN { FS="="; OFS="=" }
          /^TESTBED_ROOT=/          { $2=TESTBED_ROOT;          print; next }
          /^SOFTWARE_ROOT=/         { $2=SOFTWARE_ROOT;         print; next }
@@ -225,7 +258,6 @@ if [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
          /^GITEA_ADMIN_PASSWORD=$/ { $2=GITEA_ADMIN_PASSWORD;  print; next }
          /^GITEA_SECRET_KEY=$/     { $2=GITEA_SECRET_KEY;      print; next }
          /^GITEA_INTERNAL_TOKEN=$/ { $2=GITEA_INTERNAL_TOKEN;  print; next }
-         /^BITS_CONSOLE_SRC=/      { $2=BITS_CONSOLE_SRC;      print; next }
          { print }' \
         "$SCRIPT_DIR/.env.example" > "$ENV_FILE"
     success "Generated secrets and wrote $ENV_FILE"
@@ -420,54 +452,25 @@ else
     fi
 
     if $CVMFS_REPO_INIT_OK; then
-        # ── Rebuild cvmfs_server from source if the source tree is available ─────
-        # cvmfs_server_mkfs.sh honours CVMFS_TESTBED=true to skip Apache vhost
-        # setup (the Docker stratum0 container handles serving).  For this to take
-        # effect the binary must be rebuilt from the modified source.
-        # We look for the source tree relative to this script (common dev layout:
-        # cvmfs-testbed/ and cvmfs/ are siblings), and rebuild automatically.
-        _cvmfs_src=""
-        for _try in \
-            "${CVMFS_SRC:-}" \
-            "$SCRIPT_DIR/../cvmfs"; do
-            if [[ -n "$_try" && -f "$_try/cvmfs/make_cvmfs_server.sh" ]]; then
-                _cvmfs_src="$_try"
-                break
+        # ── Populate SOFTWARE_ROOT via install.sh ─────────────────────────────────
+        # install.sh copies cvmfs_* binaries and libcvmfs_* libraries from
+        # cvmfs/build/ into software/ and rebuilds cvmfs_server from the patched
+        # source.  Nothing is written to /usr/bin or any system directory.
+        if [[ -f "$SCRIPT_DIR/cvmfs/cvmfs/make_cvmfs_server.sh" ]]; then
+            info "Running install.sh to populate $SOFTWARE_ROOT ..."
+            if bash "$SCRIPT_DIR/install.sh" --software-root "$SOFTWARE_ROOT"; then
+                # install.sh always produces software/cvmfs_server when it succeeds.
+                CVMFS_SERVER_BIN="$SOFTWARE_ROOT/cvmfs_server"
+            else
+                warn "install.sh failed — mkfs will use whatever is already in SOFTWARE_ROOT."
             fi
-        done
-
-        if [[ -n "$_cvmfs_src" ]]; then
-            info "Rebuilding cvmfs_server from source: $_cvmfs_src/cvmfs/make_cvmfs_server.sh"
-            ( cd "$_cvmfs_src/cvmfs" && ./make_cvmfs_server.sh "$CVMFS_SERVER_BIN" ) \
-                && info "cvmfs_server rebuilt → $CVMFS_SERVER_BIN" \
-                || warn "Rebuild failed — using existing binary (CVMFS_TESTBED support may be missing)"
         else
-            warn "CVMFS source tree not found; cannot rebuild cvmfs_server."
-            warn "If cvmfs_server predates the CVMFS_TESTBED patch, mkfs may fail."
-            warn "Set CVMFS_SRC=/path/to/cvmfs and re-run, or rebuild manually:"
-            warn "  cd /path/to/cvmfs/cvmfs && ./make_cvmfs_server.sh $CVMFS_SERVER_BIN"
+            warn "CVMFS source tree not found at $SCRIPT_DIR/cvmfs"
+            warn "Run: git clone https://github.com/cvmfs/cvmfs $SCRIPT_DIR/cvmfs"
+            warn "Then: cmake -S $SCRIPT_DIR/cvmfs -B $SCRIPT_DIR/cvmfs/build && make -C $SCRIPT_DIR/cvmfs/build -j\$(nproc)"
+            warn "Then: $SCRIPT_DIR/install.sh"
+            warn "Falling back to any cvmfs_server already in SOFTWARE_ROOT."
         fi
-
-        # ── Copy missing hard-coded binaries to their expected paths ─────────────
-        # cvmfs_server mkfs hard-codes /usr/(local/)bin/cvmfs_* paths for some
-        # calls and also runs:
-        #   setcap cap_sys_admin+ep /usr/bin/cvmfs_swissknife
-        # setcap refuses symlinks, so we copy (not symlink) any binary that is
-        # absent at its hard-coded location but present in SOFTWARE_ROOT.
-        # Copies are removed after mkfs.
-        _copied=()
-        info "Checking for hard-coded CVMFS binary paths in $CVMFS_SERVER_BIN ..."
-        while IFS= read -r _hpath; do
-            _bname="$(basename "$_hpath")"
-            if [[ ! -e "$_hpath" ]] && [[ -x "$SOFTWARE_ROOT/$_bname" ]]; then
-                if sudo cp "$SOFTWARE_ROOT/$_bname" "$_hpath" 2>/dev/null; then
-                    _copied+=("$_hpath")
-                    info "  Copied (temporary): $_hpath ← $SOFTWARE_ROOT/$_bname"
-                else
-                    warn "Could not copy to $_hpath — mkfs may fail."
-                fi
-            fi
-        done < <(grep -oE '/usr(/local)?/bin/cvmfs_[a-z_]+' "$CVMFS_SERVER_BIN" 2>/dev/null | sort -u || true)
 
         # ── Clean up any partial registration from a previous failed run ─────────
         if [[ -d "/etc/cvmfs/repositories.d/$REPO_NAME" ]]; then
@@ -478,29 +481,22 @@ else
         fi
 
         # ── Run mkfs ─────────────────────────────────────────────────────────────
-        # CVMFS_TESTBED=true tells cvmfs_server_mkfs to skip Apache vhost setup
-        # (configure_apache=0): no reload_apache, no wait_for_apache poll against
-        # the Docker-internal stratum0 URL.
-        # sudo strips PATH; pass SOFTWARE_ROOT explicitly so bare binary names
-        # (e.g. cvmfs_swissknife) resolve correctly alongside the hard-coded paths.
-        info "Running: sudo env CVMFS_TESTBED=true PATH=$SOFTWARE_ROOT:... LD_LIBRARY_PATH=$SOFTWARE_ROOT cvmfs_server mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
+        # CVMFS_TESTBED=true  — skips Apache vhost setup (cvmfs_server_mkfs.sh).
+        # CVMFS_TESTBED_SOFTWARE_ROOT — tells cvmfs_server_{coda,util}.sh where
+        #   binaries (cvmfs_publish, cvmfs_swissknife) and libraries live, so
+        #   setcap runs on the real files in SOFTWARE_ROOT and LD_LIBRARY_PATH is
+        #   set correctly for all child processes.
+        # Nothing is copied to /usr/bin or any system directory.
+        info "Running: sudo env CVMFS_TESTBED=true CVMFS_TESTBED_SOFTWARE_ROOT=$SOFTWARE_ROOT ... cvmfs_server mkfs"
         _mkfs_ok=false
         if sudo env \
                 CVMFS_TESTBED=true \
+                CVMFS_TESTBED_SOFTWARE_ROOT="$SOFTWARE_ROOT" \
                 PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-                LD_LIBRARY_PATH="$SOFTWARE_ROOT" \
                 "$CVMFS_SERVER_BIN" mkfs -I \
                 -w "http://stratum0/cvmfs/$REPO_NAME" \
                 -o "$USER" "$REPO_NAME"; then
             _mkfs_ok=true
-        fi
-
-        # ── Remove temporary binary copies ────────────────────────────────────────
-        if [[ ${#_copied[@]} -gt 0 ]]; then
-            info "Removing temporary binary copies ..."
-            for _dest in "${_copied[@]}"; do
-                sudo rm -f "$_dest" 2>/dev/null || true
-            done
         fi
 
         if $_mkfs_ok; then
@@ -528,10 +524,12 @@ else
 fi
 
 # ── Print next-steps summary ──────────────────────────────────────────────────
+# Grafana moves to port 3001 when the bits overlay is active (docker-compose.bits.yml
+# remaps it to avoid conflict with Gitea on 3000).
 GRAFANA_PORT=3000
-[[ -n "${GITEA_ADMIN_PASSWORD:-}" ]] && _BITS_ENABLED=true || _BITS_ENABLED=false
-# If the bits overlay is expected, Grafana moves to 3001 (docker-compose.bits.yml).
-[[ -n "${BITS_CONSOLE_SRC:-}" ]] && GRAFANA_PORT=3001
+_BITS_AVAILABLE=false
+[[ -d "$SCRIPT_DIR/bits-console" ]] && _BITS_AVAILABLE=true
+$_BITS_AVAILABLE && GRAFANA_PORT=3001
 
 echo ""
 echo "========================================================"
@@ -542,7 +540,7 @@ echo "  Software root:        $SOFTWARE_ROOT"
 echo "  .env file:            $ENV_FILE"
 echo "  Repository:           $REPO_NAME"
 echo "  API token (prepub):   ${PREPUB_API_TOKEN:0:16}...  (see $ENV_FILE for full value)"
-if [[ -n "${BITS_CONSOLE_SRC:-}" ]]; then
+if $_BITS_AVAILABLE && [[ -n "${GITEA_ADMIN_PASSWORD:-}" ]]; then
 echo "  Gitea admin user:     ${GITEA_ADMIN_USER:-gitea-admin}"
 echo "  Gitea admin password: ${GITEA_ADMIN_PASSWORD:0:8}...  (see $ENV_FILE for full value)"
 fi
