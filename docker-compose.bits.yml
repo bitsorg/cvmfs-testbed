@@ -1,5 +1,3 @@
-version: '3.9'
-
 # docker-compose.bits.yml — Overlay that adds Gitea (git hosting + bits-console Pages)
 # and the one-shot seeder to the CVMFS testbed.
 #

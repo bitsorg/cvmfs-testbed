@@ -1,5 +1,3 @@
-version: '3.9'
-
 # docker-compose.mqtt.yml — Override file that enables the MQTT control-plane
 # path for the cvmfs-prepub testbed.
 #

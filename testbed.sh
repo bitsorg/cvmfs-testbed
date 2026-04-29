@@ -137,6 +137,54 @@ cmd_start() {
         exit 1
     fi
 
+    # Preflight: SOFTWARE_ROOT binaries must be regular files, not directories
+    local sw="${SOFTWARE_ROOT:-${TESTBED_ROOT}/software}"
+    local missing=()
+    for bin in cvmfs_gateway cvmfs-prepub cvmfs2 cvmfs_talk; do
+        local p="$sw/$bin"
+        if [[ -d "$p" ]]; then
+            error "  $p is a directory, not a binary."
+            error "  Docker created it as a placeholder when the file was missing."
+            error "  Remove it: rm -rf $p"
+            missing+=("$bin")
+        elif [[ ! -f "$p" ]]; then
+            warn "  $p not found — container will fail to start."
+            missing+=("$bin")
+        elif [[ ! -x "$p" ]]; then
+            error "  $p exists but is not executable. Run: chmod +x $p"
+            missing+=("$bin")
+        fi
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        error "Missing or broken binaries in $sw: ${missing[*]}"
+        error "Copy the built binaries there, then re-run: ./testbed.sh start"
+        exit 1
+    fi
+
+    # Preflight: config files must be regular files, not directories
+    local cfg_root="${TESTBED_ROOT}/config"
+    local bad_configs=()
+    for cfg in \
+        "cvmfs-prepub/config.yaml" \
+        "gateway/gw.json" \
+        "gateway/user.json" \
+        "gateway/repo.json" \
+        "stratum1-a/config.yaml" \
+        "stratum1-b/config.yaml"; do
+        local p="$cfg_root/$cfg"
+        if [[ -d "$p" ]]; then
+            error "  $p is a directory (Docker placeholder). Remove it: rm -rf $p"
+            bad_configs+=("$cfg")
+        elif [[ ! -f "$p" ]]; then
+            error "  $p is missing."
+            bad_configs+=("$cfg")
+        fi
+    done
+    if [[ ${#bad_configs[@]} -gt 0 ]]; then
+        error "Config files missing or corrupted. Run: ./testbed.sh init"
+        exit 1
+    fi
+
     if $USE_BITS && [[ -z "${BITS_CONSOLE_SRC:-}" ]]; then
         error "--bits requires BITS_CONSOLE_SRC to be set in .env or via --bits-src"
         exit 1
@@ -149,8 +197,32 @@ cmd_start() {
     info "Starting services ..."
     run_compose up -d
 
-    # Show status after a brief settle
-    sleep 3
+    # Wait for services to initialise, then show health
+    info "Waiting for services to initialise ..."
+    local deadline=$(( $(date +%s) + 60 ))
+    local all_up=false
+    while [[ $(date +%s) -lt $deadline ]]; do
+        sleep 5
+        local ok=true
+        for url in \
+            "http://localhost:8080/api/v1/version" \
+            "http://localhost:4929/api/v1/meta/info" \
+            "http://localhost:8090/"; do
+            curl -sf --max-time 2 "$url" > /dev/null 2>&1 || { ok=false; break; }
+        done
+        if $USE_BITS; then
+            curl -sf --max-time 2 "http://localhost:3000/api/v1/version" > /dev/null 2>&1 || ok=false
+        fi
+        if $ok; then
+            all_up=true
+            break
+        fi
+        echo -n "."
+    done
+    echo ""
+    if ! $all_up; then
+        warn "Some services did not respond within 60 s — check logs: ./testbed.sh logs"
+    fi
     cmd_status
 }
 
