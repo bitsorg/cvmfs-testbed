@@ -495,15 +495,14 @@ else
         while IFS= read -r _hpath; do
             _bname="$(basename "$_hpath")"
             if [[ ! -e "$_hpath" ]] && [[ -x "$SOFTWARE_ROOT/$_bname" ]]; then
-                _dest="/usr/local/bin/$_bname"
-                if [[ ! -e "$_dest" ]]; then
-                    if sudo ln -sf "$SOFTWARE_ROOT/$_bname" "$_dest" 2>/dev/null; then
-                        _symlinked+=("$_dest")
-                        info "  Symlinked (temporary): $_dest → $SOFTWARE_ROOT/$_bname"
-                    else
-                        warn "Could not create symlink $_dest — mkfs may fail."
-                        warn "Try manually: sudo ln -sf $SOFTWARE_ROOT/$_bname $_dest"
-                    fi
+                # Create the symlink at the exact hardcoded path cvmfs_server uses.
+                # /usr/local/bin would not help — the script never consults PATH.
+                if sudo ln -sf "$SOFTWARE_ROOT/$_bname" "$_hpath" 2>/dev/null; then
+                    _symlinked+=("$_hpath")
+                    info "  Symlinked (temporary): $_hpath → $SOFTWARE_ROOT/$_bname"
+                else
+                    warn "Could not create symlink $_hpath — mkfs may fail."
+                    warn "Try manually: sudo ln -sf $SOFTWARE_ROOT/$_bname $_hpath"
                 fi
             fi
         done < <(grep -oE '/usr(/local)?/bin/cvmfs_[a-z_]+' "$CVMFS_SERVER_BIN" 2>/dev/null | sort -u)
