@@ -194,7 +194,7 @@ fi
 info "Creating directory structure under $TESTBED_ROOT ..."
 mkdir -p \
     "$TESTBED_ROOT/software" \
-    "$TESTBED_ROOT/cvmfs" \
+    "$TESTBED_ROOT/repos" \
     "$TESTBED_ROOT/data/spool" \
     "$TESTBED_ROOT/data/s1a" \
     "$TESTBED_ROOT/data/s1b" \
@@ -373,7 +373,7 @@ info "Checking CVMFS repository..."
 # same after a successful init, but may differ if TESTBED_ROOT changed).
 _repo_published=false
 for _rpath in \
-    "$TESTBED_ROOT/cvmfs/$REPO_NAME/.cvmfspublished" \
+    "$TESTBED_ROOT/repos/$REPO_NAME/.cvmfspublished" \
     "/srv/cvmfs/$REPO_NAME/.cvmfspublished"; do
     [[ -f "$_rpath" ]] && { _repo_published=true; break; }
 done
@@ -387,48 +387,48 @@ else
     if [[ -L "/srv/cvmfs" ]]; then
         # Symlink exists — verify it points to our TESTBED_ROOT.
         _target="$(readlink -f /srv/cvmfs)"
-        _want="$(readlink -f "$TESTBED_ROOT/cvmfs")"
+        _want="$(readlink -f "$TESTBED_ROOT/repos")"
         if [[ "$_target" != "$_want" ]]; then
             warn "/srv/cvmfs currently points to $_target"
             warn "Expected: $_want"
             read -rp "Remove stale symlink and recreate it? [y/N] " _fix
             if [[ "${_fix,,}" == "y" ]]; then
-                if sudo rm /srv/cvmfs && sudo ln -s "$TESTBED_ROOT/cvmfs" /srv/cvmfs; then
-                    info "Recreated /srv/cvmfs → $TESTBED_ROOT/cvmfs"
+                if sudo rm /srv/cvmfs && sudo ln -s "$TESTBED_ROOT/repos" /srv/cvmfs; then
+                    info "Recreated /srv/cvmfs → $TESTBED_ROOT/repos"
                 else
                     warn "Failed to recreate /srv/cvmfs — CVMFS repo init skipped."
                     CVMFS_REPO_INIT_OK=false
                 fi
             else
                 warn "Skipping CVMFS repo init.  Fix manually with:"
-                warn "  sudo rm /srv/cvmfs && sudo ln -s $TESTBED_ROOT/cvmfs /srv/cvmfs"
+                warn "  sudo rm /srv/cvmfs && sudo ln -s $TESTBED_ROOT/repos /srv/cvmfs"
                 CVMFS_REPO_INIT_OK=false
             fi
         else
-            info "/srv/cvmfs already points to $TESTBED_ROOT/cvmfs — OK."
+            info "/srv/cvmfs already points to $TESTBED_ROOT/repos — OK."
         fi
     elif [[ -d "/srv/cvmfs" ]]; then
         warn "/srv/cvmfs exists as a real directory, not a symlink."
         read -rp "Remove it and replace with a symlink? [y/N] " _fix
         if [[ "${_fix,,}" == "y" ]]; then
-            if sudo rm -rf /srv/cvmfs && sudo ln -s "$TESTBED_ROOT/cvmfs" /srv/cvmfs; then
-                info "Replaced /srv/cvmfs with symlink → $TESTBED_ROOT/cvmfs"
+            if sudo rm -rf /srv/cvmfs && sudo ln -s "$TESTBED_ROOT/repos" /srv/cvmfs; then
+                info "Replaced /srv/cvmfs with symlink → $TESTBED_ROOT/repos"
             else
                 warn "Failed — CVMFS repo init skipped."
                 CVMFS_REPO_INIT_OK=false
             fi
         else
             warn "Skipping CVMFS repo init.  Fix manually with:"
-            warn "  sudo rm -rf /srv/cvmfs && sudo ln -s $TESTBED_ROOT/cvmfs /srv/cvmfs"
+            warn "  sudo rm -rf /srv/cvmfs && sudo ln -s $TESTBED_ROOT/repos /srv/cvmfs"
             CVMFS_REPO_INIT_OK=false
         fi
-    elif ! sudo ln -s "$TESTBED_ROOT/cvmfs" /srv/cvmfs 2>/dev/null; then
-        warn "Cannot create /srv/cvmfs → $TESTBED_ROOT/cvmfs (/srv may be read-only)."
+    elif ! sudo ln -s "$TESTBED_ROOT/repos" /srv/cvmfs 2>/dev/null; then
+        warn "Cannot create /srv/cvmfs → $TESTBED_ROOT/repos (/srv may be read-only)."
         warn "CVMFS repository init skipped. Create the symlink manually and re-run:"
-        warn "  sudo ln -s $TESTBED_ROOT/cvmfs /srv/cvmfs"
+        warn "  sudo ln -s $TESTBED_ROOT/repos /srv/cvmfs"
         CVMFS_REPO_INIT_OK=false
     else
-        info "Created symlink /srv/cvmfs → $TESTBED_ROOT/cvmfs"
+        info "Created symlink /srv/cvmfs → $TESTBED_ROOT/repos"
     fi
 
     if $CVMFS_REPO_INIT_OK; then
@@ -509,7 +509,7 @@ else
                     warn "  $TESTBED_ROOT/config/keys/"
                 fi
             done
-            sudo chown -R "$USER:$(id -gn)" "$TESTBED_ROOT/cvmfs/$REPO_NAME"
+            sudo chown -R "$USER:$(id -gn)" "$TESTBED_ROOT/repos/$REPO_NAME"
             success "CVMFS repository initialised."
         else
             warn "cvmfs_server mkfs failed — check output above."

@@ -400,7 +400,7 @@ cmd_clean() {
     if [[ -n "${TESTBED_ROOT:-}" ]]; then
         local env_file
         env_file="$(_env_file)"
-        for subdir in data config cvmfs; do
+        for subdir in data config repos; do
             if [[ -d "$TESTBED_ROOT/$subdir" ]]; then
                 info "Removing $TESTBED_ROOT/$subdir ..."
                 sudo rm -rf "${TESTBED_ROOT:?}/$subdir"

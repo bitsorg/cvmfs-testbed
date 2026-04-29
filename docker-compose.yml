@@ -10,7 +10,7 @@ services:
     volumes:
       - ${SOFTWARE_ROOT}/cvmfs_gateway:/usr/local/bin/cvmfs_gateway:ro
       - ${TESTBED_ROOT}/config/gateway:/etc/cvmfs/gateway:ro
-      - ${TESTBED_ROOT}/cvmfs/${REPO_NAME}:/srv/cvmfs/${REPO_NAME}
+      - ${TESTBED_ROOT}/repos/${REPO_NAME}:/srv/cvmfs/${REPO_NAME}
       - ${TESTBED_ROOT}/config/keys:/etc/cvmfs/keys:ro
     ports:
       - "4929:4929"
@@ -24,7 +24,7 @@ services:
     build:
       context: ./stratum0
     volumes:
-      - ${TESTBED_ROOT}/cvmfs:/usr/local/apache2/htdocs/cvmfs:ro
+      - ${TESTBED_ROOT}/repos:/usr/local/apache2/htdocs/cvmfs:ro
     ports:
       - "8090:80"
     networks:
@@ -44,7 +44,7 @@ services:
       PREPUB_HMAC_SECRET: ${PREPUB_HMAC_SECRET}
     volumes:
       - ${SOFTWARE_ROOT}/cvmfs-prepub:/usr/local/bin/cvmfs-prepub:ro
-      - ${TESTBED_ROOT}/cvmfs/${REPO_NAME}:/data/cas
+      - ${TESTBED_ROOT}/repos/${REPO_NAME}:/data/cas
       - ${TESTBED_ROOT}/data/spool:/data/spool
       - ${TESTBED_ROOT}/config/cvmfs-prepub/config.yaml:/etc/cvmfs-prepub/config.yaml:ro
     ports:

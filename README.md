@@ -208,8 +208,8 @@ cvmfs-testbed/               ← this repository
             └── cvmfs-prepub.json
 
 ${TESTBED_ROOT}/             ← All persistent runtime state (default: $HOME/cvmfs-testbed)
-├── cvmfs/                   # CVMFS repository (created by cvmfs_server mkfs)
-│   └── ${REPO_NAME}/
+├── repos/                   # CVMFS repository data (created by cvmfs_server mkfs,
+│   └── ${REPO_NAME}/        #   symlinked from /srv/cvmfs — NOT the source tree)
 │       ├── .cvmfspublished
 │       ├── .cvmfswhitelist
 │       └── data/
