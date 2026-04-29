@@ -90,11 +90,17 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --bits)                USE_BITS=true;                    shift ;;
         --mqtt)                USE_MQTT=true;                    shift ;;
-        --bits-src)            BITS_SRC_OVERRIDE="$2";           shift 2 ;;
+        --bits-src)
+            [[ $# -ge 2 ]] || { error "--bits-src requires a value"; exit 1; }
+            BITS_SRC_OVERRIDE="$2"; shift 2 ;;
         --bits-src=*)          BITS_SRC_OVERRIDE="${1#*=}";      shift ;;
-        --software-root)       SOFTWARE_ROOT_OVERRIDE="$2";      shift 2 ;;
+        --software-root)
+            [[ $# -ge 2 ]] || { error "--software-root requires a value"; exit 1; }
+            SOFTWARE_ROOT_OVERRIDE="$2"; shift 2 ;;
         --software-root=*)     SOFTWARE_ROOT_OVERRIDE="${1#*=}"; shift ;;
-        --testbed-root)        TESTBED_ROOT_OVERRIDE="$2";       shift 2 ;;
+        --testbed-root)
+            [[ $# -ge 2 ]] || { error "--testbed-root requires a value"; exit 1; }
+            TESTBED_ROOT_OVERRIDE="$2"; shift 2 ;;
         --testbed-root=*)      TESTBED_ROOT_OVERRIDE="${1#*=}";  shift ;;
         --*)  error "Unknown option: $1"; exit 1 ;;
         *)    POSITIONAL_ARGS+=("$1");                           shift ;;
@@ -147,16 +153,16 @@ load_env() {
 
 # ── Compose helpers ───────────────────────────────────────────────────────────
 compose_files() {
-    local files="-f $SCRIPT_DIR/docker-compose.yml"
-    $USE_MQTT && files="$files -f $SCRIPT_DIR/docker-compose.mqtt.yml"
-    $USE_BITS && files="$files -f $SCRIPT_DIR/docker-compose.bits.yml"
-    echo "$files"
+    # Returns the -f flags as an array (via nameref or by printing to caller).
+    # Using a global array avoids word-splitting issues with paths containing spaces.
+    _COMPOSE_FILES=("-f" "$SCRIPT_DIR/docker-compose.yml")
+    $USE_MQTT && _COMPOSE_FILES+=("-f" "$SCRIPT_DIR/docker-compose.mqtt.yml")
+    $USE_BITS && _COMPOSE_FILES+=("-f" "$SCRIPT_DIR/docker-compose.bits.yml")
 }
 
 run_compose() {
-    # Word-splitting of compose_files output is intentional here.
-    # shellcheck disable=SC2046
-    docker compose $(compose_files) "$@"
+    compose_files
+    docker compose "${_COMPOSE_FILES[@]}" "$@"
 }
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -257,7 +263,8 @@ cmd_start() {
 
     # ── Wait for readiness ─────────────────────────────────────────────────────
     info "Waiting for services to initialise ..."
-    local deadline=$(( $(date +%s) + 60 ))
+    local deadline
+    deadline=$(( $(date +%s) + 60 ))
     local all_up=false
     while [[ $(date +%s) -lt $deadline ]]; do
         sleep 5
@@ -407,7 +414,9 @@ cmd_reset() {
 }
 
 cmd_help() {
-    sed -n '/^# testbed\.sh/,/^[^#]/p' "${BASH_SOURCE[0]}" \
+    # Print the file-header comment block (lines 2+ that start with #).
+    # Skip line 1 (the shebang) by anchoring the range to '# testbed.sh —'.
+    sed -n '/^# testbed\.sh —/,/^[^#]/p' "${BASH_SOURCE[0]}" \
         | grep '^#' | sed 's/^# \?//'
 }
 

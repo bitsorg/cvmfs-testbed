@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # Colors for output
@@ -24,7 +24,8 @@ fi
 
 # Create test data
 TEST_DIR=$(mktemp -d)
-trap "rm -rf $TEST_DIR" EXIT
+# Single-quoted trap: $TEST_DIR is expanded at trap-fire time, not at definition time.
+trap 'rm -rf "${TEST_DIR}"' EXIT
 
 mkdir -p "$TEST_DIR/smoke/usr/share/test-pkg"
 echo "hello cvmfs $(date)" > "$TEST_DIR/smoke/usr/share/test-pkg/hello.txt"
@@ -38,13 +39,14 @@ echo "Created test tar: $SMOKE_TAR"
 TAG_NAME="smoke-$(date +%Y%m%d-%H%M%S)"
 echo "Submitting job with tag: $TAG_NAME"
 
-RESPONSE=$(curl -s -X POST \
+RESPONSE=$(curl -sf --max-time 60 \
+    -X POST \
     -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
     -F "repo=${REPO_NAME}" \
     -F "path=test/smoke" \
     -F "tar=@${SMOKE_TAR}" \
     -F "tag_name=${TAG_NAME}" \
-    "${PREPUB_URL}/api/v1/jobs")
+    "${PREPUB_URL}/api/v1/jobs") || RESPONSE=""
 
 JOB_ID=$(echo "$RESPONSE" | jq -r '.job_id // empty')
 
@@ -64,9 +66,10 @@ SLEEP_INTERVAL=2
 while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
     ITERATION=$((ITERATION + 1))
 
-    JOB_STATUS=$(curl -s -X GET \
+    JOB_STATUS=$(curl -sf --max-time 10 \
+        -X GET \
         -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
-        "${PREPUB_URL}/api/v1/jobs/${JOB_ID}")
+        "${PREPUB_URL}/api/v1/jobs/${JOB_ID}") || JOB_STATUS=""
 
     STATE=$(echo "$JOB_STATUS" | jq -r '.state // empty')
 
@@ -95,7 +98,14 @@ done
 
 echo -e "${RED}Job timed out after ${MAX_ITERATIONS} iterations${NC}"
 echo "Final job response:"
-curl -s -X GET \
+FINAL_STATUS=""
+FINAL_STATUS=$(curl -sf --max-time 10 \
+    -X GET \
     -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
-    "${PREPUB_URL}/api/v1/jobs/${JOB_ID}" | jq .
+    "${PREPUB_URL}/api/v1/jobs/${JOB_ID}") || FINAL_STATUS=""
+if [[ -n "${FINAL_STATUS}" ]]; then
+    echo "${FINAL_STATUS}" | jq .
+else
+    echo "(could not fetch final status)"
+fi
 exit 1

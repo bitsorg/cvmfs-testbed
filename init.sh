@@ -54,9 +54,13 @@ SOFTWARE_ROOT_ARG=""
 TESTBED_ROOT_ARG=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --software-root)   SOFTWARE_ROOT_ARG="$2"; shift 2 ;;
+        --software-root)
+            [[ $# -ge 2 ]] || { error "--software-root requires a value"; exit 1; }
+            SOFTWARE_ROOT_ARG="$2"; shift 2 ;;
         --software-root=*) SOFTWARE_ROOT_ARG="${1#*=}"; shift ;;
-        --testbed-root)    TESTBED_ROOT_ARG="$2"; shift 2 ;;
+        --testbed-root)
+            [[ $# -ge 2 ]] || { error "--testbed-root requires a value"; exit 1; }
+            TESTBED_ROOT_ARG="$2"; shift 2 ;;
         --testbed-root=*)  TESTBED_ROOT_ARG="${1#*=}"; shift ;;
         *)                 shift ;;   # silently skip unknown flags from testbed.sh
     esac
@@ -80,7 +84,8 @@ if [[ -f "$ENV_FILE" ]]; then
     source "$ENV_FILE"
 else
     info "No .env found at $ENV_FILE — will create it."
-    REPO_NAME="${REPO_NAME:-test.cvmfs.io}"
+    # Do NOT default REPO_NAME here; let the interactive prompt below fire
+    # so the user can choose a custom repository FQDN on first run.
 fi
 
 # ── Apply command-line overrides (highest priority) ───────────────────────────
@@ -193,20 +198,35 @@ if [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
     GITEA_ADMIN_USER="${GITEA_ADMIN_USER:-gitea-admin}"
 
     # Write .env from template, substituting all known variables.
-    # SOFTWARE_ROOT uses the resolved value (honours --software-root override).
-    sed \
-        -e "s|^TESTBED_ROOT=.*|TESTBED_ROOT=$TESTBED_ROOT|" \
-        -e "s|^SOFTWARE_ROOT=.*|SOFTWARE_ROOT=$SOFTWARE_ROOT|" \
-        -e "s|^REPO_NAME=.*|REPO_NAME=$REPO_NAME|" \
-        -e "s|^CVMFS_GATEWAY_SECRET=|CVMFS_GATEWAY_SECRET=$CVMFS_GATEWAY_SECRET|" \
-        -e "s|^PREPUB_API_TOKEN=|PREPUB_API_TOKEN=$PREPUB_API_TOKEN|" \
-        -e "s|^PREPUB_HMAC_SECRET=|PREPUB_HMAC_SECRET=$PREPUB_HMAC_SECRET|" \
-        -e "s|^CVMFS_GATEWAY_KEY_ID=.*|CVMFS_GATEWAY_KEY_ID=$CVMFS_GATEWAY_KEY_ID|" \
-        -e "s|^GITEA_ADMIN_USER=.*|GITEA_ADMIN_USER=$GITEA_ADMIN_USER|" \
-        -e "s|^GITEA_ADMIN_PASSWORD=|GITEA_ADMIN_PASSWORD=$GITEA_ADMIN_PASSWORD|" \
-        -e "s|^GITEA_SECRET_KEY=|GITEA_SECRET_KEY=$GITEA_SECRET_KEY|" \
-        -e "s|^GITEA_INTERNAL_TOKEN=|GITEA_INTERNAL_TOKEN=$GITEA_INTERNAL_TOKEN|" \
-        -e "s|^BITS_CONSOLE_SRC=.*|BITS_CONSOLE_SRC=${BITS_CONSOLE_SRC:-}|" \
+    # Use awk instead of sed: awk's gsub replacement is literal, so values
+    # containing '|', '&', '\', or '/' cannot corrupt the substitution.
+    awk \
+        -v TESTBED_ROOT="$TESTBED_ROOT" \
+        -v SOFTWARE_ROOT="$SOFTWARE_ROOT" \
+        -v REPO_NAME="$REPO_NAME" \
+        -v CVMFS_GATEWAY_SECRET="$CVMFS_GATEWAY_SECRET" \
+        -v PREPUB_API_TOKEN="$PREPUB_API_TOKEN" \
+        -v PREPUB_HMAC_SECRET="$PREPUB_HMAC_SECRET" \
+        -v CVMFS_GATEWAY_KEY_ID="$CVMFS_GATEWAY_KEY_ID" \
+        -v GITEA_ADMIN_USER="$GITEA_ADMIN_USER" \
+        -v GITEA_ADMIN_PASSWORD="$GITEA_ADMIN_PASSWORD" \
+        -v GITEA_SECRET_KEY="$GITEA_SECRET_KEY" \
+        -v GITEA_INTERNAL_TOKEN="$GITEA_INTERNAL_TOKEN" \
+        -v BITS_CONSOLE_SRC="${BITS_CONSOLE_SRC:-}" \
+        'BEGIN { FS="="; OFS="=" }
+         /^TESTBED_ROOT=/          { $2=TESTBED_ROOT;          print; next }
+         /^SOFTWARE_ROOT=/         { $2=SOFTWARE_ROOT;         print; next }
+         /^REPO_NAME=/             { $2=REPO_NAME;             print; next }
+         /^CVMFS_GATEWAY_SECRET=$/ { $2=CVMFS_GATEWAY_SECRET;  print; next }
+         /^PREPUB_API_TOKEN=$/     { $2=PREPUB_API_TOKEN;      print; next }
+         /^PREPUB_HMAC_SECRET=$/   { $2=PREPUB_HMAC_SECRET;    print; next }
+         /^CVMFS_GATEWAY_KEY_ID=/  { $2=CVMFS_GATEWAY_KEY_ID;  print; next }
+         /^GITEA_ADMIN_USER=/      { $2=GITEA_ADMIN_USER;      print; next }
+         /^GITEA_ADMIN_PASSWORD=$/ { $2=GITEA_ADMIN_PASSWORD;  print; next }
+         /^GITEA_SECRET_KEY=$/     { $2=GITEA_SECRET_KEY;      print; next }
+         /^GITEA_INTERNAL_TOKEN=$/ { $2=GITEA_INTERNAL_TOKEN;  print; next }
+         /^BITS_CONSOLE_SRC=/      { $2=BITS_CONSOLE_SRC;      print; next }
+         { print }' \
         "$SCRIPT_DIR/.env.example" > "$ENV_FILE"
     success "Generated secrets and wrote $ENV_FILE"
 else
@@ -317,7 +337,15 @@ success "stratum1-b config written."
 # Failures here are non-fatal: all config files are already written and
 # containers that don't touch the CVMFS repo will start correctly.
 info "Checking CVMFS repository..."
-if [[ -f "$TESTBED_ROOT/cvmfs/$REPO_NAME/.cvmfspublished" ]]; then
+# Check both the direct path and via the /srv/cvmfs symlink (they should be the
+# same after a successful init, but may differ if TESTBED_ROOT changed).
+_repo_published=false
+for _rpath in \
+    "$TESTBED_ROOT/cvmfs/$REPO_NAME/.cvmfspublished" \
+    "/srv/cvmfs/$REPO_NAME/.cvmfspublished"; do
+    [[ -f "$_rpath" ]] && { _repo_published=true; break; }
+done
+if $_repo_published; then
     success "CVMFS repository already initialised."
 else
     info "Initialising CVMFS repository..."
@@ -393,9 +421,11 @@ else
     fi
 
     if $CVMFS_REPO_INIT_OK; then
-        info "Running: sudo $CVMFS_SERVER_BIN mkfs -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
+        info "Running: sudo $CVMFS_SERVER_BIN mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
+        # -I  force-initialise even when storage already contains data
+        #     (e.g. from a previous partial run or a stratum0 replica).
         # sudo strips PATH by default; pass CVMFS_SERVER_BIN as an explicit path.
-        if sudo "$CVMFS_SERVER_BIN" mkfs \
+        if sudo "$CVMFS_SERVER_BIN" mkfs -I \
                 -w "http://stratum0/cvmfs/$REPO_NAME" \
                 -o "$USER" "$REPO_NAME"; then
             # Copy signing keys produced by mkfs into our config tree.
@@ -405,10 +435,14 @@ else
                 "/etc/cvmfs/keys/master.pub"; do
                 if [[ -f "$_keyfile" ]]; then
                     sudo cp "$_keyfile" "$TESTBED_ROOT/config/keys/"
-                    sudo chown "$USER:$USER" "$TESTBED_ROOT/config/keys/$(basename "$_keyfile")"
+                    sudo chown "$USER:$(id -gn)" "$TESTBED_ROOT/config/keys/$(basename "$_keyfile")"
+                else
+                    warn "Key file not found after mkfs: $_keyfile"
+                    warn "The cvmfs-client container will fail to mount until keys are copied to:"
+                    warn "  $TESTBED_ROOT/config/keys/"
                 fi
             done
-            sudo chown -R "$USER:$USER" "$TESTBED_ROOT/cvmfs/$REPO_NAME"
+            sudo chown -R "$USER:$(id -gn)" "$TESTBED_ROOT/cvmfs/$REPO_NAME"
             success "CVMFS repository initialised."
         else
             warn "cvmfs_server mkfs failed — check output above."
