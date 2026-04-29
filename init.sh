@@ -488,7 +488,7 @@ else
                 CVMFS_TESTBED=true \
                 CVMFS_TESTBED_SOFTWARE_ROOT="$SOFTWARE_ROOT" \
                 PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-                "$CVMFS_SERVER_BIN" mkfs -I \
+                "$CVMFS_SERVER_BIN" mkfs -I -P \
                 -w "http://stratum0/cvmfs/$REPO_NAME" \
                 -o "$USER" "$REPO_NAME"; then
             _mkfs_ok=true
