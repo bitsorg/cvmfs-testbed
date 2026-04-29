@@ -483,11 +483,12 @@ else
         # the Docker-internal stratum0 URL.
         # sudo strips PATH; pass SOFTWARE_ROOT explicitly so bare binary names
         # (e.g. cvmfs_swissknife) resolve correctly alongside the hard-coded paths.
-        info "Running: sudo env CVMFS_TESTBED=true PATH=$SOFTWARE_ROOT:... cvmfs_server mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
+        info "Running: sudo env CVMFS_TESTBED=true PATH=$SOFTWARE_ROOT:... LD_LIBRARY_PATH=$SOFTWARE_ROOT cvmfs_server mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
         _mkfs_ok=false
         if sudo env \
                 CVMFS_TESTBED=true \
                 PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+                LD_LIBRARY_PATH="$SOFTWARE_ROOT" \
                 "$CVMFS_SERVER_BIN" mkfs -I \
                 -w "http://stratum0/cvmfs/$REPO_NAME" \
                 -o "$USER" "$REPO_NAME"; then
