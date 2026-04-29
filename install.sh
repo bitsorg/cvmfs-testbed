@@ -36,7 +36,18 @@ error()   { echo -e "${RED}[ERR ]${NC}  $*"; }
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CVMFS_SRC="$SCRIPT_DIR/cvmfs"
+# Preferred location: cvmfs-testbed/cvmfs/ (symlink or clone next to this script).
+# Fallback: the cvmfs/ sibling directory one level up (../cvmfs), which is the
+# layout used when cvmfs and cvmfs-testbed are siblings inside the same parent.
+if [[ -f "$SCRIPT_DIR/cvmfs/cvmfs/make_cvmfs_server.sh" ]]; then
+    CVMFS_SRC="$SCRIPT_DIR/cvmfs"
+elif [[ -f "$SCRIPT_DIR/../cvmfs/cvmfs/make_cvmfs_server.sh" ]]; then
+    CVMFS_SRC="$(cd "$SCRIPT_DIR/../cvmfs" && pwd)"
+    warn "Using sibling CVMFS source at $CVMFS_SRC"
+    warn "Recommended convention: ln -s ../cvmfs $SCRIPT_DIR/cvmfs"
+else
+    CVMFS_SRC="$SCRIPT_DIR/cvmfs"   # keep the canonical path for the error message
+fi
 SOFTWARE_ROOT="${SOFTWARE_ROOT:-$SCRIPT_DIR/software}"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -60,13 +71,13 @@ if [[ ! -f "$CVMFS_SRC/cvmfs/make_cvmfs_server.sh" ]]; then
     error "CVMFS source tree not found at $CVMFS_SRC"
     error ""
     error "The convention requires the CVMFS source to live at:"
-    error "  $CVMFS_SRC"
+    error "  $SCRIPT_DIR/cvmfs"
     error ""
     error "Either clone it there:"
-    error "  git clone https://github.com/cvmfs/cvmfs $CVMFS_SRC"
+    error "  git clone https://github.com/cvmfs/cvmfs $SCRIPT_DIR/cvmfs"
     error ""
     error "Or create a symlink from a checkout elsewhere:"
-    error "  ln -s /path/to/your/cvmfs $CVMFS_SRC"
+    error "  ln -s /path/to/your/cvmfs $SCRIPT_DIR/cvmfs"
     exit 1
 fi
 
