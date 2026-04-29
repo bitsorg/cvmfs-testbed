@@ -329,29 +329,73 @@ else
         _target="$(readlink -f /srv/cvmfs)"
         _want="$(readlink -f "$TESTBED_ROOT/cvmfs")"
         if [[ "$_target" != "$_want" ]]; then
-            warn "/srv/cvmfs exists but points to $_target (expected $_want)."
-            warn "Remove it with 'sudo rm /srv/cvmfs' and re-run init, or set a"
-            warn "TESTBED_ROOT that matches the existing symlink."
-            CVMFS_REPO_INIT_OK=false
+            warn "/srv/cvmfs currently points to $_target"
+            warn "Expected: $_want"
+            read -rp "Remove stale symlink and recreate it? [y/N] " _fix
+            if [[ "${_fix,,}" == "y" ]]; then
+                if sudo rm /srv/cvmfs && sudo ln -s "$TESTBED_ROOT/cvmfs" /srv/cvmfs; then
+                    info "Recreated /srv/cvmfs → $TESTBED_ROOT/cvmfs"
+                else
+                    warn "Failed to recreate /srv/cvmfs — CVMFS repo init skipped."
+                    CVMFS_REPO_INIT_OK=false
+                fi
+            else
+                warn "Skipping CVMFS repo init.  Fix manually with:"
+                warn "  sudo rm /srv/cvmfs && sudo ln -s $TESTBED_ROOT/cvmfs /srv/cvmfs"
+                CVMFS_REPO_INIT_OK=false
+            fi
         else
             info "/srv/cvmfs already points to $TESTBED_ROOT/cvmfs — OK."
         fi
     elif [[ -d "/srv/cvmfs" ]]; then
         warn "/srv/cvmfs exists as a real directory, not a symlink."
-        warn "Remove it with 'sudo rm -rf /srv/cvmfs' and re-run init."
-        CVMFS_REPO_INIT_OK=false
+        read -rp "Remove it and replace with a symlink? [y/N] " _fix
+        if [[ "${_fix,,}" == "y" ]]; then
+            if sudo rm -rf /srv/cvmfs && sudo ln -s "$TESTBED_ROOT/cvmfs" /srv/cvmfs; then
+                info "Replaced /srv/cvmfs with symlink → $TESTBED_ROOT/cvmfs"
+            else
+                warn "Failed — CVMFS repo init skipped."
+                CVMFS_REPO_INIT_OK=false
+            fi
+        else
+            warn "Skipping CVMFS repo init.  Fix manually with:"
+            warn "  sudo rm -rf /srv/cvmfs && sudo ln -s $TESTBED_ROOT/cvmfs /srv/cvmfs"
+            CVMFS_REPO_INIT_OK=false
+        fi
     elif ! sudo ln -s "$TESTBED_ROOT/cvmfs" /srv/cvmfs 2>/dev/null; then
         warn "Cannot create /srv/cvmfs → $TESTBED_ROOT/cvmfs (/srv may be read-only)."
-        warn "CVMFS repository init skipped. Create the symlink manually and re-run."
+        warn "CVMFS repository init skipped. Create the symlink manually and re-run:"
+        warn "  sudo ln -s $TESTBED_ROOT/cvmfs /srv/cvmfs"
         CVMFS_REPO_INIT_OK=false
     else
         info "Created symlink /srv/cvmfs → $TESTBED_ROOT/cvmfs"
     fi
 
     if $CVMFS_REPO_INIT_OK; then
-        info "Running: sudo $CVMFS_SERVER_BIN mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
+        # cvmfs_server mkfs refuses to run when autofs is mounted on /cvmfs.
+        # That automount is used by the CVMFS client and must be stopped first.
+        if mount | grep -q 'autofs.*on /cvmfs'; then
+            warn "autofs is mounted on /cvmfs — cvmfs_server will refuse to run."
+            read -rp "Stop autofs now (sudo systemctl stop autofs)? [y/N] " _stop_autofs
+            if [[ "${_stop_autofs,,}" == "y" ]]; then
+                if sudo systemctl stop autofs 2>/dev/null; then
+                    info "autofs stopped."
+                else
+                    warn "Failed to stop autofs — trying 'sudo umount /cvmfs' instead."
+                    sudo umount /cvmfs 2>/dev/null || true
+                fi
+            else
+                warn "Skipping CVMFS repo init. Stop autofs manually and re-run:"
+                warn "  sudo systemctl stop autofs"
+                CVMFS_REPO_INIT_OK=false
+            fi
+        fi
+    fi
+
+    if $CVMFS_REPO_INIT_OK; then
+        info "Running: sudo $CVMFS_SERVER_BIN mkfs -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
         # sudo strips PATH by default; pass CVMFS_SERVER_BIN as an explicit path.
-        if sudo "$CVMFS_SERVER_BIN" mkfs -I \
+        if sudo "$CVMFS_SERVER_BIN" mkfs \
                 -w "http://stratum0/cvmfs/$REPO_NAME" \
                 -o "$USER" "$REPO_NAME"; then
             # Copy signing keys produced by mkfs into our config tree.
