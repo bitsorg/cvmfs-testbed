@@ -478,31 +478,35 @@ else
         # and for any that are missing at the hard-coded location but present in
         # SOFTWARE_ROOT, create a symlink under /usr/local/bin/ (preferred over
         # /usr/bin/ to avoid replacing system packages accidentally).
-        # ── Create symlinks, start Apache, run mkfs, then undo both ─────────────
+        # ── Copy binaries, start Apache, run mkfs, then undo both ───────────────
         # cvmfs_server is a shell script that hard-codes /usr/(local/)bin/cvmfs_*
-        # paths and never consults PATH.  We create temporary symlinks in
-        # /usr/local/bin/ for any binary that is missing there but present in
-        # SOFTWARE_ROOT, and remove them again after mkfs regardless of outcome.
+        # paths and never consults PATH.  For each binary that is absent at its
+        # hard-coded location but present in SOFTWARE_ROOT we copy (not symlink)
+        # it to the expected path.
+        #
+        # Copies are required — not symlinks — because cvmfs_server mkfs runs
+        #   setcap cap_sys_admin+ep /usr/bin/cvmfs_swissknife
+        # and setcap(8) refuses to operate on symbolic links.  A regular-file
+        # copy at the hard-coded path is the only approach that works.
         #
         # cvmfs_server mkfs also requires Apache to be running (writes a vhost
         # config and reloads the daemon).  The testbed serves the repo via the
         # stratum0 Docker container, so Apache is started only for the duration
         # of mkfs and stopped again immediately after.
 
-        # -- Symlinks --
+        # -- Copies --
         _symlinked=()   # paths created by us; removed after mkfs
         info "Checking for hard-coded CVMFS binary paths in $CVMFS_SERVER_BIN ..."
         while IFS= read -r _hpath; do
             _bname="$(basename "$_hpath")"
             if [[ ! -e "$_hpath" ]] && [[ -x "$SOFTWARE_ROOT/$_bname" ]]; then
-                # Create the symlink at the exact hardcoded path cvmfs_server uses.
-                # /usr/local/bin would not help — the script never consults PATH.
-                if sudo ln -sf "$SOFTWARE_ROOT/$_bname" "$_hpath" 2>/dev/null; then
+                # Copy to the exact hard-coded path so setcap can operate on it.
+                if sudo cp "$SOFTWARE_ROOT/$_bname" "$_hpath" 2>/dev/null; then
                     _symlinked+=("$_hpath")
-                    info "  Symlinked (temporary): $_hpath → $SOFTWARE_ROOT/$_bname"
+                    info "  Copied (temporary): $_hpath ← $SOFTWARE_ROOT/$_bname"
                 else
-                    warn "Could not create symlink $_hpath — mkfs may fail."
-                    warn "Try manually: sudo ln -sf $SOFTWARE_ROOT/$_bname $_hpath"
+                    warn "Could not copy to $_hpath — mkfs may fail."
+                    warn "Try manually: sudo cp $SOFTWARE_ROOT/$_bname $_hpath"
                 fi
             fi
         done < <(grep -oE '/usr(/local)?/bin/cvmfs_[a-z_]+' "$CVMFS_SERVER_BIN" 2>/dev/null | sort -u)
@@ -546,7 +550,7 @@ else
             sudo systemctl stop "${APACHE_SVC}" 2>/dev/null || true
         fi
         if [[ ${#_symlinked[@]} -gt 0 ]]; then
-            info "Removing temporary symlinks ..."
+            info "Removing temporary binary copies ..."
             for _dest in "${_symlinked[@]}"; do
                 sudo rm -f "$_dest" 2>/dev/null || true
             done
