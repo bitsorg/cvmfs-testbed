@@ -145,6 +145,53 @@ if [[ -z "$CVMFS_SERVER_BIN" ]]; then
 fi
 success "Prerequisites OK  (cvmfs_server: $CVMFS_SERVER_BIN)"
 
+# ── Apache check ──────────────────────────────────────────────────────────────
+# cvmfs_server mkfs requires a local Apache (apache2/httpd) to be installed and
+# running on this host.  It writes a vhost config and reloads Apache.
+# The testbed itself serves the repository through the stratum0 Docker container
+# (port 8090), so Apache is only needed for the duration of the mkfs call.
+# init.sh starts it automatically if needed and stops it again after mkfs.
+info "Checking for Apache (required by cvmfs_server mkfs)..."
+
+APACHE_SVC=""
+for _svc in apache2 httpd; do
+    if command -v "$_svc" &>/dev/null || systemctl list-unit-files "${_svc}.service" &>/dev/null 2>&1; then
+        APACHE_SVC="$_svc"
+        break
+    fi
+done
+
+if [[ -z "$APACHE_SVC" ]]; then
+    error "Apache is not installed.  cvmfs_server mkfs requires it."
+    error "Install it with:"
+    error "  sudo apt-get install -y apache2     # Debian / Ubuntu"
+    error "  sudo yum install -y httpd           # RHEL / CentOS"
+    error "Then re-run:  ./testbed.sh init"
+    error ""
+    error "Note: after a successful init you can stop Apache — the testbed"
+    error "serves the repository via the stratum0 Docker container."
+    exit 1
+fi
+
+# Apache does not need to be running now — init.sh will start it automatically
+# just before mkfs and stop it again immediately after.
+if systemctl is-active --quiet "${APACHE_SVC}" 2>/dev/null; then
+    info "Apache (${APACHE_SVC}) is already running — will leave it running after mkfs."
+else
+    info "Apache (${APACHE_SVC}) is installed and will be started automatically for mkfs."
+fi
+
+# Check for port 80 conflicts: if something other than Apache is already bound
+# to port 80, the Apache vhost reload after mkfs will fail or be unreachable.
+if command -v ss &>/dev/null; then
+    _port80=$(ss -tlnp 2>/dev/null | awk '$4 ~ /:80$/ {print $NF}' | head -1)
+    if [[ -n "$_port80" ]] && ! echo "$_port80" | grep -qi 'apache\|httpd'; then
+        warn "Something other than Apache appears to be listening on port 80:"
+        warn "  $_port80"
+        warn "cvmfs_server mkfs may fail to reload Apache. Proceed with caution."
+    fi
+fi
+
 # Check optional act_runner for the bits overlay.
 if command -v act_runner &>/dev/null; then
     success "act_runner found — bits overlay fully supported."
@@ -421,13 +468,80 @@ else
     fi
 
     if $CVMFS_REPO_INIT_OK; then
+        # ── Symlink SOFTWARE_ROOT binaries that cvmfs_server hard-codes ──────────
+        # cvmfs_server is a shell script that hard-codes absolute paths like
+        # /usr/bin/cvmfs_publish, /usr/bin/cvmfs_swissknife, etc.  It never uses
+        # PATH for these calls.  When using a custom build in SOFTWARE_ROOT we must
+        # make those paths resolvable.
+        #
+        # Strategy: extract every /usr/(local/)bin/cvmfs_* token from the script,
+        # and for any that are missing at the hard-coded location but present in
+        # SOFTWARE_ROOT, create a symlink under /usr/local/bin/ (preferred over
+        # /usr/bin/ to avoid replacing system packages accidentally).
+        # ── Create symlinks, start Apache, run mkfs, then undo both ─────────────
+        # cvmfs_server is a shell script that hard-codes /usr/(local/)bin/cvmfs_*
+        # paths and never consults PATH.  We create temporary symlinks in
+        # /usr/local/bin/ for any binary that is missing there but present in
+        # SOFTWARE_ROOT, and remove them again after mkfs regardless of outcome.
+        #
+        # cvmfs_server mkfs also requires Apache to be running (writes a vhost
+        # config and reloads the daemon).  The testbed serves the repo via the
+        # stratum0 Docker container, so Apache is started only for the duration
+        # of mkfs and stopped again immediately after.
+
+        # -- Symlinks --
+        _symlinked=()   # paths created by us; removed after mkfs
+        info "Checking for hard-coded CVMFS binary paths in $CVMFS_SERVER_BIN ..."
+        while IFS= read -r _hpath; do
+            _bname="$(basename "$_hpath")"
+            if [[ ! -e "$_hpath" ]] && [[ -x "$SOFTWARE_ROOT/$_bname" ]]; then
+                _dest="/usr/local/bin/$_bname"
+                if [[ ! -e "$_dest" ]]; then
+                    if sudo ln -sf "$SOFTWARE_ROOT/$_bname" "$_dest" 2>/dev/null; then
+                        _symlinked+=("$_dest")
+                        info "  Symlinked (temporary): $_dest → $SOFTWARE_ROOT/$_bname"
+                    else
+                        warn "Could not create symlink $_dest — mkfs may fail."
+                        warn "Try manually: sudo ln -sf $SOFTWARE_ROOT/$_bname $_dest"
+                    fi
+                fi
+            fi
+        done < <(grep -oE '/usr(/local)?/bin/cvmfs_[a-z_]+' "$CVMFS_SERVER_BIN" 2>/dev/null | sort -u)
+
+        # -- Apache --
+        _apache_was_running=false
+        if systemctl is-active --quiet "${APACHE_SVC}" 2>/dev/null; then
+            _apache_was_running=true
+        else
+            info "Starting ${APACHE_SVC} for mkfs ..."
+            sudo systemctl start "${APACHE_SVC}" 2>/dev/null \
+                || warn "Could not start ${APACHE_SVC} — mkfs may fail."
+        fi
+
+        # -- mkfs --
         info "Running: sudo $CVMFS_SERVER_BIN mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
-        # -I  force-initialise even when storage already contains data
-        #     (e.g. from a previous partial run or a stratum0 replica).
-        # sudo strips PATH by default; pass CVMFS_SERVER_BIN as an explicit path.
+        # -I  force-initialise even when storage already contains data.
+        # sudo strips PATH; CVMFS_SERVER_BIN is the resolved absolute path.
+        _mkfs_ok=false
         if sudo "$CVMFS_SERVER_BIN" mkfs -I \
                 -w "http://stratum0/cvmfs/$REPO_NAME" \
                 -o "$USER" "$REPO_NAME"; then
+            _mkfs_ok=true
+        fi
+
+        # -- Teardown: stop Apache and remove symlinks (always, win or lose) --
+        if ! $_apache_was_running; then
+            info "Stopping ${APACHE_SVC} (started only for mkfs) ..."
+            sudo systemctl stop "${APACHE_SVC}" 2>/dev/null || true
+        fi
+        if [[ ${#_symlinked[@]} -gt 0 ]]; then
+            info "Removing temporary symlinks ..."
+            for _dest in "${_symlinked[@]}"; do
+                sudo rm -f "$_dest" 2>/dev/null || true
+            done
+        fi
+
+        if $_mkfs_ok; then
             # Copy signing keys produced by mkfs into our config tree.
             for _keyfile in \
                 "/etc/cvmfs/keys/$REPO_NAME.crt" \
