@@ -521,6 +521,35 @@ else
                 || warn "Could not start ${APACHE_SVC} — mkfs may fail."
         fi
 
+        # -- Patch cvmfs_server to skip Apache configuration --
+        # cvmfs_server mkfs calls a sub-function to write Apache vhost config and
+        # run a2enmod.  That step is not needed here — the testbed serves the repo
+        # via the stratum0 Docker container.  The sub-function is identified by the
+        # "fail (Apache configuration)" error message it guards; we extract its name
+        # and append an override that returns 0 (bash last-definition-wins rule).
+        _patched_server="$(mktemp /tmp/cvmfs_server.XXXXXX)"
+        cp "$CVMFS_SERVER_BIN" "$_patched_server"
+        chmod +x "$_patched_server"
+
+        _fail_line=$(grep -n '"fail (Apache configuration)"' "$_patched_server" 2>/dev/null \
+            | head -1 | cut -d: -f1)
+        if [[ -n "$_fail_line" ]]; then
+            # The line just before the fail message is:  if ! <apache_func> ...; then
+            # Extract the function name from the surrounding 10 lines.
+            _apache_fn=$(awk "NR>$(( _fail_line - 10 )) && NR<$_fail_line" "$_patched_server" \
+                | grep -oE '! [a-zA-Z_][a-zA-Z0-9_]*' | tail -1 | sed 's/! //')
+            if [[ -n "$_apache_fn" ]]; then
+                {
+                    printf '\n# Testbed override: Apache served via stratum0 container.\n'
+                    printf '%s() { echo "  [testbed] Apache config skipped (stratum0 container handles serving)"; return 0; }\n' \
+                        "$_apache_fn"
+                } >> "$_patched_server"
+                info "Patched cvmfs_server: Apache config function '$_apache_fn' → no-op"
+            else
+                warn "Could not identify Apache config function — mkfs may still fail at that step."
+            fi
+        fi
+
         # -- Clean up partial registration if present --
         # cvmfs_server stores per-repo metadata in /etc/cvmfs/repositories.d/<repo>/.
         # If a previous mkfs run failed mid-way, that directory exists but the repo
@@ -530,24 +559,25 @@ else
         if [[ -d "/etc/cvmfs/repositories.d/$REPO_NAME" ]]; then
             warn "Partial repository registration found in /etc/cvmfs/repositories.d/$REPO_NAME"
             warn "Running: sudo $CVMFS_SERVER_BIN rmfs -f $REPO_NAME"
-            sudo "$CVMFS_SERVER_BIN" rmfs -f "$REPO_NAME" 2>/dev/null || true
+            sudo env PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+                "$CVMFS_SERVER_BIN" rmfs -f "$REPO_NAME" 2>/dev/null || true
         fi
 
-        # -- mkfs --
-        info "Running: sudo env PATH=$SOFTWARE_ROOT:... $CVMFS_SERVER_BIN mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
+        # -- mkfs (using patched script) --
+        info "Running: sudo env PATH=$SOFTWARE_ROOT:... [patched cvmfs_server] mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
         # sudo strips PATH to its own secure_path.  cvmfs_server calls some
         # binaries with hardcoded /usr/bin/ paths (handled by the copies above)
-        # and others with bare names that rely on PATH (e.g. cvmfs_swissknife at
-        # line 198).  Pass SOFTWARE_ROOT explicitly so both styles resolve.
+        # and others with bare names that rely on PATH (e.g. cvmfs_swissknife).
+        # Pass SOFTWARE_ROOT explicitly so both call styles resolve correctly.
         _mkfs_ok=false
         if sudo env PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-                "$CVMFS_SERVER_BIN" mkfs -I \
+                "$_patched_server" mkfs -I \
                 -w "http://stratum0/cvmfs/$REPO_NAME" \
                 -o "$USER" "$REPO_NAME"; then
             _mkfs_ok=true
         fi
 
-        # -- Teardown: stop Apache and remove symlinks (always, win or lose) --
+        # -- Teardown: stop Apache, remove binary copies, remove patched script --
         if ! $_apache_was_running; then
             info "Stopping ${APACHE_SVC} (started only for mkfs) ..."
             sudo systemctl stop "${APACHE_SVC}" 2>/dev/null || true
@@ -558,6 +588,7 @@ else
                 sudo rm -f "$_dest" 2>/dev/null || true
             done
         fi
+        rm -f "$_patched_server" 2>/dev/null || true
 
         if $_mkfs_ok; then
             # Copy signing keys produced by mkfs into our config tree.
