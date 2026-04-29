@@ -28,7 +28,8 @@ error() {
 check_command() {
     local cmd=$1
     local name=${2:-$cmd}
-    if ! command -v "$cmd" &> /dev/null; then
+    if ! command -v $cmd &> /dev/null;
+    then
         error "$name not found. Please install it first."
         return 1
     fi
@@ -61,14 +62,14 @@ if [[ -f "$SCRIPT_DIR/.env" ]]; then
     source "$SCRIPT_DIR/.env"
 else
     info "No .env found, using defaults"
-    TESTBED_ROOT="${TESTBED_ROOT:-/srv/cvmfs-testbed}"
+    TESTBED_ROOT="${TESTBED_ROOT:-$HOME/cvmfs-testbed}"
     REPO_NAME="${REPO_NAME:-test.cvmfs.io}"
 fi
 
 # Validate TESTBED_ROOT and REPO_NAME
 if [[ -z "${TESTBED_ROOT:-}" ]]; then
     read -p "Enter TESTBED_ROOT [/srv/cvmfs-testbed]: " TESTBED_ROOT
-    TESTBED_ROOT="${TESTBED_ROOT:-/srv/cvmfs-testbed}"
+    TESTBED_ROOT="${TESTBED_ROOT:-$HOME/cvmfs-testbed}"
 fi
 
 if [[ -z "${REPO_NAME:-}" ]]; then
@@ -156,8 +157,8 @@ else
     fi
 
     # Run cvmfs_server mkfs
-    info "Running: sudo cvmfs_server mkfs -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
-    sudo cvmfs_server mkfs -w "http://stratum0/cvmfs/$REPO_NAME" -o "$USER" "$REPO_NAME"
+    info "Running: sudo /opt/cvmfs/bin/cvmfs_server mkfs -I -w http://stratum0/cvmfs/$REPO_NAME -o $USER $REPO_NAME"
+    sudo /opt/cvmfs/bin/cvmfs_server mkfs -I -w "http://stratum0/cvmfs/$REPO_NAME" -o "$USER" "$REPO_NAME"
 
     # Copy signing keys
     info "Copying signing keys..."

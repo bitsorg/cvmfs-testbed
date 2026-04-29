@@ -122,6 +122,21 @@ cmd_start() {
     section "Starting testbed"
     load_env
 
+    # Preflight: TESTBED_ROOT must exist and be writable
+    if [[ -z "${TESTBED_ROOT:-}" ]]; then
+        error "TESTBED_ROOT is not set. Run: ./testbed.sh init"
+        exit 1
+    fi
+    if [[ ! -d "${TESTBED_ROOT}" ]]; then
+        error "TESTBED_ROOT=${TESTBED_ROOT} does not exist. Run: ./testbed.sh init"
+        exit 1
+    fi
+    if [[ ! -w "${TESTBED_ROOT}" ]]; then
+        error "TESTBED_ROOT=${TESTBED_ROOT} is not writable."
+        error "Choose a writable path (e.g. \$HOME/cvmfs-testbed) and re-run: ./testbed.sh init"
+        exit 1
+    fi
+
     if $USE_BITS && [[ -z "${BITS_CONSOLE_SRC:-}" ]]; then
         error "--bits requires BITS_CONSOLE_SRC to be set in .env or via --bits-src"
         exit 1
