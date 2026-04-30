@@ -355,6 +355,11 @@ cat > "$TESTBED_ROOT/config/cvmfs-prepub/config.yaml" <<'EOFCONFIG'
 dev: true
 log_level: info
 spool_root: /data/spool
+# stratum0_url is used to fetch the existing root catalog for merging before
+# each publish.  Must point to the Stratum 0 Apache endpoint inside the Docker
+# network.  Without this the catalog merge step is skipped, which causes
+# cvmfs_receiver to crash on the commit (it receives an empty new_root_hash).
+stratum0_url: http://stratum0/cvmfs
 cas:
   type: localfs
   root: /data/cas
