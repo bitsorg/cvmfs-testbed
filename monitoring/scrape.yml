@@ -12,14 +12,8 @@ scrape_configs:
         target_label: instance
         replacement: 'cvmfs-prepub'
 
-  - job_name: 'cvmfs-gateway'
-    static_configs:
-      - targets: ['gateway:4929']
-    metrics_path: '/metrics'
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: instance
-        replacement: 'gateway'
+  # cvmfs-gateway does not expose a Prometheus /metrics endpoint;
+  # its port 4929 serves only the lease API (/api/v1/...).
 
   - job_name: 'stratum1-a'
     static_configs:

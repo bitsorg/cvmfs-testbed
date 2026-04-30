@@ -4,7 +4,10 @@ FROM ubuntu:24.04
 # at startup so we can swap versions without rebuilding this image.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-        # FUSE user-space library required for cvmfs2 (libfuse2t64 since Ubuntu 24.04)
+        # cvmfs2 loads libcvmfs_fuse3_stub.so at runtime via dlopen(); that stub
+        # in turn requires libfuse3.so.4 (FUSE 3 userspace library).
+        # libfuse2t64 is kept as a fallback in case a FUSE2 stub is present.
+        libfuse3-3 \
         libfuse2t64 \
         # attr for xattr queries used by cvmfs_talk
         attr \
