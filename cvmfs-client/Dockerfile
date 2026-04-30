@@ -25,7 +25,7 @@ RUN apt-get update \
 #   /cvmfs/${REPO_NAME}  – FUSE mount point (created by entrypoint)
 #   /etc/cvmfs            – generated default.local and per-repo conf
 #   /var/cache/cvmfs      – client cache (backed by TESTBED_ROOT volume)
-RUN mkdir -p /cvmfs /etc/cvmfs/config.d /var/cache/cvmfs \
+RUN mkdir -p /cvmfs /etc/cvmfs/config.d /var/cache/cvmfs /var/run/cvmfs \
  && chmod 755 /cvmfs
 
 # Scripts are baked into the image (they don't change between test runs).
