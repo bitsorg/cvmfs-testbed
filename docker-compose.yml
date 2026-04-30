@@ -7,6 +7,9 @@ services:
     environment:
       CVMFS_GATEWAY_KEY_ID: ${CVMFS_GATEWAY_KEY_ID}
       CVMFS_GATEWAY_SECRET: ${CVMFS_GATEWAY_SECRET}
+      # REPO_NAME is passed to the gateway entrypoint so it can pre-create the
+      # per-repo spool files (client.local, reflog.chksum) before starting.
+      REPO_NAME: ${REPO_NAME}
       # cvmfs_receiver is a C++ binary linked against libcvmfs_crypto.so and friends
       # that live in SOFTWARE_ROOT.  Setting LD_LIBRARY_PATH here makes it available
       # to every subprocess the gateway spawns (exec.Command inherits the environment).
@@ -26,6 +29,16 @@ services:
       # parameters.  This file is created by cvmfs_server mkfs on the host and
       # copied into config/repo-config/ by init.sh.
       - ${TESTBED_ROOT}/config/repo-config:/etc/cvmfs/repositories.d/${REPO_NAME}:ro
+      # cvmfs_receiver spool directory — bind-mounted to the host so that:
+      #   1. client.local and reflog.chksum survive container restarts.
+      #   2. upstream-scratch/ (temp chunks) uses host FS, avoiding overlay overhead.
+      #   3. The spool tree is readable from the host for debugging.
+      # The gateway entrypoint creates the required files on startup.
+      - ${TESTBED_ROOT}/data/gateway-spool:/var/spool/cvmfs
+      # cvmfs_receiver debug log — bind-mounted so the log is readable from the
+      # host after a receiver crash.  Read it with:
+      #   cat ${TESTBED_ROOT}/data/receiver-logs/debug.log
+      - ${TESTBED_ROOT}/data/receiver-logs:/var/log/cvmfs_receiver
     cap_add:
       # cvmfs_receiver spawns a watchdog child that uses ptrace to collect
       # stack traces on crashes. Without SYS_PTRACE the watchdog fails to

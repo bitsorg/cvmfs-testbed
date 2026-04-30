@@ -28,6 +28,15 @@ RUN mkdir -p /var/lib/cvmfs-gateway && chmod 755 /var/lib/cvmfs-gateway
 # /var/spool/cvmfs is the conventional CVMFS spool root.
 RUN mkdir -p /var/spool/cvmfs && chmod 755 /var/spool/cvmfs
 
+# Entrypoint script: pre-creates the per-repo spool files required by
+# cvmfs_receiver (client.local, reflog.chksum, upstream-scratch/) before
+# starting cvmfs_gateway.  The script uses REPO_NAME from the environment.
+COPY entrypoint.sh /usr/local/bin/gateway-entrypoint.sh
+RUN chmod +x /usr/local/bin/gateway-entrypoint.sh
+
 # Binary injected at runtime from the software mount.
 # Config injected at runtime from ${TESTBED_ROOT}/config/gateway/.
 EXPOSE 4929
+
+ENTRYPOINT ["/usr/local/bin/gateway-entrypoint.sh"]
+CMD ["/usr/local/bin/cvmfs_gateway"]

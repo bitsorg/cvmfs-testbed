@@ -205,6 +205,8 @@ mkdir -p \
     "$TESTBED_ROOT/data/mosquitto" \
     "$TESTBED_ROOT/data/mosquitto-log" \
     "$TESTBED_ROOT/data/gitea" \
+    "$TESTBED_ROOT/data/receiver-logs" \
+    "$TESTBED_ROOT/data/gateway-spool" \
     "$TESTBED_ROOT/config/gateway" \
     "$TESTBED_ROOT/config/keys" \
     "$TESTBED_ROOT/config/cvmfs-prepub" \
@@ -225,7 +227,9 @@ chmod 777 \
     "$TESTBED_ROOT/data/monitoring/vm" \
     "$TESTBED_ROOT/data/monitoring/vmagent" \
     "$TESTBED_ROOT/data/monitoring/grafana" \
-    "$TESTBED_ROOT/data/cvmfs-client"
+    "$TESTBED_ROOT/data/cvmfs-client" \
+    "$TESTBED_ROOT/data/receiver-logs" \
+    "$TESTBED_ROOT/data/gateway-spool"
 success "Directory structure created."
 
 # (BITS_CONSOLE_SRC is derived from the conventional path $SCRIPT_DIR/bits-console
@@ -616,10 +620,39 @@ else
                     info "Added CVMFS_UPSTREAM_STORAGE to server.conf: ${_new_upstream}"
                 fi
 
-                # Also create the spool scratch dir inside the testbed data tree so we
-                # can pre-populate it (in case the gateway image doesn't have it).
-                # The gateway Dockerfile creates /var/spool/cvmfs; the sub-path will be
-                # created at runtime by cvmfs_receiver itself.
+                # Pre-create the per-repo spool tree on the HOST so that the
+                # host-mounted volume (data/gateway-spool) already contains the
+                # required files when the gateway container starts.  The gateway
+                # entrypoint.sh also creates these, but doing it here means they
+                # survive a `testbed.sh restart` without needing a rebuild.
+                #
+                # data/gateway-spool is bind-mounted to /var/spool/cvmfs inside
+                # the gateway container (see docker-compose.yml).
+                _gspool="$TESTBED_ROOT/data/gateway-spool/$REPO_NAME"
+                mkdir -p "$_gspool/upstream-scratch"
+                chmod 755 "$_gspool" "$_gspool/upstream-scratch"
+
+                # client.local — just needs to exist; truncated to zero at commit.
+                touch "$_gspool/client.local"
+
+                # reflog.chksum — must contain the hash written by cvmfs_server mkfs.
+                # Copy from the host spool if available; fall back to an empty stub
+                # (SigningTool will return kReflogChecksumMissing / kReflogMissing on
+                # commit, but at least payload submission won't be affected).
+                _host_chksum="/var/spool/cvmfs/$REPO_NAME/reflog.chksum"
+                if [[ -f "$_host_chksum" ]]; then
+                    sudo cp "$_host_chksum" "$_gspool/reflog.chksum"
+                    sudo chown "$USER:$(id -gn)" "$_gspool/reflog.chksum"
+                    chmod 644 "$_gspool/reflog.chksum"
+                    info "Copied reflog.chksum from $_host_chksum"
+                else
+                    touch "$_gspool/reflog.chksum"
+                    warn "Host reflog.chksum not found at $_host_chksum"
+                    warn "Commit operations may fail with kMissingReflog until it is created."
+                    warn "If cvmfs_server mkfs succeeded, re-run: sudo cp $_host_chksum $_gspool/reflog.chksum"
+                fi
+
+                info "Pre-created spool files in $_gspool"
             else
                 warn "server.conf not found at $_server_conf — cvmfs_receiver will fail."
                 warn "Copy manually: sudo cp $_server_conf $TESTBED_ROOT/config/repo-config/server.conf"
