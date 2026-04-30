@@ -333,7 +333,7 @@ info "Writing cvmfs-prepub config..."
 cat > "$TESTBED_ROOT/config/cvmfs-prepub/config.yaml" <<'EOFCONFIG'
 dev: true
 log_level: info
-spool_root: /
+spool_root: /data/spool
 cas:
   type: localfs
   root: /data/cas
@@ -537,6 +537,9 @@ else
                 fi
             done
             sudo chown -R "$USER:$(id -gn)" "$TESTBED_ROOT/repos/$REPO_NAME"
+            # Make repo tree world-writable so container services (cvmfs-prepub,
+            # gateway) running as non-root users can write to the CAS and spool.
+            chmod -R 777 "$TESTBED_ROOT/repos/$REPO_NAME"
             success "CVMFS repository initialised."
         else
             warn "cvmfs_server mkfs failed — check output above."

@@ -1,11 +1,11 @@
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # Runtime dependencies only — cvmfs2 binary is injected from SOFTWARE_ROOT
 # at startup so we can swap versions without rebuilding this image.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         # FUSE user-space library required for cvmfs2
-        libfuse2 \
+        libfuse2t64 \ # renamed from libfuse2 in Ubuntu 24.04
         # attr for xattr queries used by cvmfs_talk
         attr \
         # curl for the verify-publish.sh SSE poll

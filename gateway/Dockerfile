@@ -1,4 +1,4 @@
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # Runtime dependencies for cvmfs_gateway (Go binary — needs libc, libssl, ca-certs)
 RUN apt-get update \
