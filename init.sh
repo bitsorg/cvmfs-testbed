@@ -210,6 +210,21 @@ mkdir -p \
     "$TESTBED_ROOT/config/cvmfs-prepub" \
     "$TESTBED_ROOT/config/stratum1-a" \
     "$TESTBED_ROOT/config/stratum1-b"
+
+# Directories that are mounted as writable volumes inside containers running
+# as non-root users need to be world-writable on the host.  The affected
+# services and their in-container UIDs are:
+#   cvmfs-prepub / stratum1-a / stratum1-b  — 'prepub' (system UID, ~100-999)
+#   grafana                                 — UID 472
+#   vmagent / victoriametrics               — UID 1000 (victoriametrics image)
+chmod 777 \
+    "$TESTBED_ROOT/data/spool" \
+    "$TESTBED_ROOT/data/s1a" \
+    "$TESTBED_ROOT/data/s1b" \
+    "$TESTBED_ROOT/data/monitoring/vm" \
+    "$TESTBED_ROOT/data/monitoring/vmagent" \
+    "$TESTBED_ROOT/data/monitoring/grafana" \
+    "$TESTBED_ROOT/data/cvmfs-client"
 success "Directory structure created."
 
 # (BITS_CONSOLE_SRC is derived from the conventional path $SCRIPT_DIR/bits-console
@@ -318,7 +333,7 @@ info "Writing cvmfs-prepub config..."
 cat > "$TESTBED_ROOT/config/cvmfs-prepub/config.yaml" <<'EOFCONFIG'
 dev: true
 log_level: info
-spool_root: /data/spool
+spool_root: /
 cas:
   type: localfs
   root: /data/cas
