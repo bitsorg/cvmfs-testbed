@@ -16,6 +16,7 @@
 #   stop      Stop containers without removing state.
 #   restart   Stop then start.
 #   status    Show container status and key service health.
+#   info      Print all service endpoints, ports, and credentials.
 #   logs      Tail logs (all services, or pass a service name).
 #   test      Run the smoke test.
 #   verify    Verify end-to-end file visibility (needs a job UUID).
@@ -298,6 +299,7 @@ cmd_start() {
         warn "Some services did not respond within 60 s — check logs: ./testbed.sh logs"
     fi
     _cmd_status_inner  # status without re-running load_env
+    cmd_info           # print endpoint summary
 }
 
 cmd_stop() {
@@ -431,6 +433,133 @@ cmd_help() {
         | grep '^#' | sed 's/^# \?//'
 }
 
+cmd_info() {
+    load_env
+    local W=34   # label column width
+
+    # Grafana port: 3000 normally, 3001 when bits overlay remaps it.
+    local grafana_port=3000
+    if $USE_BITS; then grafana_port=3001; fi
+
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════════════════╗"
+    echo "║              CVMFS-Prepub Testbed  —  Endpoints                     ║"
+    echo "╠══════════════════════════════════════════════════════════════════════╣"
+
+    _iline() {
+        # _iline LABEL VALUE
+        printf "║  %-${W}s  %s\n" "$1" "$2"
+    }
+    _isep() {
+        echo "╠══════════════════════════════════════════════════════════════════════╣"
+    }
+
+    _iline "Repository:" "${REPO_NAME:-?}"
+    _iline "Testbed root:" "${TESTBED_ROOT:-?}"
+
+    _isep
+    echo "║  ── cvmfs-prepub API ─────────────────────────────────────────────────║"
+    _iline "  URL:"         "http://localhost:8080"
+    _iline "  Health:"      "http://localhost:8080/api/v1/version"
+    _iline "  Bearer token:" "${PREPUB_API_TOKEN:-(see .env)}"
+
+    _isep
+    echo "║  ── CVMFS Gateway ────────────────────────────────────────────────────║"
+    _iline "  URL:"         "http://localhost:4929"
+    _iline "  Key ID:"      "${CVMFS_GATEWAY_KEY_ID:-prepub-key}"
+    _iline "  Secret:"      "${CVMFS_GATEWAY_SECRET:-(see .env)}"
+
+    _isep
+    echo "║  ── Stratum 0 (Apache — CVMFS content server) ────────────────────────║"
+    _iline "  URL:"         "http://localhost:8090/cvmfs/${REPO_NAME:-<repo>}"
+    _iline "  Credentials:" "none (read-only, no auth)"
+
+    _isep
+    echo "║  ── Stratum 1 receivers ───────────────────────────────────────────────║"
+    _iline "  stratum1-a control:" "http://localhost:9101"
+    _iline "  stratum1-a data:"    "http://localhost:9111"
+    _iline "  stratum1-b control:" "http://localhost:9102"
+    _iline "  stratum1-b data:"    "http://localhost:9112"
+    _iline "  HMAC secret:"        "${PREPUB_HMAC_SECRET:-(see .env)}"
+
+    _isep
+    echo "║  ── Monitoring ────────────────────────────────────────────────────────║"
+    _iline "  Grafana:"      "http://localhost:${grafana_port}  (admin / admin)"
+    _iline "  VictoriaMetrics:" "internal only (scraped by vmagent)"
+
+    if $USE_BITS && [[ -n "${GITEA_ADMIN_USER:-}" ]]; then
+        _isep
+        echo "║  ── Gitea (bits overlay) ──────────────────────────────────────────────║"
+        _iline "  URL:"      "http://localhost:3000"
+        _iline "  SSH:"      "git@localhost:2222"
+        _iline "  User:"     "${GITEA_ADMIN_USER}"
+        _iline "  Password:" "${GITEA_ADMIN_PASSWORD:-(see .env)}"
+    fi
+
+    if $USE_MQTT; then
+        _isep
+        echo "║  ── MQTT (control plane) ──────────────────────────────────────────────║"
+        _iline "  Broker:"   "mqtt://localhost:1883"
+        _iline "  Credentials:" "none (testbed mode)"
+    fi
+
+    echo "╠══════════════════════════════════════════════════════════════════════╣"
+    echo "║  Full secrets: ${TESTBED_ROOT:-\$TESTBED_ROOT}/.env"
+    echo "╚══════════════════════════════════════════════════════════════════════╝"
+
+    # ── Architecture diagram ───────────────────────────────────────────────────
+    local repo="${REPO_NAME:-<repo>}"
+    local gport="${grafana_port}"
+    cat <<EOF
+
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │               Testbed Architecture  (docker network: cvmfs-net)              │
+  └─────────────────────────────────────────────────────────────────────────────┘
+
+   ── PUBLISH FLOW ──────────────────────────────────────────────────────────────
+
+     curl / publisher container
+           │
+           │  REST + SSE  (host :8080)
+           ▼
+     ┌─────────────────┐   lease req    ┌──────────────────┐
+     │  cvmfs-prepub   │ ─────:4929────►│    gateway       │
+     │  :8080          │◄─── granted ───│    :4929         │
+     └────────┬────────┘                └──────────────────┘
+              │
+              │  write CAS + sign manifest
+              ▼
+          repos/${repo}/      ← host volume, shared by containers
+            ├── gateway      → /srv/cvmfs/${repo}   (rw)
+            ├── cvmfs-prepub → /data/cas             (rw)
+            └── stratum0     → /htdocs/cvmfs         (ro)
+              │
+              │  replicate  (after successful publish)
+              ├──────────────────────────────────────────► stratum1-a  :9101/9111
+              └──────────────────────────────────────────► stratum1-b  :9102/9112
+
+   ── SERVE FLOW ────────────────────────────────────────────────────────────────
+
+     repos/${repo}/  (shared volume, read-only via stratum0)
+           │
+           │  static HTTP  (host :8090)
+           ▼
+     ┌─────────────────┐                         ┌──────────────────────────┐
+     │  stratum0       │──── /cvmfs/${repo} ───►│  cvmfs-client            │
+     │  Apache :80     │                         │  FUSE → /cvmfs/${repo}  │
+     └─────────────────┘                         └──────────────────────────┘
+
+   ── MONITORING ────────────────────────────────────────────────────────────────
+
+     ┌──────────┐  scrape  ┌───────────────────┐  query  ┌──────────────────┐
+     │  vmagent │─────────►│  victoriametrics  │────────►│  Grafana  :${gport}  │
+     └──────────┘          └───────────────────┘         │  admin / admin   │
+          │                                               └──────────────────┘
+          └── scrapes: prepub :8080, gateway :4929, stratum1-a/b :9100
+
+EOF
+}
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 case "$CMD" in
     init)           cmd_init ;;
@@ -438,6 +567,7 @@ case "$CMD" in
     stop)           cmd_stop ;;
     restart)        cmd_restart ;;
     status)         cmd_status ;;
+    info)           cmd_info ;;
     logs)           cmd_logs ;;
     test)           cmd_test ;;
     verify)         cmd_verify ;;

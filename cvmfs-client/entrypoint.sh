@@ -35,6 +35,22 @@ EOF
 
 echo "[cvmfs-client] Generated client config for ${REPO_NAME}"
 
+# ── Link CVMFS stub libraries into /usr/lib ───────────────────────────────────
+# cvmfs2 dlopen()s libcvmfs_fuse3_stub.so (and the fuse2 fallback) using
+# hardcoded paths: ./  /usr/lib/  /usr/lib64/
+# The libraries live in SOFTWARE_ROOT, mounted at /opt/cvmfs-software.
+# Symlink them into /usr/lib/ so cvmfs2 can find them.
+if [[ -d /opt/cvmfs-software ]]; then
+    for _lib in /opt/cvmfs-software/libcvmfs_fuse*.so*; do
+        [[ -f "$_lib" ]] || continue
+        _name="$(basename "$_lib")"
+        [[ -e "/usr/lib/$_name" ]] || ln -s "$_lib" "/usr/lib/$_name"
+        echo "[cvmfs-client] linked stub lib: $_name"
+    done
+else
+    echo "[cvmfs-client] WARNING: /opt/cvmfs-software not mounted — stub libs may be missing" >&2
+fi
+
 # ── Verify injected binaries ──────────────────────────────────────────────────
 for _bin in /usr/local/bin/cvmfs2 /usr/local/bin/cvmfs_talk; do
     if [[ ! -x "$_bin" ]]; then

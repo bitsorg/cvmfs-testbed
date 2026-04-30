@@ -132,6 +132,10 @@ services:
       # cvmfs2 and cvmfs_talk binaries from the software partition
       - ${SOFTWARE_ROOT}/cvmfs2:/usr/local/bin/cvmfs2:ro
       - ${SOFTWARE_ROOT}/cvmfs_talk:/usr/local/bin/cvmfs_talk:ro
+      # cvmfs2 dlopen()s libcvmfs_fuse3_stub.so (and the fuse2 fallback) from
+      # hardcoded paths (/usr/lib, /usr/lib64).  Mount the whole software root
+      # read-only so the entrypoint can symlink whichever stub libs are present.
+      - ${SOFTWARE_ROOT}:/opt/cvmfs-software:ro
       # Repository public key for signature verification
       - ${TESTBED_ROOT}/config/keys/${REPO_NAME}.crt:/etc/cvmfs/keys/${REPO_NAME}.crt:ro
       # Client-side disk cache backed by the testbed data directory
