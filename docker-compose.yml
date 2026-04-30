@@ -7,14 +7,25 @@ services:
     environment:
       CVMFS_GATEWAY_KEY_ID: ${CVMFS_GATEWAY_KEY_ID}
       CVMFS_GATEWAY_SECRET: ${CVMFS_GATEWAY_SECRET}
+      # cvmfs_receiver is a C++ binary linked against libcvmfs_crypto.so and friends
+      # that live in SOFTWARE_ROOT.  Setting LD_LIBRARY_PATH here makes it available
+      # to every subprocess the gateway spawns (exec.Command inherits the environment).
+      LD_LIBRARY_PATH: /opt/cvmfs-software
     volumes:
       - ${SOFTWARE_ROOT}/cvmfs_gateway:/usr/local/bin/cvmfs_gateway:ro
       # cvmfs_gateway spawns cvmfs_receiver as a subprocess; hardcoded default path
       # is /usr/bin/cvmfs_receiver (see gateway/internal/gateway/config.go:52).
       - ${SOFTWARE_ROOT}/cvmfs_receiver:/usr/bin/cvmfs_receiver:ro
+      # Mount the full SOFTWARE_ROOT so cvmfs_receiver can resolve its shared libs.
+      - ${SOFTWARE_ROOT}:/opt/cvmfs-software:ro
       - ${TESTBED_ROOT}/config/gateway:/etc/cvmfs/gateway:ro
       - ${TESTBED_ROOT}/repos/${REPO_NAME}:/srv/cvmfs/${REPO_NAME}
       - ${TESTBED_ROOT}/config/keys:/etc/cvmfs/keys:ro
+    cap_add:
+      # cvmfs_receiver spawns a watchdog child that uses ptrace to collect
+      # stack traces on crashes. Without SYS_PTRACE the watchdog fails to
+      # initialise and the receiver exits immediately (seen as EOF by gateway).
+      - SYS_PTRACE
     ports:
       - "4929:4929"
     networks:
