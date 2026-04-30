@@ -9,6 +9,9 @@ services:
       CVMFS_GATEWAY_SECRET: ${CVMFS_GATEWAY_SECRET}
     volumes:
       - ${SOFTWARE_ROOT}/cvmfs_gateway:/usr/local/bin/cvmfs_gateway:ro
+      # cvmfs_gateway spawns cvmfs_receiver as a subprocess; hardcoded default path
+      # is /usr/bin/cvmfs_receiver (see gateway/internal/gateway/config.go:52).
+      - ${SOFTWARE_ROOT}/cvmfs_receiver:/usr/bin/cvmfs_receiver:ro
       - ${TESTBED_ROOT}/config/gateway:/etc/cvmfs/gateway:ro
       - ${TESTBED_ROOT}/repos/${REPO_NAME}:/srv/cvmfs/${REPO_NAME}
       - ${TESTBED_ROOT}/config/keys:/etc/cvmfs/keys:ro
