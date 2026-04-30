@@ -75,20 +75,71 @@ done
 # ── Create mount point ────────────────────────────────────────────────────────
 mkdir -p "${MOUNT_POINT}"
 
+# ── Wait for Stratum 0 to be ready ───────────────────────────────────────────
+# The stratum0 Apache container starts concurrently.  Poll the manifest URL
+# until it responds 200 (or until CVMFS_WAIT_TIMEOUT seconds elapse).
+CVMFS_WAIT_TIMEOUT="${CVMFS_WAIT_TIMEOUT:-60}"
+_manifest_url="${STRATUM0_URL}/cvmfs/${REPO_NAME}/.cvmfspublished"
+echo "[cvmfs-client] Waiting for stratum0 to serve ${_manifest_url} ..."
+_deadline=$(( $(date +%s) + CVMFS_WAIT_TIMEOUT ))
+while true; do
+    _http_code=$(curl -o /dev/null -s -w "%{http_code}" --max-time 3 "${_manifest_url}" 2>/dev/null || true)
+    if [[ "$_http_code" == "200" ]]; then
+        echo "[cvmfs-client] Stratum 0 is ready (HTTP 200)."
+        break
+    fi
+    if [[ $(date +%s) -ge $_deadline ]]; then
+        echo "[cvmfs-client] ERROR: Stratum 0 not ready after ${CVMFS_WAIT_TIMEOUT}s (last HTTP ${_http_code:-???})." >&2
+        echo "[cvmfs-client] URL: ${_manifest_url}" >&2
+        exit 1
+    fi
+    echo "[cvmfs-client] Stratum 0 not ready yet (HTTP ${_http_code:-???}), retrying in 2s..."
+    sleep 2
+done
+
+# ── Verify public key is present and readable ─────────────────────────────────
+_pubkey="/etc/cvmfs/keys/${REPO_NAME}.pub"
+if [[ ! -f "$_pubkey" ]]; then
+    echo "[cvmfs-client] ERROR: Public key not found at ${_pubkey}." >&2
+    echo "[cvmfs-client] Check that ${REPO_NAME}.pub exists in \$TESTBED_ROOT/config/keys/" >&2
+    echo "[cvmfs-client] and that the volume mount in docker-compose.yml is correct." >&2
+    ls -la /etc/cvmfs/keys/ 2>/dev/null || true
+    exit 1
+fi
+echo "[cvmfs-client] Public key: ${_pubkey} ($(wc -c < "$_pubkey") bytes)"
+
 # ── Mount the repository ──────────────────────────────────────────────────────
 # /usr/local/bin/cvmfs2 is injected from SOFTWARE_ROOT at container start.
 # allow_other lets the root-owned FUSE mount be read by exec'd processes.
 # Requires 'user_allow_other' in /etc/fuse.conf (set in the Dockerfile).
+# Retry up to 3 times in case of transient failures (e.g. catalog not yet
+# available on the first attempt).
 echo "[cvmfs-client] Mounting ${REPO_NAME} at ${MOUNT_POINT}..."
-# LD_LIBRARY_PATH=/opt/cvmfs-software lets the dynamic linker resolve
-# libfuse3.so.N (bundled by install.sh) without needing ldconfig.
-if ! LD_LIBRARY_PATH=/opt/cvmfs-software${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}} \
-        /usr/local/bin/cvmfs2 \
-        -o allow_other,config=/etc/cvmfs/default.local \
-        "${REPO_NAME}" \
-        "${MOUNT_POINT}"; then
-    echo "[cvmfs-client] ERROR: cvmfs2 mount failed." >&2
+_mount_ok=false
+for _attempt in 1 2 3; do
+    # LD_LIBRARY_PATH=/opt/cvmfs-software lets the dynamic linker resolve
+    # libfuse3.so.N (bundled by install.sh) without needing ldconfig.
+    if LD_LIBRARY_PATH=/opt/cvmfs-software${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}} \
+            /usr/local/bin/cvmfs2 \
+            -o allow_other,config=/etc/cvmfs/default.local \
+            "${REPO_NAME}" \
+            "${MOUNT_POINT}"; then
+        _mount_ok=true
+        break
+    fi
+    if [[ $_attempt -lt 3 ]]; then
+        echo "[cvmfs-client] Mount attempt ${_attempt} failed, retrying in 3s..." >&2
+        sleep 3
+    fi
+done
+if ! $_mount_ok; then
+    echo "[cvmfs-client] ERROR: cvmfs2 mount failed after 3 attempts." >&2
     echo "[cvmfs-client] Check: SYS_ADMIN capability, /dev/fuse, and AppArmor." >&2
+    echo "[cvmfs-client] --- generated config ---" >&2
+    cat "/etc/cvmfs/config.d/${REPO_NAME}.conf" >&2 || true
+    cat /etc/cvmfs/default.local >&2 || true
+    echo "[cvmfs-client] --- key files in /etc/cvmfs/keys/ ---" >&2
+    ls -la /etc/cvmfs/keys/ >&2 || true
     exit 1
 fi
 
