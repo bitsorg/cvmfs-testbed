@@ -199,6 +199,43 @@ services:
     depends_on:
       - victoriametrics
 
+  # ── cAdvisor — per-container CPU / memory / network / disk metrics ──────────
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cvmfs-cadvisor
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    networks:
+      - cvmfs-net
+    command:
+      - "--housekeeping_interval=10s"
+      - "--max_housekeeping_interval=15s"
+      - "--disable_metrics=hugetlb,referenced_memory,cpu_topology,resctrl,udp,advtcp,sched"
+
+  # ── node-exporter — host CPU / memory / temperature / filesystem ─────────
+  node-exporter:
+    image: prom/node-exporter:v1.8.0
+    container_name: cvmfs-node-exporter
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.rootfs=/rootfs"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    networks:
+      - cvmfs-net
+
 networks:
   cvmfs-net:
     driver: bridge

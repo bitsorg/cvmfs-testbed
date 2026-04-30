@@ -30,8 +30,8 @@ trap 'rm -rf "${TEST_DIR}"' EXIT
 mkdir -p "$TEST_DIR/smoke/usr/share/test-pkg"
 echo "hello cvmfs $(date)" > "$TEST_DIR/smoke/usr/share/test-pkg/hello.txt"
 
-SMOKE_TAR="$TEST_DIR/smoke.tar.gz"
-tar -czf "$SMOKE_TAR" -C "$TEST_DIR/smoke" .
+SMOKE_TAR="$TEST_DIR/smoke.tar"
+tar -cf "$SMOKE_TAR" -C "$TEST_DIR/smoke" .
 
 echo "Created test tar: $SMOKE_TAR"
 
