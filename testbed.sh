@@ -282,8 +282,8 @@ cmd_start() {
         sleep 5
         local _ready=true
         for url in \
-            "http://localhost:8080/api/v1/version" \
-            "http://localhost:4929/api/v1/meta/info" \
+            "http://localhost:8080/api/v1/health" \
+            "http://localhost:4929/api/v1/repos" \
             "http://localhost:8090/"; do
             curl -sf --max-time 2 "$url" >/dev/null 2>&1 || { _ready=false; break; }
         done
@@ -337,8 +337,8 @@ _cmd_status_inner() {
     info "Checking service health ..."
 
     local _status_ok=true
-    _check_http "cvmfs-prepub API"  "http://localhost:8080/api/v1/version"  || _status_ok=false
-    _check_http "gateway"           "http://localhost:4929/api/v1/meta/info" || _status_ok=false
+    _check_http "cvmfs-prepub API"  "http://localhost:8080/api/v1/health"  || _status_ok=false
+    _check_http "gateway"           "http://localhost:4929/api/v1/repos"   || _status_ok=false
     _check_http "stratum0 (apache)" "http://localhost:8090/"                 || _status_ok=false
 
     if $USE_BITS; then
@@ -460,7 +460,7 @@ cmd_info() {
     _isep
     echo "║  ── cvmfs-prepub API ─────────────────────────────────────────────────║"
     _iline "  URL:"         "http://localhost:8080"
-    _iline "  Health:"      "http://localhost:8080/api/v1/version"
+    _iline "  Health:"      "http://localhost:8080/api/v1/health"
     _iline "  Bearer token:" "${PREPUB_API_TOKEN:-(see .env)}"
 
     _isep
