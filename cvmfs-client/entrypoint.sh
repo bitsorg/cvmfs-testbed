@@ -8,8 +8,11 @@
 #   PREPUB_URL       – cvmfs-prepub API base URL (used by verify-publish.sh)
 #   PREPUB_API_TOKEN – Bearer token for the cvmfs-prepub REST API
 #
-# The repository's public key is expected at /etc/cvmfs/keys/${REPO_NAME}.crt
+# The repository's master public key is expected at /etc/cvmfs/keys/${REPO_NAME}.pub
 # (mounted via TESTBED_ROOT/config/keys volume in docker-compose.yml).
+# NOTE: CVMFS_PUBLIC_KEY must point to the RSA master public key (.pub), NOT the
+# X.509 signing certificate (.crt). The .pub key is used to verify the whitelist
+# signature and manifest; using .crt causes error 16 (catalog failure).
 set -euo pipefail
 
 : "${REPO_NAME:?REPO_NAME must be set}"
@@ -30,7 +33,7 @@ EOF
 mkdir -p /etc/cvmfs/config.d
 cat > "/etc/cvmfs/config.d/${REPO_NAME}.conf" <<EOF
 CVMFS_SERVER_URL=${STRATUM0_URL}/cvmfs/${REPO_NAME}
-CVMFS_PUBLIC_KEY=/etc/cvmfs/keys/${REPO_NAME}.crt
+CVMFS_PUBLIC_KEY=/etc/cvmfs/keys/${REPO_NAME}.pub
 EOF
 
 echo "[cvmfs-client] Generated client config for ${REPO_NAME}"

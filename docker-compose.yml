@@ -150,7 +150,9 @@ services:
       # hardcoded paths (/usr/lib, /usr/lib64).  Mount the whole software root
       # read-only so the entrypoint can symlink whichever stub libs are present.
       - ${SOFTWARE_ROOT}:/opt/cvmfs-software:ro
-      # Repository public key for signature verification
+      # Master RSA public key — required by CVMFS_PUBLIC_KEY for whitelist/manifest verification
+      - ${TESTBED_ROOT}/config/keys/${REPO_NAME}.pub:/etc/cvmfs/keys/${REPO_NAME}.pub:ro
+      # X.509 signing certificate (kept for reference, not used by client config)
       - ${TESTBED_ROOT}/config/keys/${REPO_NAME}.crt:/etc/cvmfs/keys/${REPO_NAME}.crt:ro
       # Client-side disk cache backed by the testbed data directory
       - ${TESTBED_ROOT}/data/cvmfs-client:/var/cache/cvmfs
