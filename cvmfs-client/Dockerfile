@@ -4,8 +4,8 @@ FROM ubuntu:24.04
 # at startup so we can swap versions without rebuilding this image.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-        # FUSE user-space library required for cvmfs2
-        libfuse2t64 \ # renamed from libfuse2 in Ubuntu 24.04
+        # FUSE user-space library required for cvmfs2 (libfuse2t64 since Ubuntu 24.04)
+        libfuse2t64 \
         # attr for xattr queries used by cvmfs_talk
         attr \
         # curl for the verify-publish.sh SSE poll
