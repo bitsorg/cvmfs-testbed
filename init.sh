@@ -499,14 +499,26 @@ else
             for _keyfile in \
                 "/etc/cvmfs/keys/$REPO_NAME.crt" \
                 "/etc/cvmfs/keys/$REPO_NAME.key" \
-                "/etc/cvmfs/keys/master.pub"; do
+                "/etc/cvmfs/keys/$REPO_NAME.pub" \
+                "/etc/cvmfs/keys/$REPO_NAME.masterkey"; do
                 if [[ -f "$_keyfile" ]]; then
                     sudo cp "$_keyfile" "$TESTBED_ROOT/config/keys/"
                     sudo chown "$USER:$(id -gn)" "$TESTBED_ROOT/config/keys/$(basename "$_keyfile")"
                 else
-                    warn "Key file not found after mkfs: $_keyfile"
-                    warn "The cvmfs-client container will fail to mount until keys are copied to:"
-                    warn "  $TESTBED_ROOT/config/keys/"
+                    case "$_keyfile" in
+                        *.crt)
+                            warn "Key file not found after mkfs: $_keyfile"
+                            warn "The cvmfs-client container will fail to mount until this is copied to:"
+                            warn "  $TESTBED_ROOT/config/keys/"
+                            ;;
+                        *.masterkey)
+                            warn "Master private key not found: $_keyfile"
+                            warn "Back it up manually: sudo cp $_keyfile $TESTBED_ROOT/config/keys/"
+                            ;;
+                        *)
+                            warn "Key file not found after mkfs: $_keyfile"
+                            ;;
+                    esac
                 fi
             done
             sudo chown -R "$USER:$(id -gn)" "$TESTBED_ROOT/repos/$REPO_NAME"

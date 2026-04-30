@@ -164,9 +164,11 @@ load_env() {
 compose_files() {
     # Returns the -f flags as an array (via nameref or by printing to caller).
     # Using a global array avoids word-splitting issues with paths containing spaces.
+    # NOTE: use 'if' rather than '$BOOL && ...' — under set -e the latter exits
+    # when the bool variable expands to the 'false' command (exit code 1).
     _COMPOSE_FILES=("-f" "$SCRIPT_DIR/docker-compose.yml")
-    $USE_MQTT && _COMPOSE_FILES+=("-f" "$SCRIPT_DIR/docker-compose.mqtt.yml")
-    $USE_BITS && _COMPOSE_FILES+=("-f" "$SCRIPT_DIR/docker-compose.bits.yml")
+    if $USE_MQTT; then _COMPOSE_FILES+=("-f" "$SCRIPT_DIR/docker-compose.mqtt.yml"); fi
+    if $USE_BITS; then  _COMPOSE_FILES+=("-f" "$SCRIPT_DIR/docker-compose.bits.yml"); fi
 }
 
 run_compose() {
