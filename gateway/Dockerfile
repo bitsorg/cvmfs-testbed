@@ -13,6 +13,7 @@ RUN apt-get update \
         libattr1 \
         uuid-runtime \
         attr \
+        gdb \
  && rm -rf /var/lib/apt/lists/*
 
 # cvmfs_receiver MkdirDeep("/var/log/cvmfs_receiver/", 0755) is the first call it
