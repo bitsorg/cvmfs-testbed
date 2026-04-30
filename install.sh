@@ -135,6 +135,27 @@ if [[ $_copied -eq 0 ]]; then
 fi
 info "Copied $_copied file(s)."
 
+# ── 3b. Bundle host FUSE3 runtime ────────────────────────────────────────────
+# libcvmfs_fuse3_stub.so is linked against the host's libfuse3.so (soname may
+# be .3 or .4 depending on the FUSE version installed).  The Ubuntu 24.04 repo
+# ships only FUSE 3.14 (libfuse3.so.3), but the host may have a newer version
+# (libfuse3.so.4 from FUSE 3.16+).  Copy whatever soname the host provides into
+# SOFTWARE_ROOT so the cvmfs-client container gets the exact same version.
+info "Bundling host FUSE3 runtime libraries → $SOFTWARE_ROOT ..."
+_fuse_copied=0
+for _fuse3 in \
+        /usr/lib/x86_64-linux-gnu/libfuse3.so.* \
+        /usr/lib/aarch64-linux-gnu/libfuse3.so.* \
+        /usr/lib/libfuse3.so.*; do
+    [[ -f "$_fuse3" ]] || continue
+    cp -a "$_fuse3" "$SOFTWARE_ROOT/"
+    info "  $(basename "$_fuse3")"
+    (( _fuse_copied++ )) || true
+done
+if [[ $_fuse_copied -eq 0 ]]; then
+    warn "libfuse3 runtime not found on host — cvmfs-client container may fail to mount"
+fi
+
 # ── 4. Resolve .so symlinks ───────────────────────────────────────────────────
 # setcap refuses to operate on symlinks; copy the real files so no ldconfig is needed.
 while IFS= read -r _link; do

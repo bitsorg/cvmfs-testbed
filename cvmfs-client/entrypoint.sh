@@ -36,19 +36,28 @@ EOF
 echo "[cvmfs-client] Generated client config for ${REPO_NAME}"
 
 # ── Link CVMFS stub libraries into /usr/lib ───────────────────────────────────
-# cvmfs2 dlopen()s libcvmfs_fuse3_stub.so (and the fuse2 fallback) using
-# hardcoded paths: ./  /usr/lib/  /usr/lib64/
-# The libraries live in SOFTWARE_ROOT, mounted at /opt/cvmfs-software.
-# Symlink them into /usr/lib/ so cvmfs2 can find them.
+# cvmfs2 dlopen()s the FUSE stub using hardcoded absolute paths:
+#   ./libcvmfs_fuse3_stub.so  →  /usr/lib/libcvmfs_fuse3_stub.so  →  /usr/lib64/...
+# (and the FUSE2 fallback equivalents).
+# SOFTWARE_ROOT is mounted read-only at /opt/cvmfs-software.
+# Symlink the stubs into /usr/lib/ so cvmfs2 finds them at those exact paths.
+#
+# The stub itself depends on libfuse3.so.N (N = soname on the build host).
+# That library is NOT resolved via dlopen absolute path — it goes through the
+# normal dynamic linker.  Rather than running ldconfig at runtime (which would
+# require updating the on-disk cache), we pass LD_LIBRARY_PATH=/opt/cvmfs-software
+# to the cvmfs2 invocation below so the linker finds it there directly.
 if [[ -d /opt/cvmfs-software ]]; then
     for _lib in /opt/cvmfs-software/libcvmfs_fuse*.so*; do
         [[ -f "$_lib" ]] || continue
         _name="$(basename "$_lib")"
-        [[ -e "/usr/lib/$_name" ]] || ln -s "$_lib" "/usr/lib/$_name"
-        echo "[cvmfs-client] linked stub lib: $_name"
+        if [[ ! -e "/usr/lib/$_name" ]]; then
+            ln -s "$_lib" "/usr/lib/$_name"
+            echo "[cvmfs-client] linked stub: $_name → /usr/lib/$_name"
+        fi
     done
 else
-    echo "[cvmfs-client] WARNING: /opt/cvmfs-software not mounted — stub libs may be missing" >&2
+    echo "[cvmfs-client] WARNING: /opt/cvmfs-software not mounted — stub libs missing" >&2
 fi
 
 # ── Verify injected binaries ──────────────────────────────────────────────────
@@ -68,7 +77,10 @@ mkdir -p "${MOUNT_POINT}"
 # allow_other lets the root-owned FUSE mount be read by exec'd processes.
 # Requires 'user_allow_other' in /etc/fuse.conf (set in the Dockerfile).
 echo "[cvmfs-client] Mounting ${REPO_NAME} at ${MOUNT_POINT}..."
-if ! /usr/local/bin/cvmfs2 \
+# LD_LIBRARY_PATH=/opt/cvmfs-software lets the dynamic linker resolve
+# libfuse3.so.N (bundled by install.sh) without needing ldconfig.
+if ! LD_LIBRARY_PATH=/opt/cvmfs-software${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}} \
+        /usr/local/bin/cvmfs2 \
         -o allow_other,config=/etc/cvmfs/default.local \
         "${REPO_NAME}" \
         "${MOUNT_POINT}"; then
