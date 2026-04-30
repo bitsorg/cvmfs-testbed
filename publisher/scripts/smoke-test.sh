@@ -58,54 +58,61 @@ fi
 
 echo "Job submitted: $JOB_ID"
 
-# Poll for completion
-MAX_ITERATIONS=60
-ITERATION=0
-SLEEP_INTERVAL=2
+# Stream state changes via SSE instead of polling.
+# The endpoint emits "data: {\"state\":\"...\"}" lines whenever the job
+# transitions.  curl -N streams indefinitely; we break on the first terminal
+# state.  --max-time 300 is a hard safety cap (5 min) in case the server
+# closes the stream without sending a terminal event.
+SSE_URL="${PREPUB_URL}/api/v1/jobs/${JOB_ID}/events"
+echo "Watching SSE stream: $SSE_URL"
 
-while [[ $ITERATION -lt $MAX_ITERATIONS ]]; do
-    ITERATION=$((ITERATION + 1))
+FINAL_STATE=""
+while IFS= read -r line; do
+    # SSE lines look like:  data: {"job_id":"...","state":"leased",...}
+    [[ "$line" == data:* ]] || continue
+    json="${line#data: }"
+    state=$(echo "$json" | jq -r '.state // empty' 2>/dev/null) || continue
+    [[ -n "$state" ]] || continue
 
+    echo "  → $state"
+
+    case "$state" in
+        published)
+            FINAL_STATE="published"
+            break ;;
+        failed|aborted)
+            FINAL_STATE="$state"
+            break ;;
+    esac
+done < <(curl -sN --no-buffer --max-time 300 \
+             -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
+             "$SSE_URL")
+
+# If SSE closed without a terminal state (e.g. server restarted mid-flight),
+# fall back to a single status fetch so we don't misreport.
+if [[ -z "$FINAL_STATE" ]]; then
+    echo "SSE stream closed without terminal state — fetching current status..."
     JOB_STATUS=$(curl -sf --max-time 10 \
-        -X GET \
         -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
         "${PREPUB_URL}/api/v1/jobs/${JOB_ID}") || JOB_STATUS=""
-
-    STATE=$(echo "$JOB_STATUS" | jq -r '.state // empty')
-
-    if [[ -z "$STATE" ]]; then
-        echo "Warning: Could not parse job state, retrying..."
-        sleep "$SLEEP_INTERVAL"
-        continue
-    fi
-
-    echo "[$ITERATION/$MAX_ITERATIONS] Job state: $STATE"
-
-    if [[ "$STATE" == "published" ]]; then
-        echo -e "${GREEN}Job published successfully${NC}"
-        echo "Final job response:"
-        echo "$JOB_STATUS" | jq .
-        exit 0
-    elif [[ "$STATE" == "failed" ]] || [[ "$STATE" == "aborted" ]]; then
-        echo -e "${RED}Job $STATE${NC}"
-        echo "Final job response:"
-        echo "$JOB_STATUS" | jq .
-        exit 1
-    fi
-
-    sleep "$SLEEP_INTERVAL"
-done
-
-echo -e "${RED}Job timed out after ${MAX_ITERATIONS} iterations${NC}"
-echo "Final job response:"
-FINAL_STATUS=""
-FINAL_STATUS=$(curl -sf --max-time 10 \
-    -X GET \
-    -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
-    "${PREPUB_URL}/api/v1/jobs/${JOB_ID}") || FINAL_STATUS=""
-if [[ -n "${FINAL_STATUS}" ]]; then
-    echo "${FINAL_STATUS}" | jq .
-else
-    echo "(could not fetch final status)"
+    FINAL_STATE=$(echo "$JOB_STATUS" | jq -r '.state // empty')
 fi
-exit 1
+
+JOB_STATUS=$(curl -sf --max-time 10 \
+    -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
+    "${PREPUB_URL}/api/v1/jobs/${JOB_ID}") || JOB_STATUS=""
+
+case "$FINAL_STATE" in
+    published)
+        echo -e "${GREEN}Job published successfully${NC}"
+        echo "$JOB_STATUS" | jq .
+        exit 0 ;;
+    failed|aborted)
+        echo -e "${RED}Job ${FINAL_STATE}${NC}"
+        echo "$JOB_STATUS" | jq .
+        exit 1 ;;
+    *)
+        echo -e "${RED}Job timed out or stream ended without terminal state (last: ${FINAL_STATE:-unknown})${NC}"
+        echo "$JOB_STATUS" | jq .
+        exit 1 ;;
+esac
