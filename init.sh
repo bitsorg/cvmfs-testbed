@@ -583,6 +583,43 @@ else
                 sudo chown "$USER:$(id -gn)" "$TESTBED_ROOT/config/repo-config/server.conf"
                 chmod 644 "$TESTBED_ROOT/config/repo-config/server.conf"
                 success "server.conf copied to config/repo-config/."
+
+                # ── Patch CVMFS_UPSTREAM_STORAGE ─────────────────────────────────────────
+                # cvmfs_server mkfs may set CVMFS_UPSTREAM_STORAGE to the gateway API URL
+                # (e.g. "gw,/spool/tmp,http://localhost:4929/api/v1").  Inside the gateway
+                # container the receiver runs AS PART OF the gateway, so contacting
+                # localhost:4929 creates a deadlock: the gateway waits for the receiver
+                # while the receiver waits for the gateway — each timing out after ~60 s.
+                #
+                # Override it to "local" mode so the receiver writes CAS objects directly
+                # to /srv/cvmfs/<repo> (which IS the repo filesystem, mounted read-write
+                # inside the gateway container).
+                #
+                # Format: local,<rdonly_scratch_dir>,<upstream_cas_root>
+                # The spool scratch dir must exist inside the gateway container;
+                # /var/spool/cvmfs is created in the gateway Dockerfile.
+                _spool_dir="/var/spool/cvmfs/$REPO_NAME/upstream-scratch"
+                _cas_root="/srv/cvmfs/$REPO_NAME"
+                _new_upstream="local,${_spool_dir},${_cas_root}"
+
+                if grep -q "^CVMFS_UPSTREAM_STORAGE=" "$TESTBED_ROOT/config/repo-config/server.conf"; then
+                    _orig=$(grep "^CVMFS_UPSTREAM_STORAGE=" "$TESTBED_ROOT/config/repo-config/server.conf")
+                    sed -i \
+                        "s|^CVMFS_UPSTREAM_STORAGE=.*|CVMFS_UPSTREAM_STORAGE=${_new_upstream}|" \
+                        "$TESTBED_ROOT/config/repo-config/server.conf"
+                    info "Patched CVMFS_UPSTREAM_STORAGE in server.conf"
+                    info "  was: $_orig"
+                    info "  now: CVMFS_UPSTREAM_STORAGE=${_new_upstream}"
+                else
+                    # Append if not present.
+                    echo "CVMFS_UPSTREAM_STORAGE=${_new_upstream}" >> "$TESTBED_ROOT/config/repo-config/server.conf"
+                    info "Added CVMFS_UPSTREAM_STORAGE to server.conf: ${_new_upstream}"
+                fi
+
+                # Also create the spool scratch dir inside the testbed data tree so we
+                # can pre-populate it (in case the gateway image doesn't have it).
+                # The gateway Dockerfile creates /var/spool/cvmfs; the sub-path will be
+                # created at runtime by cvmfs_receiver itself.
             else
                 warn "server.conf not found at $_server_conf — cvmfs_receiver will fail."
                 warn "Copy manually: sudo cp $_server_conf $TESTBED_ROOT/config/repo-config/server.conf"

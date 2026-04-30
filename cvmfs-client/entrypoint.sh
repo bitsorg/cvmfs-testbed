@@ -21,14 +21,23 @@ set -euo pipefail
 MOUNT_POINT="/cvmfs/${REPO_NAME}"
 
 # ── Generate /etc/cvmfs/default.local ────────────────────────────────────────
+# Include ALL required settings in default.local (the file explicitly passed
+# to cvmfs2 via -o config=).  This avoids relying on cvmfs2 auto-loading the
+# config.d/ per-repo file, which behaviour varies across CVMFS versions.
 cat > /etc/cvmfs/default.local <<EOF
 CVMFS_REPOSITORIES=${REPO_NAME}
 CVMFS_HTTP_PROXY=DIRECT
 CVMFS_CACHE_BASE=/var/cache/cvmfs
 CVMFS_QUOTA_LIMIT=4000
+# Per-repo settings (valid in default.local for a single-repo testbed):
+CVMFS_SERVER_URL=${STRATUM0_URL}/cvmfs/${REPO_NAME}
+CVMFS_PUBLIC_KEY=/etc/cvmfs/keys/${REPO_NAME}.pub
+# Write a debug log so we can diagnose mount failures:
+CVMFS_DEBUGLOG=/tmp/cvmfs-debug.log
 EOF
 
 # ── Generate per-repository configuration ────────────────────────────────────
+# Also write the per-repo config.d file as a belt-and-suspenders measure.
 # config.d may not exist in the base image; create it defensively.
 mkdir -p /etc/cvmfs/config.d
 cat > "/etc/cvmfs/config.d/${REPO_NAME}.conf" <<EOF
@@ -140,6 +149,8 @@ if ! $_mount_ok; then
     cat /etc/cvmfs/default.local >&2 || true
     echo "[cvmfs-client] --- key files in /etc/cvmfs/keys/ ---" >&2
     ls -la /etc/cvmfs/keys/ >&2 || true
+    echo "[cvmfs-client] --- cvmfs2 debug log (/tmp/cvmfs-debug.log) ---" >&2
+    cat /tmp/cvmfs-debug.log >&2 || echo "[cvmfs-client] (no debug log found)" >&2
     exit 1
 fi
 
