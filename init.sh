@@ -381,6 +381,9 @@ cas:
   root: /data/cas
 control_addr: ":9100"
 data_addr: ":9101"
+# data_host is the hostname cvmfs-prepub uses to open the data (TCP) channel.
+# Must be the Docker service name, not "localhost", to avoid SSRF detection.
+data_host: stratum1-a
 node_id: "stratum1-a"
 EOFCONFIG
 success "stratum1-a config written."
@@ -395,6 +398,9 @@ cas:
   root: /data/cas
 control_addr: ":9100"
 data_addr: ":9101"
+# data_host is the hostname cvmfs-prepub uses to open the data (TCP) channel.
+# Must be the Docker service name, not "localhost", to avoid SSRF detection.
+data_host: stratum1-b
 node_id: "stratum1-b"
 EOFCONFIG
 success "stratum1-b config written."
