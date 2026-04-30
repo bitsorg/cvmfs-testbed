@@ -415,6 +415,48 @@ node_id: "stratum1-b"
 EOFCONFIG
 success "stratum1-b config written."
 
+# ── Patch server.conf CVMFS_UPSTREAM_STORAGE (unconditional) ─────────────────
+# This section runs every time init.sh is invoked so that existing installations
+# (where mkfs already ran in a previous init) get the correct upstream storage
+# setting without having to wipe and re-init the repository.
+#
+# Background: LocalUploader::FinalizeStreamedUpload calls rename(scratch→data/XY/hash).
+# rename() fails with EXDEV (errno 18) when scratch and data are on different bind
+# mounts.  docker-compose.yml uses two separate bind mounts:
+#   /var/spool/cvmfs  ← ${TESTBED_ROOT}/data/gateway-spool   (spool mount)
+#   /srv/cvmfs/<repo> ← ${TESTBED_ROOT}/repos/<repo>          (CAS mount)
+# Using upstream-scratch/ under /srv/cvmfs/<repo>/ keeps rename() on one filesystem.
+_config_server_conf="$TESTBED_ROOT/config/repo-config/server.conf"
+if [[ -f "$_config_server_conf" ]]; then
+    _spool_dir_patch="/srv/cvmfs/$REPO_NAME/upstream-scratch"
+    _cas_root_patch="/srv/cvmfs/$REPO_NAME"
+    _new_upstream_patch="local,${_spool_dir_patch},${_cas_root_patch}"
+    if grep -q "^CVMFS_UPSTREAM_STORAGE=" "$_config_server_conf"; then
+        _current=$(grep "^CVMFS_UPSTREAM_STORAGE=" "$_config_server_conf")
+        if [[ "$_current" != "CVMFS_UPSTREAM_STORAGE=${_new_upstream_patch}" ]]; then
+            sed -i \
+                "s|^CVMFS_UPSTREAM_STORAGE=.*|CVMFS_UPSTREAM_STORAGE=${_new_upstream_patch}|" \
+                "$_config_server_conf"
+            info "Re-patched CVMFS_UPSTREAM_STORAGE in config/repo-config/server.conf"
+            info "  was: $_current"
+            info "  now: CVMFS_UPSTREAM_STORAGE=${_new_upstream_patch}"
+        else
+            info "CVMFS_UPSTREAM_STORAGE in server.conf already correct."
+        fi
+    else
+        echo "CVMFS_UPSTREAM_STORAGE=${_new_upstream_patch}" >> "$_config_server_conf"
+        info "Added CVMFS_UPSTREAM_STORAGE to server.conf: ${_new_upstream_patch}"
+    fi
+    # Ensure the scratch directory exists on the host (visible inside the
+    # gateway container as /srv/cvmfs/<repo>/upstream-scratch/).
+    mkdir -p "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
+    chmod 755 "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
+    success "server.conf CVMFS_UPSTREAM_STORAGE OK."
+else
+    warn "config/repo-config/server.conf not found — skipping upstream-storage patch."
+    warn "It will be created and patched when the repository is initialised (mkfs)."
+fi
+
 # ── Initialise CVMFS repository ───────────────────────────────────────────────
 # Requires cvmfs_server and a writable /srv for the symlink.
 # Failures here are non-fatal: all config files are already written and
@@ -599,10 +641,17 @@ else
                 # to /srv/cvmfs/<repo> (which IS the repo filesystem, mounted read-write
                 # inside the gateway container).
                 #
-                # Format: local,<rdonly_scratch_dir>,<upstream_cas_root>
-                # The spool scratch dir must exist inside the gateway container;
-                # /var/spool/cvmfs is created in the gateway Dockerfile.
-                _spool_dir="/var/spool/cvmfs/$REPO_NAME/upstream-scratch"
+                # IMPORTANT — scratch dir must be on the SAME bind-mount as the CAS data
+                # directory.  docker-compose.yml mounts two different host paths:
+                #   /var/spool/cvmfs        ← ${TESTBED_ROOT}/data/gateway-spool
+                #   /srv/cvmfs/<repo>       ← ${TESTBED_ROOT}/repos/<repo>
+                # LocalUploader::FinalizeStreamedUpload calls rename(scratch→data/XY/hash).
+                # rename() across different bind mounts fails with EXDEV (errno 18).
+                # Placing upstream-scratch/ under /srv/cvmfs/<repo>/ (same mount as data/)
+                # keeps rename() on a single filesystem, so it succeeds.
+                #
+                # Format: local,<scratch_dir>,<upstream_cas_root>
+                _spool_dir="/srv/cvmfs/$REPO_NAME/upstream-scratch"
                 _cas_root="/srv/cvmfs/$REPO_NAME"
                 _new_upstream="local,${_spool_dir},${_cas_root}"
 
@@ -620,17 +669,14 @@ else
                     info "Added CVMFS_UPSTREAM_STORAGE to server.conf: ${_new_upstream}"
                 fi
 
-                # Pre-create the per-repo spool tree on the HOST so that the
-                # host-mounted volume (data/gateway-spool) already contains the
-                # required files when the gateway container starts.  The gateway
-                # entrypoint.sh also creates these, but doing it here means they
-                # survive a `testbed.sh restart` without needing a rebuild.
+                # Pre-create the per-repo spool tree on the HOST.
                 #
-                # data/gateway-spool is bind-mounted to /var/spool/cvmfs inside
-                # the gateway container (see docker-compose.yml).
+                # data/gateway-spool is bind-mounted to /var/spool/cvmfs inside the
+                # gateway container.  It must contain client.local and reflog.chksum
+                # for cvmfs_receiver to function at commit time.
                 _gspool="$TESTBED_ROOT/data/gateway-spool/$REPO_NAME"
-                mkdir -p "$_gspool/upstream-scratch"
-                chmod 755 "$_gspool" "$_gspool/upstream-scratch"
+                mkdir -p "$_gspool"
+                chmod 755 "$_gspool"
 
                 # client.local — just needs to exist; truncated to zero at commit.
                 touch "$_gspool/client.local"
@@ -652,7 +698,15 @@ else
                     warn "If cvmfs_server mkfs succeeded, re-run: sudo cp $_host_chksum $_gspool/reflog.chksum"
                 fi
 
+                # upstream-scratch/ lives under the CAS root so that rename() from
+                # scratch→data/XY/hash stays on the same bind-mount (EXDEV fix).
+                # repos/<repo> is the same host path as /srv/cvmfs/<repo> inside the
+                # gateway container, so pre-creating it here is sufficient.
+                mkdir -p "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
+                chmod 755 "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
+
                 info "Pre-created spool files in $_gspool"
+                info "Pre-created upstream-scratch in $TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
             else
                 warn "server.conf not found at $_server_conf — cvmfs_receiver will fail."
                 warn "Copy manually: sudo cp $_server_conf $TESTBED_ROOT/config/repo-config/server.conf"

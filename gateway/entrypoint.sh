@@ -15,9 +15,11 @@
 #     Read (and possibly updated) by the SigningTool during commit.
 #     Missing file → kMissingReflog reply, which counts as a commit failure.
 #
-#   /var/spool/cvmfs/<repo>/upstream-scratch/
+#   /srv/cvmfs/<repo>/upstream-scratch/
 #     Scratch directory used by LocalUploader for in-flight chunk temp files.
-#     Created lazily by MkdirDeep(), but we pre-create it here for clarity.
+#     MUST be under /srv/cvmfs/<repo>/ (the CAS bind-mount), NOT under
+#     /var/spool/cvmfs, so that rename(scratch→data/XY/hash) stays on the
+#     same filesystem and does not fail with EXDEV (errno 18).
 #
 # These files are created by `cvmfs_server mkfs` on the host, but inside the
 # gateway container they don't exist unless we create them here (because
@@ -34,15 +36,29 @@ set -euo pipefail
 SPOOL_ROOT="/var/spool/cvmfs"
 SPOOL_DIR="${SPOOL_ROOT}/${REPO_NAME}"
 
+# CAS root is mounted at /srv/cvmfs/<repo> (docker-compose.yml).
+# upstream-scratch lives here (NOT under /var/spool/cvmfs) so that
+# LocalUploader::FinalizeStreamedUpload rename(scratch→data/XY/hash) stays
+# on the same bind-mount and does not fail with EXDEV (errno 18).
+CAS_ROOT="/srv/cvmfs/${REPO_NAME}"
+SCRATCH_DIR="${CAS_ROOT}/upstream-scratch"
+
 echo "[gateway-entrypoint] Ensuring spool layout for ${REPO_NAME} ..."
 
-# Create the per-repo spool directory tree.
-mkdir -p \
-    "${SPOOL_DIR}" \
-    "${SPOOL_DIR}/upstream-scratch"
-chmod 755 \
-    "${SPOOL_DIR}" \
-    "${SPOOL_DIR}/upstream-scratch"
+# Create the per-repo spool directory tree (/var/spool/cvmfs/<repo>).
+# NOTE: upstream-scratch is no longer here — see SCRATCH_DIR below.
+mkdir -p "${SPOOL_DIR}"
+chmod 755 "${SPOOL_DIR}"
+
+# Create the upstream-scratch dir under the CAS root so rename() works.
+if [[ -d "${CAS_ROOT}" ]]; then
+    mkdir -p "${SCRATCH_DIR}"
+    chmod 755 "${SCRATCH_DIR}"
+    echo "[gateway-entrypoint] Created ${SCRATCH_DIR}"
+else
+    echo "[gateway-entrypoint] WARNING: CAS root ${CAS_ROOT} not found — scratch dir not created."
+    echo "[gateway-entrypoint]   Ensure ${REPO_NAME} is mounted at ${CAS_ROOT} in docker-compose.yml"
+fi
 
 # client.local — must exist so truncate() in commit_processor.cc succeeds.
 if [[ ! -f "${SPOOL_DIR}/client.local" ]]; then
