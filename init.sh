@@ -209,7 +209,8 @@ mkdir -p \
     "$TESTBED_ROOT/config/keys" \
     "$TESTBED_ROOT/config/cvmfs-prepub" \
     "$TESTBED_ROOT/config/stratum1-a" \
-    "$TESTBED_ROOT/config/stratum1-b"
+    "$TESTBED_ROOT/config/stratum1-b" \
+    "$TESTBED_ROOT/config/repo-config"
 
 # Directories that are mounted as writable volumes inside containers running
 # as non-root users need to be world-writable on the host.  The affected
@@ -566,6 +567,22 @@ else
             # Make repo tree world-writable so container services (cvmfs-prepub,
             # gateway) running as non-root users can write to the CAS and spool.
             chmod -R 777 "$TESTBED_ROOT/repos/$REPO_NAME"
+
+            # Copy server.conf so cvmfs_receiver can read it inside the gateway
+            # container.  cvmfs_receiver::GetParamsFromFile() reads:
+            #   /etc/cvmfs/repositories.d/<repo>/server.conf
+            # The docker-compose.yml mounts config/repo-config/ there (read-only).
+            _server_conf="/etc/cvmfs/repositories.d/$REPO_NAME/server.conf"
+            if [[ -f "$_server_conf" ]]; then
+                sudo cp "$_server_conf" "$TESTBED_ROOT/config/repo-config/server.conf"
+                sudo chown "$USER:$(id -gn)" "$TESTBED_ROOT/config/repo-config/server.conf"
+                chmod 644 "$TESTBED_ROOT/config/repo-config/server.conf"
+                success "server.conf copied to config/repo-config/."
+            else
+                warn "server.conf not found at $_server_conf — cvmfs_receiver will fail."
+                warn "Copy manually: sudo cp $_server_conf $TESTBED_ROOT/config/repo-config/server.conf"
+            fi
+
             success "CVMFS repository initialised."
         else
             warn "cvmfs_server mkfs failed — check output above."

@@ -21,6 +21,11 @@ services:
       - ${TESTBED_ROOT}/config/gateway:/etc/cvmfs/gateway:ro
       - ${TESTBED_ROOT}/repos/${REPO_NAME}:/srv/cvmfs/${REPO_NAME}
       - ${TESTBED_ROOT}/config/keys:/etc/cvmfs/keys:ro
+      # cvmfs_receiver reads /etc/cvmfs/repositories.d/<repo>/server.conf for
+      # CVMFS_STRATUM0, CVMFS_UPSTREAM_STORAGE, CVMFS_HASH_ALGORITHM, and other
+      # parameters.  This file is created by cvmfs_server mkfs on the host and
+      # copied into config/repo-config/ by init.sh.
+      - ${TESTBED_ROOT}/config/repo-config:/etc/cvmfs/repositories.d/${REPO_NAME}:ro
     cap_add:
       # cvmfs_receiver spawns a watchdog child that uses ptrace to collect
       # stack traces on crashes. Without SYS_PTRACE the watchdog fails to
