@@ -311,9 +311,29 @@ cat > "$TESTBED_ROOT/config/gateway/user.json" <<EOF
 }
 EOF
 
+# Gateway key file: plain_text format read by LoadKey() in gateway/internal/gateway/keys.go
+# Format: "plain_text <key_id> <secret>"
+# Mounted into the gateway container at /etc/cvmfs/keys/${REPO_NAME}.gw (read-only via
+# the same ${TESTBED_ROOT}/config/keys volume used for signing keys).
+cat > "$TESTBED_ROOT/config/keys/$REPO_NAME.gw" <<EOF
+plain_text prepub-key $CVMFS_GATEWAY_SECRET
+EOF
+chmod 600 "$TESTBED_ROOT/config/keys/$REPO_NAME.gw"
+
+# repo.json (access config): maps key IDs to path prefixes per repo, AND registers
+# the key secrets (loaded from the .gw file) in the global keystore.
+# The top-level "keys" array populates c.Keys[keyID] = {Secret, Admin};
+# the per-repo "keys" array populates c.Repositories[repo].Keys[keyID] = path.
+# Both are needed — without the top-level entry the HMAC lookup returns "invalid key ID".
 cat > "$TESTBED_ROOT/config/gateway/repo.json" <<EOF
 {
   "version": 2,
+  "keys": [
+    {
+      "type": "file",
+      "file_name": "/etc/cvmfs/keys/$REPO_NAME.gw"
+    }
+  ],
   "repos": [
     {
       "domain": "$REPO_NAME",
