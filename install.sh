@@ -177,4 +177,23 @@ else
     exit 1
 fi
 
+# ── 5b. Patch hardcoded /usr/bin/ paths in generated cvmfs_server ─────────────
+# make_cvmfs_server.sh bakes the install prefix into the script as literal
+# /usr/bin/cvmfs_publish (and similar).  On this testbed the binaries live in
+# SOFTWARE_ROOT, not /usr/bin, so those hardcoded paths break operations like
+# "cvmfs_server publish" on the host.
+#
+# Replace each hardcoded absolute path with a bare command name so the shell
+# resolves it via PATH at runtime.  This works for both the host (PATH includes
+# SOFTWARE_ROOT) and containers (/usr/local/bin is always in PATH).
+_patched=0
+for _bin in cvmfs_publish cvmfs_swissknife cvmfs_suid_helper; do
+    if grep -q "/usr/bin/${_bin}" "$SOFTWARE_ROOT/cvmfs_server" 2>/dev/null; then
+        sed -i "s|/usr/bin/${_bin}|${_bin}|g" "$SOFTWARE_ROOT/cvmfs_server"
+        info "  patched /usr/bin/${_bin} → ${_bin} (PATH lookup)"
+        (( _patched++ )) || true
+    fi
+done
+[[ $_patched -gt 0 ]] && success "Patched $_patched hardcoded path(s) in cvmfs_server."
+
 success "install.sh complete.  Binaries are in $SOFTWARE_ROOT"
