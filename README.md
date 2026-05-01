@@ -137,7 +137,8 @@ The testbed uses a **fixed directory convention** so that no path variables need
 
 ```
 cvmfs-testbed/               ← this repository
-├── testbed.sh               # Top-level management script
+├── Makefile                 # Top-level build and lifecycle automation
+├── testbed.sh               # Management script (called by Makefile)
 ├── install.sh               # Populates software/ from cvmfs/build/
 ├── init.sh                  # One-time host setup (called by testbed.sh init)
 ├── docker-compose.yml       # Core services (HTTP mode)
@@ -155,6 +156,10 @@ cvmfs-testbed/               ← this repository
 │       ├── cvmfs_swissknife
 │       └── libcvmfs_server.so.*
 │
+├── cvmfs-bits/              # ← cvmfs-bits source tree (git clone or symlink HERE)
+│   │                        #   Builds cvmfs-prepub and cvmfs_gateway binaries
+│   └── Makefile             #   `make build` produces the binaries
+│
 ├── bits-console/            # ← bits-console source (git clone or symlink HERE)
 │   │                        #   Required only for the --bits overlay
 │   └── build-communities.sh
@@ -164,10 +169,13 @@ cvmfs-testbed/               ← this repository
 │   ├── cvmfs_publish
 │   ├── cvmfs_swissknife
 │   ├── libcvmfs_server.so.*
-│   ├── cvmfs-prepub         # ← copy your built binary here manually
-│   ├── cvmfs_gateway        # ← copy your built binary here manually
+│   ├── cvmfs-prepub         # Built by cvmfs-bits/Makefile, installed by install.sh
+│   ├── cvmfs_gateway        # Built by cvmfs-bits/Makefile, installed by install.sh
 │   ├── cvmfs2               # ← copy your built binary here manually
 │   └── cvmfs_talk           # ← copy your built binary here manually
+│
+├── tools/
+│   └── dump-catalogs.sh     # Decompress and SQL-dump all catalogs (host-side)
 │
 ├── gateway/
 │   └── Dockerfile
@@ -181,8 +189,16 @@ cvmfs-testbed/               ← this repository
 ├── publisher/
 │   ├── Dockerfile
 │   └── scripts/
-│       ├── smoke-test.sh
-│       └── stress-test.sh
+│       ├── smoke-test.sh        # Comprehensive smoke test (bits path)
+│       ├── stress-test.sh       # Stress test (bits path)
+│       └── make-test-payload.sh # Shared comprehensive test payload builder
+├── cvmfs-native-publisher/
+│   ├── Dockerfile
+│   ├── entrypoint.sh
+│   └── scripts/
+│       ├── native-smoke.sh      # Comprehensive smoke test (cvmfs_server ingest)
+│       ├── native-stress.sh     # Stress test (ingest path)
+│       └── make-test-payload.sh # Shared comprehensive test payload builder
 ├── cvmfs-client/
 │   ├── Dockerfile
 │   ├── entrypoint.sh
@@ -267,28 +283,36 @@ ${TESTBED_ROOT}/             ← All persistent runtime state (default: $HOME/cv
 `testbed.sh` is the recommended entry point for all testbed operations. It wraps `init.sh` and `docker compose` to give a single, consistent interface.
 
 ```
-./testbed.sh <command> [--bits] [--mqtt]
+./testbed.sh <command> [options] [args]
 ```
 
-| Command       | Description                                              |
-|---------------|----------------------------------------------------------|
-| `init`        | Create directories, run install.sh, generate secrets, write configs, run mkfs |
-| `start`       | Build images (if needed) and start all services          |
-| `stop`        | Stop containers (preserves state)                        |
-| `restart`     | Stop then start                                          |
-| `status`      | Show container status and spot-check service health      |
-| `logs [svc]`  | Tail logs (all services or one named service)            |
-| `test`        | Run the smoke test                                       |
-| `verify <id>` | Verify end-to-end file visibility for a job UUID         |
-| `clean`       | Stop containers **and** remove all persistent host state |
-| `reset`       | `clean` + `init` + `start`                              |
+| Command              | Description                                                          |
+|----------------------|----------------------------------------------------------------------|
+| `init`               | Create directories, generate secrets, write configs, run mkfs        |
+| `start`              | Build images (if needed) and start all services                      |
+| `stop`               | Stop containers (preserves state)                                    |
+| `restart`            | Stop then start                                                      |
+| `status`             | Show container status and spot-check service health                  |
+| `info`               | Print all service endpoints, ports, and credentials                  |
+| `logs [svc]`         | Tail logs (all services or one named service)                        |
+| `test`               | Run comprehensive smoke test (default method: `bits`)                |
+| `stresstest <n>`     | Stress test with *n* jobs (default method: `bits`)                   |
+| `catdump [label]`    | Decompress and SQL-dump all catalogs from the current snapshot       |
+| `catdiff [a] [b]`    | Diff two catalog dump sets (default: `ingest` vs `bits`)             |
+| `verify <id> [path]` | Verify end-to-end file visibility for a job UUID                     |
+| `clean`              | Stop containers **and** remove all persistent host state             |
+| `reset`              | `clean` + `init` + `start`                                          |
 
 **Flags:**
 
-| Flag             | Effect                                                                |
-|------------------|-----------------------------------------------------------------------|
-| `--bits`         | Include the bits-console overlay (requires `bits-console/` to exist)  |
-| `--mqtt`         | Include the MQTT control-plane overlay                                |
+| Flag                  | Effect                                                                    |
+|-----------------------|---------------------------------------------------------------------------|
+| `--bits`              | Include the bits-console overlay (requires `bits-console/` to exist)      |
+| `--mqtt`              | Include the MQTT control-plane overlay                                     |
+| `--method bits\|ingest` | Publishing path for `test`/`stresstest`: `bits` (REST API, default) or `ingest` (`cvmfs_server ingest`) |
+| `-y`, `--yes`         | Skip interactive confirmation prompts (used by `make clean`)              |
+| `--software-root PATH`| Override the `software/` directory                                        |
+| `--testbed-root PATH` | Override the testbed data root (default: `$HOME/cvmfs-testbed`)           |
 
 **Examples:**
 
@@ -296,8 +320,16 @@ ${TESTBED_ROOT}/             ← All persistent runtime state (default: $HOME/cv
 # Core stack only
 ./testbed.sh init
 ./testbed.sh start
-./testbed.sh test
+./testbed.sh test                        # bits smoke test
+./testbed.sh test --method ingest        # native cvmfs_server ingest smoke test
+./testbed.sh stresstest 20               # 20 jobs via bits REST API
+./testbed.sh stresstest 20 --method ingest
 ./testbed.sh logs cvmfs-prepub
+
+# Catalog structure comparison between publishing paths
+./testbed.sh test --method ingest && ./testbed.sh catdump ingest
+./testbed.sh test --method bits   && ./testbed.sh catdump bits
+./testbed.sh catdiff ingest bits         # writes ingest_vs_bits.diff
 
 # Core stack + MQTT control plane
 ./testbed.sh start --mqtt
@@ -306,18 +338,132 @@ ${TESTBED_ROOT}/             ← All persistent runtime state (default: $HOME/cv
 ./testbed.sh init  --bits
 ./testbed.sh start --bits
 
-# Check what is running
-./testbed.sh status --bits
-
 # Tear down everything and start fresh
 ./testbed.sh reset --bits
 ```
 
 ---
 
+## Makefile — Quick Reference
+
+The `Makefile` is the recommended entry point for day-to-day development. It encodes the full dependency chain — pull source, build, install binaries, redeploy — so a single command keeps everything in sync.
+
+### Targets
+
+| Target               | What it does                                                                      |
+|----------------------|-----------------------------------------------------------------------------------|
+| `make`               | Pull + build `cvmfs-bits`, install binaries, stop → clean → init → start testbed |
+| `make build`         | `git pull` + `make build` inside `cvmfs-bits/` only                              |
+| `make install`       | `build`, then copy binaries to `software/`                                        |
+| `make redeploy`      | `install` + stop → clean → init → start (skip the source pull)                   |
+| `make clean`         | Stop containers and wipe all testbed state (no confirmation prompt)               |
+| `make test`          | Smoke test — bits REST API path                                                   |
+| `make test-ingest`   | Smoke test — `cvmfs_server ingest` path                                           |
+| `make test-bits`     | Smoke test — bits REST API path (explicit alias)                                  |
+| `make stresstest`    | Stress test, `N` jobs via bits (default `N=10`)                                   |
+| `make stresstest-ingest` | Stress test, `N` jobs via ingest                                              |
+| `make catdump-ingest`| Dump catalogs from the current snapshot, labelled `ingest`                        |
+| `make catdump-bits`  | Dump catalogs from the current snapshot, labelled `bits`                          |
+| `make catdiff`       | Diff `ingest` vs `bits` catalog dumps                                             |
+| `make help`          | Print the target summary with current variable values                             |
+
+### Variables
+
+| Variable   | Default                      | Description                                      |
+|------------|------------------------------|--------------------------------------------------|
+| `BITS_DIR` | `$(CURDIR)/cvmfs-bits`       | Path to the `cvmfs-bits` source tree             |
+| `N`        | `10`                         | Number of jobs for `stresstest` targets          |
+
+### Common workflows
+
+```bash
+# First run — full setup from source
+make
+
+# Day-to-day iteration after changing cvmfs-bits source
+make
+
+# Rebuild and redeploy without pulling (e.g. local uncommitted changes)
+make redeploy
+
+# Run both smoke tests and compare catalog structure
+make test-ingest catdump-ingest test-bits catdump-bits catdiff
+
+# Stress test with a custom job count
+make stresstest N=50
+make stresstest-ingest N=50
+
+# Use a cvmfs-bits clone that lives outside the testbed directory
+make BITS_DIR=/home/user/src/cvmfs-bits
+
+# Wipe everything and start over (no confirmation prompt)
+make clean && make
+```
+
+### How `make` maps to `testbed.sh`
+
+```
+make build       →  cd cvmfs-bits && git pull && make build
+make install     →  make build  +  ./install.sh
+make redeploy    →  make install
+                    ./testbed.sh stop
+                    ./testbed.sh clean --yes
+                    ./testbed.sh init
+                    ./testbed.sh start
+make clean       →  ./testbed.sh stop
+                    ./testbed.sh clean --yes
+make test        →  ./testbed.sh test --method bits
+make test-ingest →  ./testbed.sh test --method ingest
+make stresstest  →  ./testbed.sh stresstest $(N) --method bits
+make catdiff     →  ./testbed.sh catdiff ingest bits
+```
+
+---
+
 ## Quick Start
 
-The recommended way to use the testbed is via `testbed.sh`. See the section above for all available commands.
+The recommended entry point is `make`. It handles the full build-install-deploy sequence automatically. Use `testbed.sh` directly when you need finer control over individual steps.
+
+### With `make` (recommended)
+
+1. **Clone the repository and enter it**
+   ```bash
+   git clone https://github.com/your-org/cvmfs-testbed
+   cd cvmfs-testbed
+   ```
+
+2. **Clone CVMFS and cvmfs-bits source trees**
+   ```bash
+   git clone https://github.com/cvmfs/cvmfs cvmfs
+   cmake -S cvmfs -B cvmfs/build && make -C cvmfs/build -j$(nproc)
+
+   git clone https://github.com/your-org/cvmfs-bits cvmfs-bits
+   ```
+
+3. **Copy binaries that are not built by cvmfs-bits**
+   ```bash
+   cp /path/to/cvmfs2     software/
+   cp /path/to/cvmfs_talk software/
+   chmod +x software/*
+   ```
+
+4. **Full setup** (builds cvmfs-bits, installs binaries, inits and starts the testbed)
+   ```bash
+   sudo make
+   ```
+
+5. **Run smoke tests**
+   ```bash
+   make test              # bits REST API path
+   make test-ingest       # cvmfs_server ingest path
+   ```
+
+6. **Open Grafana**
+   ```
+   http://localhost:3000  (admin / admin)
+   ```
+
+### With `testbed.sh` (step by step)
 
 1. **Clone the repository and enter it**
    ```bash
@@ -382,19 +528,48 @@ The recommended way to use the testbed is via `testbed.sh`. See the section abov
 
 ## Running Tests
 
-### Smoke Test (Single Job)
+Both publishing paths use the same comprehensive test payload (built by `make-test-payload.sh`), which covers directory hierarchies, hard and symbolic links, a 20 MiB file to trigger chunking, unusual file names (spaces, unicode, special characters), permission modes, and empty directories.
+
+### Smoke Tests
+
 ```bash
-docker compose exec publisher /scripts/smoke-test.sh
+# bits REST API path (default)
+make test
+# or: ./testbed.sh test --method bits
+
+# cvmfs_server ingest path
+make test-ingest
+# or: ./testbed.sh test --method ingest
 ```
 
-Submits one 30KB tar file and waits for it to be published.
+### Stress Tests
 
-### Stress Test (Multiple Jobs)
 ```bash
-docker compose exec -e NUM_JOBS=10 -e CONCURRENCY=3 publisher /scripts/stress-test.sh
+# 10 jobs via bits REST API (default N=10)
+make stresstest
+
+# 50 jobs via ingest path
+make stresstest-ingest N=50
+# or: ./testbed.sh stresstest 50 --method ingest
 ```
 
-Submits 10 jobs with 3 running concurrently. Control concurrency to avoid overwhelming the service.
+### Catalog Structure Comparison
+
+Run both paths and diff the resulting SQLite catalog dumps to inspect schema and content differences:
+
+```bash
+make test-ingest catdump-ingest test-bits catdump-bits catdiff
+```
+
+This writes SQL dumps to `$TESTBED_ROOT/data/catalog-dumps/ingest/` and `bits/`, then produces `ingest_vs_bits.diff`. Individual `testbed.sh` equivalents:
+
+```bash
+./testbed.sh test --method ingest
+./testbed.sh catdump ingest          # dumps to data/catalog-dumps/ingest/
+./testbed.sh test --method bits
+./testbed.sh catdump bits            # dumps to data/catalog-dumps/bits/
+./testbed.sh catdiff ingest bits     # writes ingest_vs_bits.diff
+```
 
 ### Manual Job Submission
 ```bash

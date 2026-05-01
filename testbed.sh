@@ -10,24 +10,34 @@
 #   ./testbed.sh [command] [options] [args]
 #
 # Commands:
-#   init      One-time host setup: create directories, generate secrets,
-#             run install.sh, initialise CVMFS repository, write service configs.
-#   start     Build images (if needed) and start containers.
-#   stop      Stop containers without removing state.
-#   restart   Stop then start.
-#   status    Show container status and key service health.
-#   info      Print all service endpoints, ports, and credentials.
-#   logs      Tail logs (all services, or pass a service name).
-#   test      Run the smoke test.
-#   verify    Verify end-to-end file visibility (needs a job UUID).
-#   clean     Stop containers AND remove all persistent state.
-#   reset     clean + init + start (full teardown and reinitialisation).
-#   help      Show this help text.
+#   init            One-time host setup: create directories, generate secrets,
+#                   run install.sh, initialise CVMFS repository, write service configs.
+#   start           Build images (if needed) and start containers.
+#   stop            Stop containers without removing state.
+#   restart         Stop then start.
+#   status          Show container status and key service health.
+#   info            Print all service endpoints, ports, and credentials.
+#   logs            Tail logs (all services, or pass a service name).
+#   test            Run the smoke test (default method: bits).
+#   stresstest <n>  Stress test publishing with n concurrent/sequential jobs.
+#   catdump [label] Decompress and SQL-dump all catalogs from the current repo
+#                   snapshot into data/catalog-dumps/<label>/.
+#                   label defaults to the current --method value (bits or ingest).
+#   catdiff [a] [b] Diff two catalog dump sets.  a/b default to "ingest" and
+#                   "bits" respectively.  Requires both catdump sets to exist.
+#   verify          Verify end-to-end file visibility (needs a job UUID).
+#   clean           Stop containers AND remove all persistent state.
+#   reset           clean + init + start (full teardown and reinitialisation).
+#   help            Show this help text.
 #
 # Options (accepted by all commands):
 #   --bits                Include the bits-console overlay (Gitea + seeder).
 #                         Requires bits-console/ to be present in this directory.
 #   --mqtt                Include the MQTT control-plane overlay.
+#   --method bits|ingest  Publishing method for test/stresstest commands.
+#                         bits:   Use the cvmfs-prepub REST API path (default).
+#                         ingest: Use cvmfs_server ingest directly via the gateway.
+#   -y, --yes             Skip interactive confirmation prompts (e.g. in Makefile).
 #   --software-root PATH  Override the default software/ destination.
 #   --testbed-root PATH   Path to testbed data root (overrides TESTBED_ROOT from .env).
 #
@@ -56,7 +66,21 @@
 #   # Tail logs for a single service:
 #   ./testbed.sh logs gateway
 #
-#   # Verify a publish job end-to-end:
+#   # Smoke test using cvmfs_server ingest path:
+#   ./testbed.sh test --method ingest
+#
+#   # Stress test: 20 jobs via bits REST API (default), or cvmfs_server ingest:
+#   ./testbed.sh stresstest 20
+#   ./testbed.sh stresstest 20 --method ingest
+#
+#   # Compare catalog structure between the two publishing paths:
+#   ./testbed.sh test --method ingest
+#   ./testbed.sh catdump ingest
+#   ./testbed.sh test --method bits
+#   ./testbed.sh catdump bits
+#   ./testbed.sh catdiff ingest bits
+#
+#   # Verify a publish job end-to-end (bits path only):
 #   ./testbed.sh verify <job-uuid> usr/share/test/hello.txt
 #
 #   # Full teardown and reinitialise:
@@ -82,6 +106,8 @@ USE_BITS=false
 USE_MQTT=false
 SOFTWARE_ROOT_OVERRIDE=""
 TESTBED_ROOT_OVERRIDE=""
+PUBLISH_METHOD="bits"   # bits | ingest
+AUTO_YES=false          # skip interactive confirmation prompts (e.g. for make)
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 # Extract the command first, then parse --flags.
@@ -110,6 +136,16 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { error "--testbed-root requires a value"; exit 1; }
             TESTBED_ROOT_OVERRIDE="$2"; shift 2 ;;
         --testbed-root=*)      TESTBED_ROOT_OVERRIDE="${1#*=}";  shift ;;
+        --method)
+            [[ $# -ge 2 ]] || { error "--method requires a value (bits|ingest)"; exit 1; }
+            PUBLISH_METHOD="$2"; shift 2
+            [[ "$PUBLISH_METHOD" == "bits" || "$PUBLISH_METHOD" == "ingest" ]] \
+                || { error "--method must be 'bits' or 'ingest'"; exit 1; } ;;
+        --method=*)
+            PUBLISH_METHOD="${1#*=}"; shift
+            [[ "$PUBLISH_METHOD" == "bits" || "$PUBLISH_METHOD" == "ingest" ]] \
+                || { error "--method must be 'bits' or 'ingest'"; exit 1; } ;;
+        -y|--yes)      AUTO_YES=true;                    shift ;;
         --*)  error "Unknown option: $1"; exit 1 ;;
         *)    POSITIONAL_ARGS+=("$1");                           shift ;;
     esac
@@ -371,9 +407,111 @@ cmd_logs() {
 }
 
 cmd_test() {
-    section "Running smoke test"
+    section "Running smoke test (method: ${PUBLISH_METHOD})"
     load_env
-    run_compose exec publisher /scripts/smoke-test.sh
+    case "$PUBLISH_METHOD" in
+        bits)
+            run_compose exec publisher /scripts/smoke-test.sh
+            ;;
+        ingest)
+            run_compose exec cvmfs-native-publisher /scripts/native-smoke.sh
+            ;;
+        *)
+            error "Unknown publish method: $PUBLISH_METHOD (expected bits|ingest)"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_stresstest() {
+    local n="${POSITIONAL_ARGS[0]:-}"
+    if [[ -z "$n" ]] || ! [[ "$n" =~ ^[1-9][0-9]*$ ]]; then
+        error "Usage: $0 stresstest <n>  (n must be a positive integer)"
+        exit 1
+    fi
+    section "Running stress test: ${n} jobs (method: ${PUBLISH_METHOD})"
+    load_env
+    case "$PUBLISH_METHOD" in
+        bits)
+            run_compose exec -e NUM_JOBS="$n" publisher /scripts/stress-test.sh
+            ;;
+        ingest)
+            run_compose exec -e NUM_JOBS="$n" cvmfs-native-publisher /scripts/native-stress.sh
+            ;;
+        *)
+            error "Unknown publish method: $PUBLISH_METHOD (expected bits|ingest)"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_catdump() {
+    # Label defaults to the current publish method so the common workflow of
+    #   ./testbed.sh test --method ingest && ./testbed.sh catdump --method ingest
+    # just works without repeating the label.
+    local label="${POSITIONAL_ARGS[0]:-$PUBLISH_METHOD}"
+    load_env
+
+    local cas_root="${TESTBED_ROOT}/repos/${REPO_NAME}"
+    local out_dir="${TESTBED_ROOT}/data/catalog-dumps/${label}"
+
+    if [[ ! -f "$cas_root/.cvmfspublished" ]]; then
+        error "No .cvmfspublished found at $cas_root"
+        error "Run a publish test first: ./testbed.sh test --method $label"
+        exit 1
+    fi
+
+    section "Dumping catalogs (label: ${label})"
+    info "CAS root:   $cas_root"
+    info "Output dir: $out_dir"
+
+    mkdir -p "$out_dir"
+    bash "$SCRIPT_DIR/tools/dump-catalogs.sh" "$cas_root" "$out_dir"
+    ok "Catalog dumps written to $out_dir"
+}
+
+cmd_catdiff() {
+    local label_a="${POSITIONAL_ARGS[0]:-ingest}"
+    local label_b="${POSITIONAL_ARGS[1]:-bits}"
+    load_env
+
+    local dumps_root="${TESTBED_ROOT}/data/catalog-dumps"
+    local dir_a="$dumps_root/$label_a"
+    local dir_b="$dumps_root/$label_b"
+
+    section "Diffing catalog dumps: ${label_a}  vs  ${label_b}"
+
+    local missing=false
+    [[ -d "$dir_a" ]] || { error "Dump set '$label_a' not found at $dir_a"; missing=true; }
+    [[ -d "$dir_b" ]] || { error "Dump set '$label_b' not found at $dir_b"; missing=true; }
+    if $missing; then
+        error "Run catdump for each label first:"
+        error "  ./testbed.sh test --method ingest && ./testbed.sh catdump ingest"
+        error "  ./testbed.sh test --method bits   && ./testbed.sh catdump bits"
+        exit 1
+    fi
+
+    info "Catalogs in $label_a: $(ls "$dir_a"/*.dump 2>/dev/null | wc -l)"
+    info "Catalogs in $label_b: $(ls "$dir_b"/*.dump 2>/dev/null | wc -l)"
+    echo ""
+
+    local diff_out="$dumps_root/${label_a}_vs_${label_b}.diff"
+    diff -u --recursive --label "$label_a" --label "$label_b" "$dir_a" "$dir_b" \
+        > "$diff_out" 2>&1 || true
+
+    local nlines
+    nlines=$(wc -l < "$diff_out")
+    if [[ $nlines -eq 0 ]]; then
+        ok "No differences found — the two catalog sets are identical."
+    else
+        info "Diff written to: $diff_out  (${nlines} lines)"
+        echo ""
+        # Print a summary: which files differ, added, removed.
+        grep -E "^(---|\+\+\+|Only in)" "$diff_out" | head -40 || true
+        echo ""
+        info "View full diff:  less $diff_out"
+        info "Stat summary:    diffstat $diff_out"
+    fi
 }
 
 cmd_verify() {
@@ -396,8 +534,12 @@ cmd_clean() {
     load_env
 
     warn "This will remove ALL container state and testbed data."
-    read -rp "Continue? [y/N] " confirm
-    [[ "${confirm,,}" == "y" ]] || { info "Aborted"; exit 0; }
+    if $AUTO_YES; then
+        warn "Auto-confirmed (--yes flag set)."
+    else
+        read -rp "Continue? [y/N] " confirm
+        [[ "${confirm,,}" == "y" ]] || { info "Aborted"; exit 0; }
+    fi
 
     run_compose down -v --remove-orphans || true
 
@@ -570,6 +712,9 @@ case "$CMD" in
     info)           cmd_info ;;
     logs)           cmd_logs ;;
     test)           cmd_test ;;
+    stresstest)     cmd_stresstest ;;
+    catdump)        cmd_catdump ;;
+    catdiff)        cmd_catdiff ;;
     verify)         cmd_verify ;;
     clean)          cmd_clean ;;
     reset)          cmd_reset ;;

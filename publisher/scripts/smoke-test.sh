@@ -1,4 +1,21 @@
 #!/usr/bin/env bash
+# smoke-test.sh — Comprehensive smoke test via the cvmfs-prepub REST API.
+#
+# Publishes a rich test payload to test/smoke using the cvmfs-bits publishing
+# path (cvmfs-prepub REST API → gateway → cvmfs_receiver → signed manifest).
+#
+# The payload (built by make-test-payload.sh) exercises catalog corner cases:
+#   directory hierarchy, hard links, symlinks, large file (chunking), unusual
+#   file names (spaces, unicode, special chars), permission modes, empty dirs.
+#
+# Compare against cvmfs-native-publisher/scripts/native-smoke.sh which uses
+# cvmfs_server ingest — both scripts use the same payload for a fair comparison.
+#
+# Environment:
+#   PREPUB_API_TOKEN — bearer token for the cvmfs-prepub API  [required]
+#   PREPUB_URL       — base URL of the cvmfs-prepub service    [required]
+#   REPO_NAME        — CVMFS repository FQDN                   [required]
+#   INGEST_PATH      — sub-path within the repo (default: test/smoke)
 set -euo pipefail
 
 # Colors for output
@@ -22,28 +39,29 @@ if [[ -z "${REPO_NAME:-}" ]]; then
     exit 1
 fi
 
-# Create test data
-TEST_DIR=$(mktemp -d)
-# Single-quoted trap: $TEST_DIR is expanded at trap-fire time, not at definition time.
-trap 'rm -rf "${TEST_DIR}"' EXIT
+INGEST_PATH="${INGEST_PATH:-test/smoke}"
 
-mkdir -p "$TEST_DIR/smoke/usr/share/test-pkg"
-echo "hello cvmfs $(date)" > "$TEST_DIR/smoke/usr/share/test-pkg/hello.txt"
+# ── Build comprehensive test payload ───────────────────────────────────────────
+WORK_DIR=$(mktemp -d)
+trap 'rm -rf "${WORK_DIR}"' EXIT
 
-SMOKE_TAR="$TEST_DIR/smoke.tar"
-tar -cf "$SMOKE_TAR" -C "$TEST_DIR/smoke" .
+echo "Building comprehensive test payload..."
+bash /scripts/make-test-payload.sh "$WORK_DIR"
 
-echo "Created test tar: $SMOKE_TAR"
+SMOKE_TAR="$WORK_DIR/payload.tar"
+
+echo ""
+echo "Created test tar: $SMOKE_TAR  ($(du -sh "$SMOKE_TAR" | cut -f1))"
 
 # Submit job
 TAG_NAME="smoke-$(date +%Y%m%d-%H%M%S)"
-echo "Submitting job with tag: $TAG_NAME"
+echo "Submitting job: repo=${REPO_NAME} path=${INGEST_PATH} tag=${TAG_NAME}"
 
-RESPONSE=$(curl -sf --max-time 60 \
+RESPONSE=$(curl -sf --max-time 120 \
     -X POST \
     -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
     -F "repo=${REPO_NAME}" \
-    -F "path=test/smoke" \
+    -F "path=${INGEST_PATH}" \
     -F "tar=@${SMOKE_TAR}" \
     -F "tag_name=${TAG_NAME}" \
     "${PREPUB_URL}/api/v1/jobs") || RESPONSE=""
@@ -106,6 +124,12 @@ case "$FINAL_STATE" in
     published)
         echo -e "${GREEN}Job published successfully${NC}"
         echo "$JOB_STATUS" | jq .
+        echo ""
+        echo "Expected paths (sample):"
+        echo "  /cvmfs/${REPO_NAME}/${INGEST_PATH}/simple/hello.txt"
+        echo "  /cvmfs/${REPO_NAME}/${INGEST_PATH}/large/large-20m.bin"
+        echo "  /cvmfs/${REPO_NAME}/${INGEST_PATH}/links/hardlink.txt"
+        echo "  /cvmfs/${REPO_NAME}/${INGEST_PATH}/unusual-names/unicode-日本語.txt"
         exit 0 ;;
     failed|aborted)
         echo -e "${RED}Job ${FINAL_STATE}${NC}"

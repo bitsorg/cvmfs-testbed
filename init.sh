@@ -207,12 +207,14 @@ mkdir -p \
     "$TESTBED_ROOT/data/gitea" \
     "$TESTBED_ROOT/data/receiver-logs" \
     "$TESTBED_ROOT/data/gateway-spool" \
+    "$TESTBED_ROOT/data/native-ingest" \
     "$TESTBED_ROOT/config/gateway" \
     "$TESTBED_ROOT/config/keys" \
     "$TESTBED_ROOT/config/cvmfs-prepub" \
     "$TESTBED_ROOT/config/stratum1-a" \
     "$TESTBED_ROOT/config/stratum1-b" \
-    "$TESTBED_ROOT/config/repo-config"
+    "$TESTBED_ROOT/config/repo-config" \
+    "$TESTBED_ROOT/config/native-publisher"
 
 # Directories that are mounted as writable volumes inside containers running
 # as non-root users need to be world-writable on the host.  The affected
@@ -452,9 +454,29 @@ if [[ -f "$_config_server_conf" ]]; then
     mkdir -p "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
     chmod 755 "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
     success "server.conf CVMFS_UPSTREAM_STORAGE OK."
+
+    # ── Generate native-publisher server.conf (gateway mode) ─────────────────
+    # The native-publisher container runs cvmfs_server ingest which contacts the
+    # gateway API directly (not via cvmfs-prepub).  It needs a server.conf where
+    # CVMFS_UPSTREAM_STORAGE points to the gateway rather than local CAS storage.
+    #
+    # The receiver's server.conf uses "local,..." so the receiver writes objects
+    # directly to disk.  The native publisher's server.conf uses "gw,..." so that
+    # cvmfs_swissknife sends objects through the gateway API like a real publisher.
+    #
+    # The scratch dir (/var/spool/cvmfs/${REPO_NAME}/tmp) is the spool directory
+    # mounted from ${TESTBED_ROOT}/data/native-ingest inside the container.
+    info "Generating native-publisher/server.conf (gateway mode)..."
+    _native_upstream="gw,/var/spool/cvmfs/${REPO_NAME}/tmp,http://gateway:4929/api/v1"
+    sed "s|^CVMFS_UPSTREAM_STORAGE=.*|CVMFS_UPSTREAM_STORAGE=${_native_upstream}|" \
+        "$_config_server_conf" \
+        > "$TESTBED_ROOT/config/native-publisher/server.conf"
+    chmod 644 "$TESTBED_ROOT/config/native-publisher/server.conf"
+    success "native-publisher/server.conf written (gateway mode: ${_native_upstream})."
 else
     warn "config/repo-config/server.conf not found — skipping upstream-storage patch."
     warn "It will be created and patched when the repository is initialised (mkfs)."
+    warn "native-publisher/server.conf will also be generated after mkfs completes."
 fi
 
 # ── Initialise CVMFS repository ───────────────────────────────────────────────
@@ -707,6 +729,16 @@ else
 
                 info "Pre-created spool files in $_gspool"
                 info "Pre-created upstream-scratch in $TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
+
+                # ── Generate native-publisher/server.conf (gateway mode) ──────────────
+                # Generate it here too so the first-time init (when the unconditional
+                # patch block above had no server.conf yet) also produces the file.
+                _native_up="gw,/var/spool/cvmfs/${REPO_NAME}/tmp,http://gateway:4929/api/v1"
+                sed "s|^CVMFS_UPSTREAM_STORAGE=.*|CVMFS_UPSTREAM_STORAGE=${_native_up}|" \
+                    "$TESTBED_ROOT/config/repo-config/server.conf" \
+                    > "$TESTBED_ROOT/config/native-publisher/server.conf"
+                chmod 644 "$TESTBED_ROOT/config/native-publisher/server.conf"
+                info "Generated native-publisher/server.conf (${_native_up})."
             else
                 warn "server.conf not found at $_server_conf — cvmfs_receiver will fail."
                 warn "Copy manually: sudo cp $_server_conf $TESTBED_ROOT/config/repo-config/server.conf"
