@@ -141,6 +141,39 @@ services:
       - cvmfs-prepub
     command: ["sleep", "infinity"]
 
+  # ── Bootstrap — one-shot privileged container that seeds the repository ────
+  # Creates the nested-catalog structure that cvmfs_server ingest requires.
+  # Run once after init, or restore from the snapshot it produces.
+  # Invoked by: ./testbed.sh bootstrap  (or: make bootstrap)
+  cvmfs-bootstrap:
+    image: cvmfs-bootstrap:latest
+    container_name: cvmfs-bootstrap
+    build:
+      context: ./cvmfs-bootstrap
+    privileged: true
+    environment:
+      REPO_NAME: ${REPO_NAME}
+    volumes:
+      # CVMFS binaries and shared libraries — mounted read-only; bootstrap.sh
+      # stages copies to a tmpfs path and sets caps/suid there.
+      - ${SOFTWARE_ROOT}:/opt/cvmfs-software:ro
+      # Signing keys — read-only; mkfs has already written them during init.
+      - ${TESTBED_ROOT}/config/keys:/etc/cvmfs/keys:ro
+      # Server config — native-publisher layout so CVMFS_UPSTREAM_STORAGE points
+      # to the gateway API (not the local CAS), matching what the gateway receiver
+      # expects from this kind of publisher.
+      - ${TESTBED_ROOT}/config/native-publisher:/etc/cvmfs/repositories.d/${REPO_NAME}:ro
+      # Repository CAS — read-write so cvmfs_server publish can update .cvmfspublished.
+      - ${TESTBED_ROOT}/repos/${REPO_NAME}:/srv/cvmfs/${REPO_NAME}
+      # Dedicated publisher spool for bootstrap.  Separate from data/native-ingest
+      # used by cvmfs-native-publisher to avoid lock-file conflicts.
+      - ${TESTBED_ROOT}/data/bootstrap-spool:/var/spool/cvmfs
+    networks:
+      - cvmfs-net
+    depends_on:
+      - gateway
+      - stratum0
+
   # ── Native publisher — cvmfs_server ingest path ───────────────────────────
   # Runs cvmfs_server ingest directly against the gateway, exercising the full
   # native CVMFS server workflow (cvmfs_swissknife → gateway API → cvmfs_receiver).

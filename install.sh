@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# install.sh — Populate software/ from the CVMFS build tree and rebuild cvmfs_server.
+# install.sh — Populate software/ from the CVMFS build tree, rebuild cvmfs_server,
+#              and copy cvmfs-prepub binaries from the cvmfs-bits build.
 #
 # Convention (enforced here and checked by init.sh):
 #   <cvmfs-testbed>/cvmfs/          CVMFS source tree (git clone / symlink)
+#   <cvmfs-testbed>/cvmfs-bits/     cvmfs-bits source tree (git clone / symlink)
 #   <cvmfs-testbed>/software/       destination for built binaries and libraries
 #
-# Run this once after cloning, and again after every CVMFS code change:
+# Run this once after cloning, and again after every code change:
 #   cd cvmfs-testbed
 #   cmake -S cvmfs -B cvmfs/build
 #   make -C cvmfs/build -j$(nproc)
+#   make -C cvmfs-bits build
 #   ./install.sh
 #
 # The script:
@@ -19,11 +22,15 @@
 #   5. Rebuilds the cvmfs_server shell script from the patched source files in
 #      cvmfs/cvmfs/server/ (the patches add CVMFS_TESTBED support) and installs
 #      it as software/cvmfs_server.
+#   6. Copies cvmfs-prepub and prepubctl from the cvmfs-bits build into software/.
 #
 # Nothing is ever written to /usr/bin or any other system directory.
 #
 # Options:
 #   --software-root PATH   Override the default software/ destination.
+#   --bits-dir PATH        Path to the cvmfs-bits source tree.
+#                          Default: <cvmfs-testbed>/cvmfs-bits
+#                          The binaries are expected at <bits-dir>/bin/.
 
 set -euo pipefail
 
@@ -49,6 +56,7 @@ else
     CVMFS_SRC="$SCRIPT_DIR/cvmfs"   # keep the canonical path for the error message
 fi
 SOFTWARE_ROOT="${SOFTWARE_ROOT:-$SCRIPT_DIR/software}"
+BITS_DIR="${BITS_DIR:-$SCRIPT_DIR/cvmfs-bits}"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -57,6 +65,10 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { error "--software-root requires a value"; exit 1; }
             SOFTWARE_ROOT="$2"; shift 2 ;;
         --software-root=*) SOFTWARE_ROOT="${1#*=}"; shift ;;
+        --bits-dir)
+            [[ $# -ge 2 ]] || { error "--bits-dir requires a value"; exit 1; }
+            BITS_DIR="$2"; shift 2 ;;
+        --bits-dir=*) BITS_DIR="${1#*=}"; shift ;;
         -h|--help)
             sed -n '2,/^[^#]/p' "${BASH_SOURCE[0]}" | grep '^#' | sed 's/^# \?//'; exit 0 ;;
         *) error "Unknown option: $1"; exit 1 ;;
@@ -65,6 +77,7 @@ done
 
 info "CVMFS source:   $CVMFS_SRC"
 info "Software root:  $SOFTWARE_ROOT"
+info "Bits dir:       $BITS_DIR"
 
 # ── 1. Verify source tree ─────────────────────────────────────────────────────
 if [[ ! -f "$CVMFS_SRC/cvmfs/make_cvmfs_server.sh" ]]; then
@@ -195,5 +208,35 @@ for _bin in cvmfs_publish cvmfs_swissknife cvmfs_suid_helper; do
     fi
 done
 [[ $_patched -gt 0 ]] && success "Patched $_patched hardcoded path(s) in cvmfs_server."
+
+# ── 6. Copy cvmfs-bits binaries ───────────────────────────────────────────────
+# cvmfs-prepub and prepubctl are built by  make -C cvmfs-bits build  and land in
+# cvmfs-bits/bin/.  They are NOT produced by the cmake build, so the cvmfs_* glob
+# above never picks them up.  docker-compose bind-mounts them from SOFTWARE_ROOT,
+# so they must exist there before containers start.
+info "Copying cvmfs-bits binaries → $SOFTWARE_ROOT ..."
+_bits_bin="$BITS_DIR/bin"
+if [[ ! -d "$_bits_bin" ]]; then
+    warn "cvmfs-bits bin/ not found at $_bits_bin"
+    warn "Build cvmfs-bits first:  make -C \"$BITS_DIR\" build"
+    warn "(or in the testbed Makefile:  make build)"
+else
+    _bits_copied=0
+    for _bin in cvmfs-prepub prepubctl; do
+        _src="$_bits_bin/$_bin"
+        if [[ -f "$_src" && -x "$_src" ]]; then
+            cp "$_src" "$SOFTWARE_ROOT/$_bin"
+            chmod +x "$SOFTWARE_ROOT/$_bin"
+            info "  $_bin"
+            (( _bits_copied++ )) || true
+        else
+            warn "  $_bin not found or not executable in $_bits_bin"
+            warn "  Run: make -C \"$BITS_DIR\" build"
+        fi
+    done
+    if [[ $_bits_copied -gt 0 ]]; then
+        success "Copied $_bits_copied cvmfs-bits binary/binaries."
+    fi
+fi
 
 success "install.sh complete.  Binaries are in $SOFTWARE_ROOT"

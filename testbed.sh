@@ -13,11 +13,20 @@
 #   init            One-time host setup: create directories, generate secrets,
 #                   run install.sh, initialise CVMFS repository, write service configs.
 #   start           Build images (if needed) and start containers.
+#                   Auto-restores from repo-seed.tar.gz if the repo is absent.
 #   stop            Stop containers without removing state.
 #   restart         Stop then start.
 #   status          Show container status and key service health.
 #   info            Print all service endpoints, ports, and credentials.
 #   logs            Tail logs (all services, or pass a service name).
+#   bootstrap       Seed the repository with the nested-catalog structure needed by
+#                   cvmfs_server ingest.  Runs a privileged one-shot container;
+#                   requires gateway and stratum0 to be running.  Calls snapshot
+#                   automatically on success.
+#   snapshot        Save current repository state (CAS + spool + keys + configs)
+#                   to TESTBED_ROOT/repo-seed.tar.gz.
+#   restore         Restore repository state from repo-seed.tar.gz.  Fails if the
+#                   snapshot file does not exist.
 #   test            Run the smoke test (default method: bits).
 #   stresstest <n>  Stress test publishing with n concurrent/sequential jobs.
 #   catdump [label] Decompress and SQL-dump all catalogs from the current repo
@@ -27,7 +36,10 @@
 #                   "bits" respectively.  Requires both catdump sets to exist.
 #   verify          Verify end-to-end file visibility (needs a job UUID).
 #   clean           Stop containers AND remove all persistent state.
-#   reset           clean + init + start (full teardown and reinitialisation).
+#                   The repo-seed.tar.gz snapshot is PRESERVED so that
+#                   a subsequent start can restore from it without re-bootstrapping.
+#   reset           clean + init + start + bootstrap (full teardown and
+#                   reinitialisation including a fresh snapshot).
 #   help            Show this help text.
 #
 # Options (accepted by all commands):
@@ -54,20 +66,22 @@
 #   git clone https://github.com/your-org/bits-console bits-console  # optional
 #   ./testbed.sh init
 #   ./testbed.sh start
+#   ./testbed.sh bootstrap    # once — seeds nested catalog, creates snapshot
 #   ./testbed.sh test
+#
+#   # After a clean+start cycle, snapshot is auto-restored — no re-bootstrap:
+#   ./testbed.sh clean
+#   ./testbed.sh start        # restores from repo-seed.tar.gz automatically
+#   ./testbed.sh test --method ingest
+#
+#   # Full rebuild (new keys, new snapshot):
+#   ./testbed.sh reset        # clean + init + start + bootstrap
 #
 #   # Override binary and data locations:
 #   ./testbed.sh init  --testbed-root /data/tb --software-root /data/tb/software
 #
-#   # With bits-console and Gitea (bits-console/ must already be present):
-#   ./testbed.sh init  --bits
-#   ./testbed.sh start --bits
-#
 #   # Tail logs for a single service:
 #   ./testbed.sh logs gateway
-#
-#   # Smoke test using cvmfs_server ingest path:
-#   ./testbed.sh test --method ingest
 #
 #   # Stress test: 20 jobs via bits REST API (default), or cvmfs_server ingest:
 #   ./testbed.sh stresstest 20
@@ -302,6 +316,24 @@ cmd_start() {
         exit 1
     fi
 
+    # ── Auto-restore from snapshot ────────────────────────────────────────────
+    # If the repository has not been initialised (no .cvmfspublished) but a
+    # snapshot exists, restore it now before starting containers.  This lets
+    # the normal workflow be: clean → start → test, with no manual bootstrap.
+    local _published="${TESTBED_ROOT}/repos/${REPO_NAME}/.cvmfspublished"
+    if [[ ! -f "$_published" ]]; then
+        local _snap
+        _snap="$(_snapshot_path)"
+        if [[ -f "$_snap" ]]; then
+            info "Repository absent — restoring from snapshot: $(basename "$_snap")"
+            cmd_restore
+        else
+            warn "Repository not initialised and no snapshot found."
+            warn "After start, run:  ./testbed.sh bootstrap"
+            warn "(or: make bootstrap)"
+        fi
+    fi
+
     # ── Build and launch ───────────────────────────────────────────────────────
     info "Building images (if needed) ..."
     run_compose build
@@ -343,6 +375,124 @@ cmd_stop() {
     load_env
     run_compose stop
     ok "All containers stopped"
+}
+
+# ── Snapshot path helper ───────────────────────────────────────────────────────
+_snapshot_path() {
+    # Keep the snapshot in TESTBED_ROOT so it is co-located with the repo data
+    # it captures.  load_env must have been called before this function.
+    echo "${TESTBED_ROOT}/repo-seed.tar.gz"
+}
+
+# ── cmd_bootstrap ─────────────────────────────────────────────────────────────
+# Run the privileged cvmfs-bootstrap container once to seed the repository with
+# the nested-catalog structure required by cvmfs_server ingest.
+# Requires: gateway and stratum0 must already be running (use after cmd_start).
+# On success, automatically calls cmd_snapshot to create repo-seed.tar.gz.
+cmd_bootstrap() {
+    section "Bootstrapping repository nested-catalog structure"
+    load_env
+
+    local _published="${TESTBED_ROOT}/repos/${REPO_NAME}/.cvmfspublished"
+    if [[ ! -f "$_published" ]]; then
+        error "Repository not initialised.  Run init and start first:"
+        error "  ./testbed.sh init && ./testbed.sh start"
+        exit 1
+    fi
+
+    # Pre-create the spool directory the bootstrap container needs.
+    mkdir -p "${TESTBED_ROOT}/data/bootstrap-spool"
+
+    info "Running cvmfs-bootstrap container ..."
+    run_compose run --rm cvmfs-bootstrap
+
+    ok "Bootstrap container exited cleanly."
+
+    info "Creating repository snapshot ..."
+    cmd_snapshot
+}
+
+# ── cmd_snapshot ──────────────────────────────────────────────────────────────
+# Archive the current repository state into repo-seed.tar.gz.
+# The archive contains: CAS data, gateway spool, signing keys, and configs.
+# Restoring it via cmd_restore produces a fully functional repository without
+# needing to re-run bootstrap.
+cmd_snapshot() {
+    section "Creating repository snapshot"
+    load_env
+
+    local snap
+    snap="$(_snapshot_path)"
+
+    local _published="${TESTBED_ROOT}/repos/${REPO_NAME}/.cvmfspublished"
+    if [[ ! -f "$_published" ]]; then
+        error "No published repository found at ${TESTBED_ROOT}/repos/${REPO_NAME}."
+        error "Run bootstrap first: ./testbed.sh bootstrap"
+        exit 1
+    fi
+
+    info "Archiving repository state → $(basename "$snap") ..."
+
+    # upstream-scratch is a transient scratch directory used during publish.
+    # Excluding it keeps the snapshot lean and avoids partial-chunk confusion.
+    tar \
+        --create \
+        --gzip \
+        --file="$snap" \
+        --directory="$TESTBED_ROOT" \
+        --exclude="repos/${REPO_NAME}/upstream-scratch" \
+        "repos/${REPO_NAME}" \
+        "data/gateway-spool/${REPO_NAME}" \
+        "config/keys" \
+        "config/repo-config" \
+        "config/native-publisher"
+
+    local size
+    size=$(du -sh "$snap" | cut -f1)
+    ok "Snapshot created: $snap  (${size})"
+    info "Restore with: ./testbed.sh restore  (or: make restore)"
+}
+
+# ── cmd_restore ───────────────────────────────────────────────────────────────
+# Extract repo-seed.tar.gz into TESTBED_ROOT, replacing any existing repo data.
+# Containers must NOT be running when this is called (they hold file locks).
+cmd_restore() {
+    section "Restoring repository from snapshot"
+    load_env
+
+    local snap
+    snap="$(_snapshot_path)"
+
+    if [[ ! -f "$snap" ]]; then
+        error "No snapshot found at $snap"
+        error "Run: ./testbed.sh bootstrap  (creates it automatically)"
+        exit 1
+    fi
+
+    local size
+    size=$(du -sh "$snap" | cut -f1)
+    info "Snapshot: $snap  (${size})"
+
+    # Wipe only what the snapshot covers so we don't touch unrelated data.
+    info "Clearing existing repository data ..."
+    rm -rf \
+        "${TESTBED_ROOT}/repos/${REPO_NAME}" \
+        "${TESTBED_ROOT}/data/gateway-spool/${REPO_NAME}" \
+        "${TESTBED_ROOT}/config/keys" \
+        "${TESTBED_ROOT}/config/repo-config" \
+        "${TESTBED_ROOT}/config/native-publisher"
+    mkdir -p \
+        "${TESTBED_ROOT}/repos/${REPO_NAME}" \
+        "${TESTBED_ROOT}/data/gateway-spool/${REPO_NAME}"
+
+    info "Extracting snapshot ..."
+    tar --extract --gzip --file="$snap" --directory="$TESTBED_ROOT"
+
+    # Restore broad write permissions so container services (running as non-root)
+    # can write to the CAS and spool.  Matches what init.sh sets after mkfs.
+    chmod -R 777 "${TESTBED_ROOT}/repos/${REPO_NAME}"
+
+    ok "Repository restored from snapshot."
 }
 
 cmd_restart() {
@@ -414,56 +564,11 @@ cmd_test() {
             run_compose exec publisher /scripts/smoke-test.sh
             ;;
         ingest)
-            # cvmfs_server ingest requires the lease path (INGEST_BASE) to be
-            # an existing nested catalog root.  On a fresh repository there is
-            # only the root catalog, so we do a host-side publish first to
-            # create the directory and register it in .cvmfsdirtab.
-            # This must run here (on the host) because the native-publisher
-            # container has no SYS_ADMIN capability and cannot mount OverlayFS.
-            local _ingest_base="test/native/smoke"
-            info "Pre-creating nested catalog at ${_ingest_base}/ ..."
-            # sudo drops the extended PATH set by load_env.  cvmfs_server is a
-            # shell script that internally calls cvmfs_publish, cvmfs_swissknife,
-            # etc. — all of which live in SOFTWARE_ROOT, not /usr/bin.
-            # Use "sudo env PATH=..." to carry the full PATH into the root shell.
-            local _cvmfs_server
-            _cvmfs_server="$(command -v cvmfs_server)"
-
-            # cvmfs_server transaction/publish fetches the whitelist via
-            # CVMFS_SERVER_URL (= http://stratum0/...).  On the host, the
-            # Docker-internal hostname "stratum0" does not resolve; the
-            # stratum0 container is accessible on host port 8090.
-            # Temporarily patch the host-side server.conf to use localhost:8090,
-            # then restore it unconditionally when the sub-shell exits.
-            local _host_conf="/etc/cvmfs/repositories.d/${REPO_NAME}/server.conf"
-            local _conf_bak
-            _conf_bak=$(mktemp)
-            sudo cp "$_host_conf" "$_conf_bak"
-            sudo sed -i \
-                's|CVMFS_SERVER_URL=http://stratum0/|CVMFS_SERVER_URL=http://localhost:8090/|g' \
-                "$_host_conf"
-
-            # Run transaction + publish in a sub-shell so the EXIT trap always
-            # restores server.conf even if the commands fail.
-            local _setup_rc=0
-            (
-                trap 'sudo cp "$_conf_bak" "$_host_conf"; sudo rm -f "$_conf_bak"' EXIT
-                sudo env PATH="$PATH" "$_cvmfs_server" transaction "${REPO_NAME}"
-                sudo mkdir -p "/cvmfs/${REPO_NAME}/${_ingest_base}"
-                local _dirtab="/cvmfs/${REPO_NAME}/.cvmfsdirtab"
-                if ! grep -qxF "/${_ingest_base}" "$_dirtab" 2>/dev/null; then
-                    echo "/${_ingest_base}" | sudo tee -a "$_dirtab" >/dev/null
-                fi
-                sudo env PATH="$PATH" "$_cvmfs_server" publish \
-                    -a "ingest-catalog-setup" "${REPO_NAME}"
-            ) || _setup_rc=$?
-            sudo cp "$_conf_bak" "$_host_conf"
-            sudo rm -f "$_conf_bak"
-            if [[ $_setup_rc -ne 0 ]]; then
-                error "Failed to pre-create nested catalog at ${_ingest_base}/"
-                exit 1
-            fi
-            success "Nested catalog ready at ${_ingest_base}/."
+            # The nested-catalog structure (test/native/smoke) is pre-created by
+            # cmd_bootstrap and captured in the repo-seed.tar.gz snapshot.
+            # cmd_start restores from the snapshot automatically, so by the time
+            # this runs the nested catalog already exists in the repository.
+            # See: ./testbed.sh bootstrap  or  make bootstrap
             run_compose exec cvmfs-native-publisher /scripts/native-smoke.sh
             ;;
         *)
@@ -584,6 +689,15 @@ cmd_clean() {
     load_env
 
     warn "This will remove ALL container state and testbed data."
+    warn "The repository snapshot (repo-seed.tar.gz) is PRESERVED."
+    warn "Run 'clean --purge-snapshot' to also delete it."
+    local _purge_snapshot=false
+    # Check POSITIONAL_ARGS (set by top-level arg parsing) AND function arguments
+    # so that both  ./testbed.sh clean --purge-snapshot  and the internal call
+    # from cmd_reset (cmd_clean --purge-snapshot) are handled correctly.
+    for _arg in "${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}" "$@"; do
+        [[ "$_arg" == "--purge-snapshot" ]] && _purge_snapshot=true
+    done
     if $AUTO_YES; then
         warn "Auto-confirmed (--yes flag set)."
     else
@@ -596,6 +710,16 @@ cmd_clean() {
     if [[ -n "${TESTBED_ROOT:-}" ]]; then
         local env_file
         env_file="$(_env_file)"
+        # Preserve the snapshot file — it will be auto-restored on next start.
+        local _snap
+        _snap="$(_snapshot_path)"
+        local _snap_bak=""
+        if [[ -f "$_snap" ]] && ! $_purge_snapshot; then
+            _snap_bak=$(mktemp)
+            cp "$_snap" "$_snap_bak"
+            info "Preserving snapshot: $(basename "$_snap")"
+        fi
+
         for subdir in data config repos; do
             if [[ -d "$TESTBED_ROOT/$subdir" ]]; then
                 info "Removing $TESTBED_ROOT/$subdir ..."
@@ -604,6 +728,13 @@ cmd_clean() {
         done
         info "Removing $env_file ..."
         rm -f "$env_file"
+
+        # Restore the snapshot after wiping the data directories.
+        if [[ -n "$_snap_bak" ]]; then
+            mkdir -p "$(dirname "$_snap")"
+            mv "$_snap_bak" "$_snap"
+            ok "Snapshot preserved at: $_snap"
+        fi
         ok "State removed"
     else
         warn "TESTBED_ROOT not set — skipped host directory removal"
@@ -611,11 +742,18 @@ cmd_clean() {
 }
 
 cmd_reset() {
-    cmd_clean
+    # Full teardown: wipe everything (including snapshot), re-init from scratch,
+    # start containers, and run bootstrap to create a fresh snapshot.
+    # Use this when keys change, configs change, or you want a clean slate.
+    cmd_clean --purge-snapshot
     _env_loaded=false  # force fresh load after clean wipes .env
     cmd_init
     _env_loaded=false  # force fresh load after init writes new .env
     cmd_start
+    # Run bootstrap to seed the nested catalog and create a fresh snapshot.
+    # (cmd_start may have restored an old snapshot — cmd_bootstrap overwrites it
+    # with a freshly signed one from the new keys.)
+    cmd_bootstrap
 }
 
 cmd_help() {
@@ -761,6 +899,9 @@ case "$CMD" in
     status)         cmd_status ;;
     info)           cmd_info ;;
     logs)           cmd_logs ;;
+    bootstrap)      cmd_bootstrap ;;
+    snapshot)       cmd_snapshot ;;
+    restore)        cmd_restore ;;
     test)           cmd_test ;;
     stresstest)     cmd_stresstest ;;
     catdump)        cmd_catdump ;;

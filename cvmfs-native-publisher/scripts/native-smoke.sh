@@ -18,9 +18,11 @@
 #
 # Pre-condition:
 #   INGEST_BASE must already be a nested catalog root in the repository.
-#   testbed.sh cmd_test() creates this on the host via cvmfs_server publish
-#   before invoking this script.  Without that pre-setup the gateway receiver
-#   panics on commit ("catalog for directory '/<path>' cannot be found").
+#   This is seeded once by the cvmfs-bootstrap container (./testbed.sh bootstrap)
+#   and captured in repo-seed.tar.gz.  cmd_start auto-restores the snapshot, so
+#   by the time this script runs the nested catalog already exists.
+#   Without that pre-setup the gateway receiver panics on commit:
+#   "catalog for directory '/<path>' cannot be found".
 set -euo pipefail
 
 : "${REPO_NAME:?REPO_NAME must be set}"
