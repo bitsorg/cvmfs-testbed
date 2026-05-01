@@ -21,6 +21,10 @@ NC='\033[0m'
 NUM_JOBS="${NUM_JOBS:-5}"
 INGEST_ROOT="${INGEST_ROOT:-test/native/stress}"
 
+# Clear any stale session_token from a previously crashed ingest.
+rm -f "/var/spool/cvmfs/${REPO_NAME}/session_token" \
+      "/var/spool/cvmfs/${REPO_NAME}/stats.db"
+
 echo "Starting native stress test: NUM_JOBS=${NUM_JOBS}"
 
 # ── Build all test tars upfront ────────────────────────────────────────────────

@@ -23,6 +23,11 @@ chmod 755 "${SPOOL_DIR}"
 mkdir -p "${SPOOL_DIR}/tmp"
 chmod 755 "${SPOOL_DIR}/tmp"
 
+# Remove any stale session_token and stats.db left by a previously crashed
+# cvmfs_server ingest.  A leftover token causes the gateway to reject the next
+# payload submission ("broken pipe" / "invalid token"), so always start clean.
+rm -f "${SPOOL_DIR}/session_token" "${SPOOL_DIR}/stats.db"
+
 echo "[native-publisher] Spool directory ready: ${SPOOL_DIR}"
 echo "[native-publisher] Starting: $*"
 exec "$@"

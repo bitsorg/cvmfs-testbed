@@ -55,15 +55,24 @@ SOFT_BIN=/run/cvmfs-bin
 mkdir -p "$SOFT_BIN"
 
 info "Staging CVMFS binaries from $SOFT_RO → $SOFT_BIN ..."
-for bin in cvmfs_server cvmfs_publish cvmfs_swissknife cvmfs_suid_helper cvmfs2; do
+for bin in cvmfs_server cvmfs_publish cvmfs_publish_debug cvmfs_swissknife cvmfs_suid_helper cvmfs2; do
     src="$SOFT_RO/$bin"
     if [[ -f "$src" ]]; then
-        cp "$src" "$SOFT_BIN/$bin"
+        cp -a "$src" "$SOFT_BIN/$bin"
         info "  staged $bin"
     else
         warn "  $bin not found in $SOFT_RO — skipping"
     fi
 done
+
+# cvmfs_server in CVMFS_TESTBED mode constructs the publish-binary path as
+# $CVMFS_TESTBED_SOFTWARE_ROOT/cvmfs_publish_debug.  Release builds don't
+# produce the debug variant; provide a fallback symlink so transaction/publish
+# work without a debug build.
+if [[ ! -f "$SOFT_BIN/cvmfs_publish_debug" ]]; then
+    ln -sf "$SOFT_BIN/cvmfs_publish" "$SOFT_BIN/cvmfs_publish_debug"
+    info "  symlinked cvmfs_publish_debug → cvmfs_publish (release build)"
+fi
 
 # Shared libraries: copy to a writable location so the dynamic linker finds them.
 info "Staging shared libraries ..."

@@ -148,6 +148,17 @@ if [[ $_copied -eq 0 ]]; then
 fi
 info "Copied $_copied file(s)."
 
+# ── 3a. Ensure cvmfs_publish_debug exists ─────────────────────────────────────
+# cvmfs_server in CVMFS_TESTBED mode constructs binary paths as
+# $CVMFS_TESTBED_SOFTWARE_ROOT/cvmfs_publish_debug.  Release builds don't
+# produce the debug variant; create a fallback symlink so cvmfs_server
+# transaction/mkfs/publish all work without a debug build.
+if [[ ! -f "$SOFTWARE_ROOT/cvmfs_publish_debug" ]]; then
+    ln -sf "$SOFTWARE_ROOT/cvmfs_publish" "$SOFTWARE_ROOT/cvmfs_publish_debug" \
+        && info "  symlinked cvmfs_publish_debug → cvmfs_publish (no debug build)" \
+        || warn "  could not create cvmfs_publish_debug symlink"
+fi
+
 # ── 3b. Bundle host FUSE3 runtime ────────────────────────────────────────────
 # libcvmfs_fuse3_stub.so is linked against the host's libfuse3.so (soname may
 # be .3 or .4 depending on the FUSE version installed).  The Ubuntu 24.04 repo

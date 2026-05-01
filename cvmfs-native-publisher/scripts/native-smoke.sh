@@ -33,6 +33,12 @@ NC='\033[0m'
 
 INGEST_BASE="${INGEST_BASE:-test/native/smoke}"
 
+# ── Clear stale transaction state ─────────────────────────────────────────────
+# A session_token left by a previously crashed ingest causes the gateway to reject
+# the next payload upload ("broken pipe").  Remove it unconditionally before each run.
+_SPOOL="/var/spool/cvmfs/${REPO_NAME}"
+rm -f "${_SPOOL}/session_token" "${_SPOOL}/stats.db"
+
 # ── Build comprehensive test payload ───────────────────────────────────────────
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "${WORK_DIR}"' EXIT
