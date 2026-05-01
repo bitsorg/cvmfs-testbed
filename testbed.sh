@@ -424,12 +424,18 @@ cmd_bootstrap() {
         warn "Try re-running init first: ./testbed.sh init"
     fi
 
-    # Restart the gateway to clear any stale lease state left by a previous
-    # failed ingest (e.g. a receiver panic that prevented the client from
-    # dropping its lease).  The gateway holds leases in memory only; a restart
-    # clears them without affecting the repository data or configuration.
-    info "Restarting gateway to clear any stale leases ..."
-    run_compose restart gateway
+    # Force-recreate the gateway container to clear stale lease state.
+    #
+    # Background: the gateway persists leases in a BoltDB at /var/lib/cvmfs-gateway
+    # inside the container overlay filesystem.  `docker compose restart` preserves
+    # the overlay, so the leasedb — and any stale lease from a previously crashed
+    # ingest — survives the restart.  `--force-recreate` removes and recreates the
+    # container, giving us a truly empty leasedb.
+    #
+    # The startup `delete_all` action only clears the repo registry (not leases),
+    # so recreating the container is the only reliable way to purge stale leases.
+    info "Recreating gateway to clear stale lease state (leasedb is inside container overlay) ..."
+    run_compose up -d --force-recreate gateway
 
     # Wait up to 30 s for the gateway API to become healthy again.
     local _gw_url="http://localhost:4929/api/v1/repos"
