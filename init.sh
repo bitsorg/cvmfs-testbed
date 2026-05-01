@@ -473,6 +473,33 @@ if [[ -f "$_config_server_conf" ]]; then
         > "$TESTBED_ROOT/config/native-publisher/server.conf"
     chmod 644 "$TESTBED_ROOT/config/native-publisher/server.conf"
     success "native-publisher/server.conf written (gateway mode: ${_native_upstream})."
+
+    # ── Generate native-publisher/client.conf ─────────────────────────────────
+    # cvmfs_server ingest sources client.conf from /etc/cvmfs/repositories.d/<repo>/
+    # early in its startup sequence (__load_repo_config).  Without this file the
+    # script aborts with "cannot open .../client.conf: No such file".
+    # Prefer the authoritative file written by cvmfs_server mkfs on the host;
+    # fall back to a generated minimal version if mkfs hasn't run yet.
+    _host_client_conf="/etc/cvmfs/repositories.d/${REPO_NAME}/client.conf"
+    _native_client_conf="$TESTBED_ROOT/config/native-publisher/client.conf"
+    if [[ -f "$_host_client_conf" ]]; then
+        sudo cp "$_host_client_conf" "$_native_client_conf"
+        sudo chown "$USER:$(id -gn)" "$_native_client_conf"
+        chmod 644 "$_native_client_conf"
+        info "Copied native-publisher/client.conf from host repository config."
+    else
+        # Minimal client.conf: stratum0 URL and public key path as seen inside
+        # the container (Docker service name + mounted key directory).
+        cat > "$_native_client_conf" <<EOF
+CVMFS_SERVER_URL=http://stratum0/cvmfs/${REPO_NAME}
+CVMFS_PUBLIC_KEY=/etc/cvmfs/keys/${REPO_NAME}.pub
+CVMFS_REPOSITORY_NAME=${REPO_NAME}
+CVMFS_HTTP_PROXY=DIRECT
+EOF
+        chmod 644 "$_native_client_conf"
+        info "Generated minimal native-publisher/client.conf (host client.conf not found yet)."
+    fi
+    success "native-publisher/client.conf ready."
 else
     warn "config/repo-config/server.conf not found — skipping upstream-storage patch."
     warn "It will be created and patched when the repository is initialised (mkfs)."
@@ -739,6 +766,20 @@ else
                     > "$TESTBED_ROOT/config/native-publisher/server.conf"
                 chmod 644 "$TESTBED_ROOT/config/native-publisher/server.conf"
                 info "Generated native-publisher/server.conf (${_native_up})."
+
+                # client.conf — sourced by cvmfs_server ingest at startup.
+                # mkfs has just written it to /etc/cvmfs/repositories.d/<repo>/;
+                # copy it so the native-publisher container can source it from
+                # its bind-mounted config directory.
+                _mkfs_client_conf="/etc/cvmfs/repositories.d/${REPO_NAME}/client.conf"
+                if [[ -f "$_mkfs_client_conf" ]]; then
+                    sudo cp "$_mkfs_client_conf" \
+                        "$TESTBED_ROOT/config/native-publisher/client.conf"
+                    sudo chown "$USER:$(id -gn)" \
+                        "$TESTBED_ROOT/config/native-publisher/client.conf"
+                    chmod 644 "$TESTBED_ROOT/config/native-publisher/client.conf"
+                    info "Copied native-publisher/client.conf from mkfs output."
+                fi
             else
                 warn "server.conf not found at $_server_conf — cvmfs_receiver will fail."
                 warn "Copy manually: sudo cp $_server_conf $TESTBED_ROOT/config/repo-config/server.conf"

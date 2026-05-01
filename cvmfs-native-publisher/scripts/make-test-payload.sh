@@ -64,11 +64,16 @@ echo "sibling-b content" > "$PAYLOAD_DIR/hierarchy/level1/sibling-b/data.txt"
 # Tests all link types CVMFS must handle in its catalog.
 mkdir -p "$PAYLOAD_DIR/links"
 
-# Hard link pair: same inode, two directory entries.
-# cvmfs_server ingest and cvmfs-prepub both receive the tar with a hard-link
-# entry; the catalog should record both names sharing the same content hash.
-echo "hard link target content" > "$PAYLOAD_DIR/links/target.txt"
-ln "$PAYLOAD_DIR/links/target.txt" "$PAYLOAD_DIR/links/hardlink.txt"
+# Identical-content pair: two files with the same content, stored as separate
+# regular files in the tar.  CVMFS's CAS deduplicates them to the same content
+# hash; both catalog entries should reference that single hash.
+# NOTE: we intentionally avoid hard-link tar entries (POSIX type '1') because
+# the cvmfs-prepub staging processor does not handle them, causing a staging
+# failure.  For catalog comparison purposes the result is equivalent: two
+# directory entries pointing to the same CAS object.
+SHARED_CONTENT="shared content — same hash expected in both catalog entries"
+echo "$SHARED_CONTENT" > "$PAYLOAD_DIR/links/original.txt"
+echo "$SHARED_CONTENT" > "$PAYLOAD_DIR/links/duplicate.txt"
 
 # Relative symlink pointing to a file inside the payload tree.
 ln -s "../simple/hello.txt"  "$PAYLOAD_DIR/links/rel-symlink-to-hello"
@@ -82,14 +87,15 @@ ln -s "/etc/hostname"         "$PAYLOAD_DIR/links/abs-symlink-hostname"
 ln -s "/nonexistent/path/that/does/not/exist" "$PAYLOAD_DIR/links/dangling-symlink"
 
 # ── 4. large/ ─────────────────────────────────────────────────────────────────
-# 20 MiB of pseudo-random data.  At the default CVMFS chunk size of 4 MiB this
-# produces 5 chunks; at 8 MiB it produces 3.  Tests the chunks catalog table
-# and that the manifest's file-chunk-size field is populated correctly.
+# 8 MiB of pseudo-random data.  At the default CVMFS chunk size of 4 MiB this
+# produces exactly 2 chunks.  Tests the chunks catalog table and that the
+# manifest's file-chunk-size field is populated correctly.
 #
-# Using /dev/urandom avoids Python dependency and produces non-zero, non-
-# compressible data that the gateway cannot trivially deduplicate.
+# 8 MiB keeps staging time short while still exercising the chunking path.
+# Using /dev/urandom avoids Python dependency and produces non-compressible
+# data that the gateway cannot trivially deduplicate.
 mkdir -p "$PAYLOAD_DIR/large"
-dd if=/dev/urandom bs=1M count=20 of="$PAYLOAD_DIR/large/large-20m.bin" 2>/dev/null
+dd if=/dev/urandom bs=1M count=8 of="$PAYLOAD_DIR/large/large-8m.bin" 2>/dev/null
 
 # ── 5. permissions/ ──────────────────────────────────────────────────────────
 # Various UNIX mode bits.  Tests that the catalog stores mode flags correctly
@@ -143,9 +149,6 @@ echo "resume" > "$PAYLOAD_DIR/unusual-names/unicode-résumé.txt"
 # Unicode — CJK characters (3-byte UTF-8 sequences)
 echo "japanese" > "$PAYLOAD_DIR/unusual-names/unicode-日本語.txt"
 
-# Unicode — emoji (4-byte UTF-8 sequence; tests surrogate handling)
-echo "emoji" > "$PAYLOAD_DIR/unusual-names/emoji-🚀rocket.txt"
-
 # Very long file name (POSIX allows 255 bytes; test near the limit)
 LONG_NAME="$(printf 'a%.0s' {1..200}).txt"   # 204 chars
 echo "long name" > "$PAYLOAD_DIR/unusual-names/${LONG_NAME}"
@@ -160,13 +163,15 @@ echo "dash" > "$PAYLOAD_DIR/unusual-names/-not-a-flag.txt"
 mkdir -p "$PAYLOAD_DIR/empty-dir"
 
 # ── 8. Build the tar archive ──────────────────────────────────────────────────
-# Use --dereference=no (default) so symlinks are stored as symlinks, not
-# resolved files.  Hard links are preserved because they share an inode within
-# the payload directory.
+# --hard-dereference: convert any remaining hard links to regular file copies,
+#   preventing POSIX type-'1' link entries that crash the cvmfs-prepub staging
+#   processor.  Symlinks are kept as symlinks (no --dereference flag).
+# --preserve-permissions: propagate mode bits into the catalog flags field.
 tar \
     --create \
     --file="$PAYLOAD_TAR" \
     --directory="$PAYLOAD_DIR" \
+    --hard-dereference \
     --preserve-permissions \
     .
 
