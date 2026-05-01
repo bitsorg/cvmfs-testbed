@@ -404,7 +404,12 @@ cmd_bootstrap() {
     # init.sh creates for the gateway spool.  cvmfs_server transaction reads
     # reflog.chksum at startup and writes transaction state into tmp/; without
     # this the binary fails with "cannot create reflog temp file (disk full?)".
+    #
+    # The bootstrap container runs as root (privileged), so previous runs may
+    # have left the per-repo subdirectory owned by root.  Wipe it with sudo and
+    # recreate as the current user so we can copy reflog.chksum into it.
     local _bspool="${TESTBED_ROOT}/data/bootstrap-spool/${REPO_NAME}"
+    sudo rm -rf "${_bspool}"
     mkdir -p "${_bspool}/tmp"
     chmod 777 "${_bspool}" "${_bspool}/tmp"
     touch "${_bspool}/client.local"
