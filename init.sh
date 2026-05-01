@@ -468,7 +468,13 @@ if [[ -f "$_config_server_conf" ]]; then
     # mounted from ${TESTBED_ROOT}/data/native-ingest inside the container.
     info "Generating native-publisher/server.conf (gateway mode)..."
     _native_upstream="gw,/var/spool/cvmfs/${REPO_NAME}/tmp,http://gateway:4929/api/v1"
-    sed "s|^CVMFS_UPSTREAM_STORAGE=.*|CVMFS_UPSTREAM_STORAGE=${_native_upstream}|" \
+    # Two substitutions in one sed call:
+    #  1. Point upstream storage at the gateway rather than local CAS.
+    #  2. Force CVMFS_USER=root — the host username does not exist inside the
+    #     container, so cvmfs_server ingest would fail with "id: '<user>': no
+    #     such user" if we left the host value in place.
+    sed "s|^CVMFS_UPSTREAM_STORAGE=.*|CVMFS_UPSTREAM_STORAGE=${_native_upstream}|;
+         s|^CVMFS_USER=.*|CVMFS_USER=root|" \
         "$_config_server_conf" \
         > "$TESTBED_ROOT/config/native-publisher/server.conf"
     chmod 644 "$TESTBED_ROOT/config/native-publisher/server.conf"
@@ -761,7 +767,8 @@ else
                 # Generate it here too so the first-time init (when the unconditional
                 # patch block above had no server.conf yet) also produces the file.
                 _native_up="gw,/var/spool/cvmfs/${REPO_NAME}/tmp,http://gateway:4929/api/v1"
-                sed "s|^CVMFS_UPSTREAM_STORAGE=.*|CVMFS_UPSTREAM_STORAGE=${_native_up}|" \
+                sed "s|^CVMFS_UPSTREAM_STORAGE=.*|CVMFS_UPSTREAM_STORAGE=${_native_up}|;
+                     s|^CVMFS_USER=.*|CVMFS_USER=root|" \
                     "$TESTBED_ROOT/config/repo-config/server.conf" \
                     > "$TESTBED_ROOT/config/native-publisher/server.conf"
                 chmod 644 "$TESTBED_ROOT/config/native-publisher/server.conf"
