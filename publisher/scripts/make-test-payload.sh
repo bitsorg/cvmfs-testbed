@@ -5,7 +5,7 @@
 #
 #   simple/        — basic files: regular, empty, no extension, executable
 #   hierarchy/     — 5-level deep directory tree with sibling dirs at each level
-#   links/         — hard link pair, relative symlink, absolute symlink, dangling symlink
+#   links/         — identical-content pair (CAS dedup), relative symlink, relative dangling symlink
 #   large/         — 20 MiB file of pseudo-random data (triggers CVMFS file chunking)
 #   permissions/   — files with 0755, 0644, 0444, 0600 modes; dirs with 0750, 0700
 #   unusual-names/ — spaces, brackets, parens, hash, leading dot, unicode (accents,
@@ -75,16 +75,17 @@ SHARED_CONTENT="shared content — same hash expected in both catalog entries"
 echo "$SHARED_CONTENT" > "$PAYLOAD_DIR/links/original.txt"
 echo "$SHARED_CONTENT" > "$PAYLOAD_DIR/links/duplicate.txt"
 
-# Relative symlink pointing to a file inside the payload tree.
+# Relative symlink pointing to a sibling file inside the payload tree.
+# Tests that the catalog stores the literal relative target string.
 ln -s "../simple/hello.txt"  "$PAYLOAD_DIR/links/rel-symlink-to-hello"
 
-# Absolute symlink (path exists on a standard Linux system — tests that the
-# catalog stores the literal link target, not the resolved path).
-ln -s "/etc/hostname"         "$PAYLOAD_DIR/links/abs-symlink-hostname"
-
-# Dangling symlink (target does not exist anywhere).
+# Relative dangling symlink (target does not exist anywhere in the payload).
 # Tests that CVMFS stores dangling symlinks without error.
-ln -s "/nonexistent/path/that/does/not/exist" "$PAYLOAD_DIR/links/dangling-symlink"
+# NOTE: absolute symlink targets are rejected by cvmfs-prepub's unpack stage,
+# so we use a relative target here — the catalog behaviour (storing the
+# literal target string) is the same regardless of whether it is absolute or
+# relative.
+ln -s "../nonexistent-target" "$PAYLOAD_DIR/links/dangling-symlink"
 
 # ── 4. large/ ─────────────────────────────────────────────────────────────────
 # 8 MiB of pseudo-random data.  At the default CVMFS chunk size of 4 MiB this
