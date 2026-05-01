@@ -414,6 +414,22 @@ cmd_test() {
             run_compose exec publisher /scripts/smoke-test.sh
             ;;
         ingest)
+            # cvmfs_server ingest requires the lease path (INGEST_BASE) to be
+            # an existing nested catalog root.  On a fresh repository there is
+            # only the root catalog, so we do a host-side publish first to
+            # create the directory and register it in .cvmfsdirtab.
+            # This must run here (on the host) because the native-publisher
+            # container has no SYS_ADMIN capability and cannot mount OverlayFS.
+            local _ingest_base="test/native/smoke"
+            info "Pre-creating nested catalog at ${_ingest_base}/ ..."
+            sudo cvmfs_server transaction "${REPO_NAME}"
+            sudo mkdir -p "/cvmfs/${REPO_NAME}/${_ingest_base}"
+            local _dirtab="/cvmfs/${REPO_NAME}/.cvmfsdirtab"
+            if ! grep -qxF "/${_ingest_base}" "$_dirtab" 2>/dev/null; then
+                echo "/${_ingest_base}" | sudo tee -a "$_dirtab" >/dev/null
+            fi
+            sudo cvmfs_server publish -a "ingest-catalog-setup" "${REPO_NAME}"
+            success "Nested catalog ready at ${_ingest_base}/."
             run_compose exec cvmfs-native-publisher /scripts/native-smoke.sh
             ;;
         *)

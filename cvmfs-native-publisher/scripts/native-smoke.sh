@@ -16,14 +16,11 @@
 #   REPO_NAME    — CVMFS repository FQDN (e.g. test.cvmfs.io)  [required]
 #   INGEST_BASE  — Base path within the repo (default: test/native/smoke)
 #
-# Lease path note:
-#   cvmfs_server ingest requires the gateway lease path to be an existing
-#   nested catalog root.  A freshly created repository has only the root
-#   catalog, so leasing a sub-path panics on commit with "catalog for
-#   directory '/<path>' cannot be found".
-#   Fix: repackage the payload so every entry is prefixed with INGEST_BASE/,
-#   then ingest at root (no -b flag).  The content still lands at the correct
-#   location in the repository.
+# Pre-condition:
+#   INGEST_BASE must already be a nested catalog root in the repository.
+#   testbed.sh cmd_test() creates this on the host via cvmfs_server publish
+#   before invoking this script.  Without that pre-setup the gateway receiver
+#   panics on commit ("catalog for directory '/<path>' cannot be found").
 set -euo pipefail
 
 : "${REPO_NAME:?REPO_NAME must be set}"
@@ -41,37 +38,23 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
 echo "Building comprehensive test payload..."
 bash /scripts/make-test-payload.sh "$WORK_DIR"
 
-PAYLOAD_DIR="$WORK_DIR/payload"
-
-# ── Repackage: prefix all entries with INGEST_BASE/ ───────────────────────────
-# We ingest at root (no -b flag) so the gateway receiver modifies the root
-# catalog — the only catalog that is guaranteed to exist in a fresh repo.
-# The desired sub-path is baked into the tar structure instead.
-PREFIXED_DIR="$WORK_DIR/prefixed"
-mkdir -p "$PREFIXED_DIR/$INGEST_BASE"
-cp -a "$PAYLOAD_DIR/." "$PREFIXED_DIR/$INGEST_BASE/"
-
-FINAL_TAR="$WORK_DIR/payload-final.tar"
-tar \
-    --create \
-    --file="$FINAL_TAR" \
-    --directory="$PREFIXED_DIR" \
-    --hard-dereference \
-    --preserve-permissions \
-    .
+PAYLOAD_TAR="$WORK_DIR/payload.tar"
 
 echo ""
-echo "Ingesting to ${REPO_NAME}:/ (content at ${INGEST_BASE}/) ..."
-echo "  Tar size: $(du -sh "$FINAL_TAR" | cut -f1)"
+echo "Ingesting to ${REPO_NAME}:${INGEST_BASE} ..."
+echo "  Tar size: $(du -sh "$PAYLOAD_TAR" | cut -f1)"
 
 # ── Run native ingest ──────────────────────────────────────────────────────────
 # cvmfs_server ingest is synchronous: acquires a gateway lease, builds the
 # catalog via cvmfs_swissknife, commits via the gateway receiver, returns
 # when the repository manifest has been updated and signed.
 #
-# No -b flag → lease and ingest at repository root (root catalog).
+# Flags:
+#   -t <tar>   tar file to publish
+#   -b <base>  destination sub-path within the repository (nested catalog root)
 if cvmfs_server ingest \
-        -t "${FINAL_TAR}" \
+        -t "${PAYLOAD_TAR}" \
+        -b "${INGEST_BASE}" \
         "${REPO_NAME}"; then
     echo ""
     echo -e "${GREEN}Native ingest complete${NC}"
