@@ -400,8 +400,25 @@ cmd_bootstrap() {
         exit 1
     fi
 
-    # Pre-create the spool directory the bootstrap container needs.
-    mkdir -p "${TESTBED_ROOT}/data/bootstrap-spool"
+    # Pre-create the bootstrap spool with the same per-repo structure that
+    # init.sh creates for the gateway spool.  cvmfs_server transaction reads
+    # reflog.chksum at startup and writes transaction state into tmp/; without
+    # this the binary fails with "cannot create reflog temp file (disk full?)".
+    local _bspool="${TESTBED_ROOT}/data/bootstrap-spool/${REPO_NAME}"
+    mkdir -p "${_bspool}/tmp"
+    chmod 777 "${_bspool}" "${_bspool}/tmp"
+    touch "${_bspool}/client.local"
+    # Copy reflog.chksum from the gateway spool so the bootstrap transaction
+    # sees the same reflog state as a normal gateway publisher.
+    local _gw_chksum="${TESTBED_ROOT}/data/gateway-spool/${REPO_NAME}/reflog.chksum"
+    if [[ -f "$_gw_chksum" ]]; then
+        cp "$_gw_chksum" "${_bspool}/reflog.chksum"
+        info "Copied reflog.chksum to bootstrap spool."
+    else
+        touch "${_bspool}/reflog.chksum"
+        warn "Gateway reflog.chksum not found — bootstrap commit may fail with kMissingReflog."
+        warn "Try re-running init first: ./testbed.sh init"
+    fi
 
     info "Running cvmfs-bootstrap container ..."
     run_compose run --rm cvmfs-bootstrap
