@@ -422,17 +422,19 @@ cmd_test() {
             # container has no SYS_ADMIN capability and cannot mount OverlayFS.
             local _ingest_base="test/native/smoke"
             info "Pre-creating nested catalog at ${_ingest_base}/ ..."
-            # sudo drops the extended PATH set by load_env, so resolve the
-            # cvmfs_server binary to its full path before invoking sudo.
+            # sudo drops the extended PATH set by load_env.  cvmfs_server is a
+            # shell script that internally calls cvmfs_publish, cvmfs_swissknife,
+            # etc. — all of which live in SOFTWARE_ROOT, not /usr/bin.
+            # Use "sudo env PATH=..." to carry the full PATH into the root shell.
             local _cvmfs_server
             _cvmfs_server="$(command -v cvmfs_server)"
-            sudo "$_cvmfs_server" transaction "${REPO_NAME}"
+            sudo env PATH="$PATH" "$_cvmfs_server" transaction "${REPO_NAME}"
             sudo mkdir -p "/cvmfs/${REPO_NAME}/${_ingest_base}"
             local _dirtab="/cvmfs/${REPO_NAME}/.cvmfsdirtab"
             if ! grep -qxF "/${_ingest_base}" "$_dirtab" 2>/dev/null; then
                 echo "/${_ingest_base}" | sudo tee -a "$_dirtab" >/dev/null
             fi
-            sudo "$_cvmfs_server" publish -a "ingest-catalog-setup" "${REPO_NAME}"
+            sudo env PATH="$PATH" "$_cvmfs_server" publish -a "ingest-catalog-setup" "${REPO_NAME}"
             success "Nested catalog ready at ${_ingest_base}/."
             run_compose exec cvmfs-native-publisher /scripts/native-smoke.sh
             ;;
