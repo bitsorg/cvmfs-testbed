@@ -621,6 +621,14 @@ else
             warn "Running: sudo $CVMFS_SERVER_BIN rmfs -f $REPO_NAME"
             sudo env PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
                 "$CVMFS_SERVER_BIN" rmfs -f "$REPO_NAME" 2>/dev/null || true
+            # rmfs on a partial registration cleans the spool and mount point but
+            # may leave /etc/cvmfs/repositories.d/<repo>/ on disk.  cvmfs_server mkfs
+            # checks for that directory and refuses with "already exists" if it is
+            # present.  Remove it unconditionally so mkfs can proceed cleanly.
+            if [[ -d "/etc/cvmfs/repositories.d/$REPO_NAME" ]]; then
+                sudo rm -rf "/etc/cvmfs/repositories.d/$REPO_NAME"
+                info "Removed stale /etc/cvmfs/repositories.d/$REPO_NAME"
+            fi
         fi
 
         # ── Run mkfs ─────────────────────────────────────────────────────────────
