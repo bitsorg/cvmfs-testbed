@@ -6,28 +6,36 @@
 # the gateway and stratum0 containers, so "gateway" and "stratum0" resolve via
 # Docker DNS.
 #
-# Strategy: use cvmfs_server ingest at the repository root (base path = "")
-# to write .cvmfsdirtab + a placeholder file for the nested catalog path.
-# cvmfs_swissknife processes .cvmfsdirtab during the catalog sync and creates
-# the nested catalog entry.  This avoids FUSE mounts entirely — swissknife
-# downloads the current root catalog from stratum0 via HTTP and sends changes
-# directly to the gateway receiver.
+# Strategy: use cvmfs_server ingest -c (create-catalog) at the nested catalog
+# base path.  The -c flag passes -C true to cvmfs_swissknife ingest, which
+# creates a new nested catalog at the target path in a single atomic operation.
+# This avoids FUSE mounts entirely — swissknife downloads the current root
+# catalog from stratum0 via HTTP and sends changes directly to the gateway
+# receiver.
+#
+# Why NOT use .cvmfsdirtab (root-level ingest with -b ""):
+#   a) cvmfs_server ingest argument parsing uses "while [ "$2" != "" ]" so an
+#      empty -b "" causes the loop to exit early; the repo name ends up as "-b"
+#      and the command fails with "transaction on repository -b".
+#   b) Even if the root ingest worked, mountless gateway ingest explicitly
+#      aborts if .cvmfsdirtab already exists in the published repo:
+#      "Mountless gateway ingest does not yet support a published .cvmfsdirtab"
+#      — meaning native-smoke.sh would fail on every subsequent run.
 #
 # What this script does:
 #   1. Stages CVMFS binaries from SOFTWARE_ROOT to a writable tmpfs location.
 #   2. Sets capabilities on cvmfs_publish (needed for signing even in ingest mode).
-#   3. Checks idempotency: exits 0 if the nested catalog is already registered.
-#   4. Creates a bootstrap tar:
-#        .cvmfsdirtab          — registers NESTED_CATALOG_PATH as a nested catalog
-#        <path>/.cvmfs_nested_placeholder — ensures the dir exists in the catalog
-#   5. Runs: cvmfs_server ingest -t <tar> -b "" <repo>
-#      The empty base path means root-level ingest; no FUSE mount required.
+#   3. Checks idempotency via a sentinel file in the CAS root.
+#   4. Creates a minimal bootstrap tar: a placeholder file under NESTED_CATALOG_PATH.
+#   5. Runs: cvmfs_server ingest -c -t <tar> -b <path> <repo>
+#      -c creates the nested catalog at <path>; no FUSE mount required.
+#   6. Writes a sentinel file so subsequent runs skip the ingest.
 #
 # Environment (all have defaults; only REPO_NAME is required):
 #   REPO_NAME             CVMFS repository FQDN        (e.g. test.cvmfs.io)
 #   SOFT_RO               Path to CVMFS binaries inside the container
 #                         (default: /opt/cvmfs-software, mounted ro from SOFTWARE_ROOT)
-#   NESTED_CATALOG_PATH   Sub-path to register as a nested catalog
+#   NESTED_CATALOG_PATH   Sub-path to create as a nested catalog
 #                         (default: test/native/smoke)
 #
 # Volume expectations (set in docker-compose.yml):
@@ -38,8 +46,8 @@
 #   /srv/cvmfs/${REPO_NAME}      ← repos/${REPO_NAME}        (rw)
 #   /var/spool/cvmfs             ← data/bootstrap-spool      (rw)
 #
-# The script is idempotent: if the nested catalog path already appears in
-# .cvmfsdirtab it skips the ingest and exits 0.
+# The script is idempotent: a sentinel file written on success prevents
+# re-running the ingest on subsequent container invocations.
 
 set -euo pipefail
 
@@ -98,47 +106,52 @@ setcap cap_sys_admin+ep  "$SOFT_BIN/cvmfs2"              2>/dev/null || warn "se
 chmod u+s                "$SOFT_BIN/cvmfs_suid_helper"   2>/dev/null || warn "chmod u+s cvmfs_suid_helper skipped"
 
 # ── 3. Idempotency check ──────────────────────────────────────────────────────
-# Read .cvmfsdirtab directly from the CAS root.
-DIRTAB_HINT="/srv/cvmfs/${REPO_NAME}/.cvmfsdirtab"
-if [[ -f "$DIRTAB_HINT" ]] && grep -qxF "/${NESTED_CATALOG_PATH}" "$DIRTAB_HINT" 2>/dev/null; then
-    success "Nested catalog /${NESTED_CATALOG_PATH} already registered — nothing to do."
+# A sentinel file written by a successful previous run signals "already done".
+# The sentinel lives in the CAS root (mounted rw from repos/<repo>/) so it
+# survives snapshots and restores alongside the repository data.
+SENTINEL="/srv/cvmfs/${REPO_NAME}/.bootstrap_complete"
+if [[ -f "$SENTINEL" ]]; then
+    success "Bootstrap sentinel found — nested catalog /${NESTED_CATALOG_PATH} already created."
     exit 0
 fi
 
-info "No existing nested catalog at /${NESTED_CATALOG_PATH} — running bootstrap ingest."
+info "No bootstrap sentinel found — running bootstrap ingest."
 
 # ── 4. Create bootstrap tar ───────────────────────────────────────────────────
-# The tar is ingested at the repository root (base path = "").
-# It contains:
-#   .cvmfsdirtab      — tells cvmfs_swissknife to create a nested catalog at the path
-#   <path>/.cvmfs_nested_placeholder
-#                     — creates the directory in the root catalog so that
-#                       CreateNestedCatalog() can find it (avoids the
-#                       "catalog for directory cannot be found" panic)
+# The tar contains a placeholder file under NESTED_CATALOG_PATH.
+# The -c flag (--catalog) tells cvmfs_swissknife ingest to create a new nested
+# catalog at the base path, so no pre-existing catalog structure is required.
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 info "Building bootstrap tar ..."
-echo "/${NESTED_CATALOG_PATH}" > "$WORK_DIR/.cvmfsdirtab"
 mkdir -p "$WORK_DIR/${NESTED_CATALOG_PATH}"
 echo "bootstrap placeholder — safe to overwrite" \
     > "$WORK_DIR/${NESTED_CATALOG_PATH}/.cvmfs_nested_placeholder"
 
 CATALOG_TAR="$WORK_DIR/catalog_setup.tar"
-tar -C "$WORK_DIR" -cf "$CATALOG_TAR" ".cvmfsdirtab" "${NESTED_CATALOG_PATH}"
+tar -C "$WORK_DIR" -cf "$CATALOG_TAR" "${NESTED_CATALOG_PATH}"
 info "  tar size: $(du -sh "$CATALOG_TAR" | cut -f1)"
 
-# ── 5. Ingest at repository root ──────────────────────────────────────────────
-# -b ""  = root-level base path: the gateway grants a lease for the repo root,
-#          swissknife updates the root catalog, and processes .cvmfsdirtab to
-#          create the nested catalog entry — no FUSE mount required.
-info "Running: cvmfs_server ingest -b \"\" -t $CATALOG_TAR $REPO_NAME"
+# ── 5. Ingest with -c to create nested catalog ────────────────────────────────
+# cvmfs_server ingest -c passes -C true to cvmfs_swissknife ingest, which
+# calls CreateNestedCatalog at the base path.  This is a single atomic
+# gateway transaction — no FUSE mount required.
+#
+# Note: the argument parsing in cvmfs_server_ingest.sh uses a
+#   "while [ "$2" != "" ]" loop, so -b "" (empty string) would terminate
+#   the loop early and leave the repo name unresolved.  Always pass a
+#   non-empty base path.
+info "Running: cvmfs_server ingest -c -b ${NESTED_CATALOG_PATH} -t $CATALOG_TAR $REPO_NAME"
 if cvmfs_server ingest \
+        -c \
         -t "$CATALOG_TAR" \
-        -b "" \
+        -b "${NESTED_CATALOG_PATH}" \
         "$REPO_NAME"; then
-    success "Root-level ingest complete."
-    success "Nested catalog /${NESTED_CATALOG_PATH} registered in .cvmfsdirtab."
+    success "Ingest with catalog creation complete."
+    success "Nested catalog /${NESTED_CATALOG_PATH} created in repository ${REPO_NAME}."
+    # Write sentinel so subsequent container runs skip the ingest.
+    touch "$SENTINEL"
     success "Bootstrap complete.  Repository ${REPO_NAME} is ready for cvmfs_server ingest."
 else
     die "cvmfs_server ingest failed — see output above."
