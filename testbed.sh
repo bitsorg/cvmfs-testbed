@@ -428,13 +428,41 @@ cmd_test() {
             # Use "sudo env PATH=..." to carry the full PATH into the root shell.
             local _cvmfs_server
             _cvmfs_server="$(command -v cvmfs_server)"
-            sudo env PATH="$PATH" "$_cvmfs_server" transaction "${REPO_NAME}"
-            sudo mkdir -p "/cvmfs/${REPO_NAME}/${_ingest_base}"
-            local _dirtab="/cvmfs/${REPO_NAME}/.cvmfsdirtab"
-            if ! grep -qxF "/${_ingest_base}" "$_dirtab" 2>/dev/null; then
-                echo "/${_ingest_base}" | sudo tee -a "$_dirtab" >/dev/null
+
+            # cvmfs_server transaction/publish fetches the whitelist via
+            # CVMFS_SERVER_URL (= http://stratum0/...).  On the host, the
+            # Docker-internal hostname "stratum0" does not resolve; the
+            # stratum0 container is accessible on host port 8090.
+            # Temporarily patch the host-side server.conf to use localhost:8090,
+            # then restore it unconditionally when the sub-shell exits.
+            local _host_conf="/etc/cvmfs/repositories.d/${REPO_NAME}/server.conf"
+            local _conf_bak
+            _conf_bak=$(mktemp)
+            sudo cp "$_host_conf" "$_conf_bak"
+            sudo sed -i \
+                's|CVMFS_SERVER_URL=http://stratum0/|CVMFS_SERVER_URL=http://localhost:8090/|g' \
+                "$_host_conf"
+
+            # Run transaction + publish in a sub-shell so the EXIT trap always
+            # restores server.conf even if the commands fail.
+            local _setup_rc=0
+            (
+                trap 'sudo cp "$_conf_bak" "$_host_conf"; sudo rm -f "$_conf_bak"' EXIT
+                sudo env PATH="$PATH" "$_cvmfs_server" transaction "${REPO_NAME}"
+                sudo mkdir -p "/cvmfs/${REPO_NAME}/${_ingest_base}"
+                local _dirtab="/cvmfs/${REPO_NAME}/.cvmfsdirtab"
+                if ! grep -qxF "/${_ingest_base}" "$_dirtab" 2>/dev/null; then
+                    echo "/${_ingest_base}" | sudo tee -a "$_dirtab" >/dev/null
+                fi
+                sudo env PATH="$PATH" "$_cvmfs_server" publish \
+                    -a "ingest-catalog-setup" "${REPO_NAME}"
+            ) || _setup_rc=$?
+            sudo cp "$_conf_bak" "$_host_conf"
+            sudo rm -f "$_conf_bak"
+            if [[ $_setup_rc -ne 0 ]]; then
+                error "Failed to pre-create nested catalog at ${_ingest_base}/"
+                exit 1
             fi
-            sudo env PATH="$PATH" "$_cvmfs_server" publish -a "ingest-catalog-setup" "${REPO_NAME}"
             success "Nested catalog ready at ${_ingest_base}/."
             run_compose exec cvmfs-native-publisher /scripts/native-smoke.sh
             ;;
