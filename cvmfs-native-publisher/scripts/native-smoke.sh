@@ -39,6 +39,28 @@ INGEST_BASE="${INGEST_BASE:-test/native/smoke}"
 _SPOOL="/var/spool/cvmfs/${REPO_NAME}"
 rm -f "${_SPOOL}/session_token" "${_SPOOL}/stats.db"
 
+# ── Stub rdonly for pre-existing catalog path components ─────────────────────
+# In mountless gateway ingest mode the rdonly filesystem (${_SPOOL}/rdonly) is
+# an empty directory — no FUSE overlay is mounted.  SyncItemNative::GetRdOnlyFiletype()
+# stats this path to decide whether a directory is "new".  If it doesn't exist
+# in rdonly, IsNew() returns true and CreateDirectories() calls AddDirectory for
+# every ancestor of INGEST_BASE, including those already committed to the CVMFS
+# catalog by a prior bootstrap ingest.  WritableCatalog::AddEntry then asserts
+# because the SQL INSERT finds a duplicate path.
+#
+# Stub directories at each path component make GetRdOnlyFiletype() return
+# kItemDir → IsNew() = false → CreateDirectories skips the duplicate AddDirectory.
+# These stubs must cover every component of INGEST_BASE (inclusive), because
+# CreateDirectories recurses all the way to the root for each tar entry.
+_rdonly="${_SPOOL}/rdonly"
+_path=""
+IFS='/' read -ra _components <<< "${INGEST_BASE}"
+for _c in "${_components[@]}"; do
+    _path="${_path:+${_path}/}${_c}"
+    mkdir -p "${_rdonly}/${_path}"
+done
+unset _rdonly _path _components _c
+
 # ── Build comprehensive test payload ───────────────────────────────────────────
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "${WORK_DIR}"' EXIT
