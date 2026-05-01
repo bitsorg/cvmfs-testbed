@@ -424,6 +424,31 @@ cmd_bootstrap() {
         warn "Try re-running init first: ./testbed.sh init"
     fi
 
+    # Restart the gateway to clear any stale lease state left by a previous
+    # failed ingest (e.g. a receiver panic that prevented the client from
+    # dropping its lease).  The gateway holds leases in memory only; a restart
+    # clears them without affecting the repository data or configuration.
+    info "Restarting gateway to clear any stale leases ..."
+    run_compose restart gateway
+
+    # Wait up to 30 s for the gateway API to become healthy again.
+    local _gw_url="http://localhost:4929/api/v1/repos"
+    local _deadline=$(( $(date +%s) + 30 ))
+    local _gw_ready=false
+    while [[ $(date +%s) -lt $_deadline ]]; do
+        if curl -sf --max-time 2 "$_gw_url" >/dev/null 2>&1; then
+            _gw_ready=true; break
+        fi
+        sleep 2
+        echo -n "."
+    done
+    echo ""
+    if ! $_gw_ready; then
+        error "Gateway did not come back healthy after restart — check: ./testbed.sh logs gateway"
+        exit 1
+    fi
+    ok "Gateway healthy."
+
     info "Running cvmfs-bootstrap container ..."
     run_compose run --rm cvmfs-bootstrap
 
