@@ -30,7 +30,8 @@ RUN mkdir -p /cvmfs /etc/cvmfs/config.d /var/cache/cvmfs /var/run/cvmfs \
 
 # Scripts are baked into the image (they don't change between test runs).
 COPY scripts/verify-publish.sh /usr/local/bin/verify-publish.sh
-RUN chmod +x /usr/local/bin/verify-publish.sh
+COPY scripts/verify-ingest.sh  /usr/local/bin/verify-ingest.sh
+RUN chmod +x /usr/local/bin/verify-publish.sh /usr/local/bin/verify-ingest.sh
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

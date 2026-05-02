@@ -622,6 +622,11 @@ cmd_test() {
             # this runs the nested catalog already exists in the repository.
             # See: ./testbed.sh bootstrap  or  make bootstrap
             run_compose exec cvmfs-native-publisher /scripts/native-smoke.sh
+            # The native ingest is synchronous: the new manifest is signed and
+            # served by stratum0 as soon as native-smoke.sh returns.  Tell the
+            # CVMFS client to drop its cached catalog and re-read the manifest,
+            # then verify the expected files are visible through the FUSE mount.
+            run_compose exec cvmfs-client verify-ingest.sh
             ;;
         *)
             error "Unknown publish method: $PUBLISH_METHOD (expected bits|ingest)"
