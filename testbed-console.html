@@ -1010,40 +1010,6 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
     <div id="cfg-saved" style="color:var(--c-accent);font-size:12px;margin-top:8px;display:none">✓ Saved.</div>
   </div>
 
-  <!-- ── Publish pipeline toggle ─────────────────────────────────────────── -->
-  <div class="box box-pad" id="sk-box">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
-      <div class="box-title" style="margin-bottom:0">Publish Pipeline</div>
-      <span id="sk-status-badge" class="badge badge-unknown" style="font-size:11px">loading…</span>
-    </div>
-    <p style="font-size:12px;color:var(--c-muted);margin-bottom:14px;line-height:1.5">
-      Toggle the active publish path on the running prepub service — no restart needed.
-      <b>SwissKnife</b> delegates the full pipeline (compress + catalog + commit) to
-      the native <code>cvmfs_swissknife ingest</code> binary (~30–60 % faster for large
-      publishes). <b>Go pipeline</b> is the default path with Bloom-filter dedup and
-      per-object provenance.
-    </p>
-    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-      <!-- Toggle pill -->
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none" id="sk-label">
-        <div id="sk-pill" style="
-            position:relative;width:44px;height:24px;border-radius:12px;
-            background:var(--c-border);cursor:pointer;transition:background .2s;flex-shrink:0"
-          onclick="toggleSwissKnife()">
-          <div id="sk-knob" style="
-              position:absolute;top:3px;left:3px;width:18px;height:18px;
-              border-radius:50%;background:#fff;
-              box-shadow:0 1px 3px rgba(0,0,0,.3);
-              transition:transform .2s"></div>
-        </div>
-        <span id="sk-pill-label" style="font-size:13px;font-weight:500">Go pipeline (default)</span>
-      </label>
-      <button class="btn btn-outline btn-sm" onclick="refreshPipelineConfig()">↻ Recheck</button>
-    </div>
-    <div id="sk-msg" style="margin-top:10px;font-size:12px;display:none"></div>
-    <div style="margin-top:12px;font-size:11px;color:var(--c-muted)" id="sk-note"></div>
-  </div>
-
   <div class="box box-pad">
     <div class="box-title" style="margin-bottom:12px">Quick start</div>
     <div class="term" style="height:auto;max-height:200px;font-size:12px">
@@ -1343,7 +1309,6 @@ function showTab(name){
   if(name==='stratum0')   refreshStatusDiagram();
   if(name==='monitoring') refreshMonitoring();
   if(name==='upload')     refreshUploadFilelist();
-  if(name==='settings')   refreshPipelineConfig();
 }
 
 // ═══════════════════════════ Services health ═════════════════════════════════
@@ -3325,90 +3290,6 @@ function saveSettings(){
 }
 function resetSettings(){ cfg={...DEFAULTS}; localStorage.removeItem('testbed-cfg'); loadSettings(); }
 
-// ═══════════════════════════ Publish pipeline toggle ═════════════════════════
-// Reads GET /api/v1/config and updates the SwissKnife pill; sends
-// PATCH /api/v1/config to toggle.  Safe to call at any time.
-
-let _skConfigured = false; // true when swissknife_configured returned by API
-
-function applyPipelineState(data){
-  _skConfigured = !!data.swissknife_configured;
-  const enabled  = !!data.swissknife_enabled;
-  const pill     = $('sk-pill');
-  const knob     = $('sk-knob');
-  const lbl      = $('sk-pill-label');
-  const badge    = $('sk-status-badge');
-  const note     = $('sk-note');
-  const label    = $('sk-label');
-
-  // Update pill appearance
-  pill.style.background   = enabled ? 'var(--c-accent)' : 'var(--c-border)';
-  knob.style.transform    = enabled ? 'translateX(20px)' : 'translateX(0)';
-  lbl.textContent         = enabled ? 'SwissKnife ingest (fast C++)' : 'Go pipeline (default)';
-
-  // Status badge
-  badge.textContent = enabled ? '⚡ SwissKnife active' : '🐹 Go pipeline active';
-  badge.className   = 'badge ' + (enabled ? 'ok' : 'info');
-
-  // Disable controls when config was not provided at startup
-  const disabled = !_skConfigured;
-  label.style.opacity = disabled ? '0.45' : '1';
-  label.style.cursor  = disabled ? 'default' : 'pointer';
-  pill.style.cursor   = disabled ? 'default' : 'pointer';
-
-  // Note
-  if(disabled){
-    note.textContent = '⚠ SwissKnife was not configured at startup (--swissknife flag). '
-      + 'Restart the service with --swissknife to enable.';
-  } else if(data.swissknife_binary){
-    note.textContent = 'Binary: ' + data.swissknife_binary;
-  } else {
-    note.textContent = '';
-  }
-}
-
-async function refreshPipelineConfig(){
-  const r = await apiFetch('prepub', '/api/v1/config');
-  if(!r.ok){ return; }
-  try{ applyPipelineState(JSON.parse(r.body)); } catch(_){}
-}
-
-async function toggleSwissKnife(){
-  if(!_skConfigured) return; // guard: no config → ignore clicks
-  // Read current state from the pill label before the async round-trip
-  const currentlyEnabled = $('sk-pill').style.background.includes('accent') ||
-    $('sk-pill').style.background === 'var(--c-accent)';
-  const next = !currentlyEnabled;
-
-  const msg = $('sk-msg');
-  msg.style.display = '';
-  msg.style.color   = 'var(--c-muted)';
-  msg.textContent   = next ? 'Enabling SwissKnife…' : 'Switching to Go pipeline…';
-
-  const r = await apiFetch('prepub', '/api/v1/config', {
-    method: 'PATCH',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({swissknife_enabled: next}),
-  });
-
-  if(!r.ok){
-    msg.style.color = 'var(--c-danger)';
-    try{
-      const err = JSON.parse(r.body);
-      msg.textContent = '✗ ' + (err.error || r.status);
-    }catch(_){ msg.textContent = '✗ Request failed ('+r.status+')'; }
-    return;
-  }
-  try{
-    const data = JSON.parse(r.body);
-    applyPipelineState(data);
-    msg.style.color = 'var(--c-accent)';
-    msg.textContent = data.swissknife_enabled
-      ? '✓ SwissKnife ingest enabled — next jobs will use the C++ path.'
-      : '✓ Switched to Go pipeline — next jobs will use dedup + compress + CAS.';
-    setTimeout(()=>{ msg.style.display='none'; }, 4000);
-  }catch(_){}
-}
 function applyConfig(){
   $('hdr-sub').textContent=cfg.repo;
   $('sf-repo').textContent=cfg.repo;
@@ -3434,7 +3315,6 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   initToken();           // read ?token= from URL (or sessionStorage)
   await detectMode();
   await refreshAll();
-  refreshPipelineConfig(); // populate publish-pipeline toggle (fire-and-forget)
 });
 </script>
 </body>
