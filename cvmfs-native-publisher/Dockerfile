@@ -20,6 +20,7 @@ RUN apt-get update \
         curl \
         jq \
         python3 \
+        mosquitto-clients \
  && rm -rf /var/lib/apt/lists/*
 
 # cvmfs_server expects these directories to exist.

@@ -41,6 +41,29 @@ fi
 
 INGEST_PATH="${INGEST_PATH:-test/smoke}"
 
+# Run log — when set (mounted from host), the completed test run is appended
+# as a single JSON line so the testbed console can display run history.
+RUN_LOG_FILE="${RUN_LOG_FILE:-/data/runs.ndjson}"
+
+# ── Run recording helper ───────────────────────────────────────────────────────
+log_run() {
+    local run_id="$1" method="$2" test_type="$3"
+    local n_req="$4"  n_pub="$5"  n_fail="$6"
+    local start_ts="$7" end_ts="$8" elapsed_s="$9"
+    [[ -n "${RUN_LOG_FILE:-}" ]] || return 0
+    local start_time end_time
+    start_time="$(date -u -d "@${start_ts}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+               || date -u -r "${start_ts}" +%Y-%m-%dT%H:%M:%SZ)"
+    end_time="$(date -u -d "@${end_ts}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+             || date -u -r "${end_ts}" +%Y-%m-%dT%H:%M:%SZ)"
+    printf '{"run_id":"%s","method":"%s","test_type":"%s","n_requested":%d,"n_published":%d,"n_failed":%d,"start_time":"%s","end_time":"%s","duration_s":%d,"avg_s":%d,"min_s":%d,"max_s":%d,"p50_s":%d,"p95_s":%d,"throughput_per_min":0}\n' \
+        "$run_id" "$method" "$test_type" \
+        "$n_req" "$n_pub" "$n_fail" \
+        "$start_time" "$end_time" \
+        "$elapsed_s" "$elapsed_s" "$elapsed_s" "$elapsed_s" "$elapsed_s" "$elapsed_s" \
+        >> "$RUN_LOG_FILE" 2>/dev/null || true
+}
+
 # ── Build comprehensive test payload ───────────────────────────────────────────
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "${WORK_DIR}"' EXIT
@@ -54,6 +77,7 @@ echo ""
 echo "Created test tar: $SMOKE_TAR  ($(du -sh "$SMOKE_TAR" | cut -f1))"
 
 # Submit job
+START_TS=$(date +%s)
 TAG_NAME="smoke-$(date +%Y%m%d-%H%M%S)"
 echo "Submitting job: repo=${REPO_NAME} path=${INGEST_PATH} tag=${TAG_NAME}"
 
@@ -120,10 +144,15 @@ JOB_STATUS=$(curl -sf --max-time 10 \
     -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
     "${PREPUB_URL}/api/v1/jobs/${JOB_ID}") || JOB_STATUS=""
 
+END_TS=$(date +%s)
+ELAPSED=$(( END_TS - START_TS ))
+RUN_ID="bits-smoke-${TAG_NAME#smoke-}"
+
 case "$FINAL_STATE" in
     published)
         echo -e "${GREEN}Job published successfully${NC}"
         echo "$JOB_STATUS" | jq .
+        log_run "$RUN_ID" "bits" "smoke" 1 1 0 "$START_TS" "$END_TS" "$ELAPSED"
         echo ""
         echo "Expected paths (sample):"
         echo "  /cvmfs/${REPO_NAME}/${INGEST_PATH}/simple/hello.txt"
@@ -134,9 +163,11 @@ case "$FINAL_STATE" in
     failed|aborted)
         echo -e "${RED}Job ${FINAL_STATE}${NC}"
         echo "$JOB_STATUS" | jq .
+        log_run "$RUN_ID" "bits" "smoke" 1 0 1 "$START_TS" "$END_TS" "$ELAPSED"
         exit 1 ;;
     *)
         echo -e "${RED}Job timed out or stream ended without terminal state (last: ${FINAL_STATE:-unknown})${NC}"
         echo "$JOB_STATUS" | jq .
+        log_run "$RUN_ID" "bits" "smoke" 1 0 1 "$START_TS" "$END_TS" "$ELAPSED"
         exit 1 ;;
 esac

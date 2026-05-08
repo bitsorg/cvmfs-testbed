@@ -207,6 +207,19 @@ if [[ "${FINAL_STATE}" == "published" ]]; then
                 FILE_VISIBLE_TS=$(now_ms)
                 record_stage "file visible" "${FILE_VISIBLE_TS}"
                 echo "[verify] File visible: ${FILE_PATH}"
+
+                # Additionally attempt a content read for regular files.
+                # -e alone misses CVMFS quarantine failures (EIO): the file
+                # shows up in stat/readdir but cat returns EIO because the
+                # client quarantined the CAS object after a failed integrity
+                # check.  Reading the first byte catches this class of failure.
+                if [[ -f "${FILE_PATH}" && ! -L "${FILE_PATH}" ]]; then
+                    _read_err=""
+                    if ! _read_err=$(cat "${FILE_PATH}" 2>&1 >/dev/null); then
+                        echo "[verify] ERROR: file stat OK but content read failed (EIO/quarantine?): ${_read_err}" >&2
+                        FILE_VISIBLE_TS=""   # mark as not actually readable
+                    fi
+                fi
                 break
             fi
             if (( $(date +%s) > POLL_DEADLINE )); then

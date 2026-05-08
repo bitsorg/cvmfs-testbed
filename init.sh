@@ -196,11 +196,11 @@ mkdir -p \
     "$TESTBED_ROOT/software" \
     "$TESTBED_ROOT/repos" \
     "$TESTBED_ROOT/data/spool" \
+    "$TESTBED_ROOT/data/spool/dist-queue" \
     "$TESTBED_ROOT/data/s1a" \
     "$TESTBED_ROOT/data/s1b" \
     "$TESTBED_ROOT/data/monitoring/vm" \
     "$TESTBED_ROOT/data/monitoring/vmagent" \
-    "$TESTBED_ROOT/data/monitoring/grafana" \
     "$TESTBED_ROOT/data/cvmfs-client" \
     "$TESTBED_ROOT/data/mosquitto" \
     "$TESTBED_ROOT/data/mosquitto-log" \
@@ -208,6 +208,7 @@ mkdir -p \
     "$TESTBED_ROOT/data/receiver-logs" \
     "$TESTBED_ROOT/data/gateway-spool" \
     "$TESTBED_ROOT/data/native-ingest" \
+    "$TESTBED_ROOT/data/catalog-dumps" \
     "$TESTBED_ROOT/config/gateway" \
     "$TESTBED_ROOT/config/keys" \
     "$TESTBED_ROOT/config/cvmfs-prepub" \
@@ -220,18 +221,27 @@ mkdir -p \
 # as non-root users need to be world-writable on the host.  The affected
 # services and their in-container UIDs are:
 #   cvmfs-prepub / stratum1-a / stratum1-b  — 'prepub' (system UID, ~100-999)
-#   grafana                                 — UID 472
 #   vmagent / victoriametrics               — UID 1000 (victoriametrics image)
 chmod 777 \
     "$TESTBED_ROOT/data/spool" \
+    "$TESTBED_ROOT/data/spool/dist-queue" \
     "$TESTBED_ROOT/data/s1a" \
     "$TESTBED_ROOT/data/s1b" \
     "$TESTBED_ROOT/data/monitoring/vm" \
     "$TESTBED_ROOT/data/monitoring/vmagent" \
-    "$TESTBED_ROOT/data/monitoring/grafana" \
     "$TESTBED_ROOT/data/cvmfs-client" \
     "$TESTBED_ROOT/data/receiver-logs" \
     "$TESTBED_ROOT/data/gateway-spool"
+# NDJSON log files — must exist as regular files before docker-compose mounts
+# them (bind-mounting a non-existent path creates a directory, not a file).
+for _log in ingest-jobs.ndjson runs.ndjson; do
+    if [[ ! -f "$TESTBED_ROOT/data/$_log" ]]; then
+        touch "$TESTBED_ROOT/data/$_log"
+        chmod 666 "$TESTBED_ROOT/data/$_log"
+        success "Created $_log log file."
+    fi
+done
+unset _log
 success "Directory structure created."
 
 # (BITS_CONSOLE_SRC is derived from the conventional path $SCRIPT_DIR/bits-console
@@ -269,17 +279,17 @@ if [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
         -v GITEA_SECRET_KEY="$GITEA_SECRET_KEY" \
         -v GITEA_INTERNAL_TOKEN="$GITEA_INTERNAL_TOKEN" \
         'BEGIN { FS="="; OFS="=" }
-         /^TESTBED_ROOT=/          { $2=TESTBED_ROOT;          print; next }
-         /^SOFTWARE_ROOT=/         { $2=SOFTWARE_ROOT;         print; next }
-         /^REPO_NAME=/             { $2=REPO_NAME;             print; next }
-         /^CVMFS_GATEWAY_SECRET=$/ { $2=CVMFS_GATEWAY_SECRET;  print; next }
-         /^PREPUB_API_TOKEN=$/     { $2=PREPUB_API_TOKEN;      print; next }
-         /^PREPUB_HMAC_SECRET=$/   { $2=PREPUB_HMAC_SECRET;    print; next }
-         /^CVMFS_GATEWAY_KEY_ID=/  { $2=CVMFS_GATEWAY_KEY_ID;  print; next }
-         /^GITEA_ADMIN_USER=/      { $2=GITEA_ADMIN_USER;      print; next }
-         /^GITEA_ADMIN_PASSWORD=$/ { $2=GITEA_ADMIN_PASSWORD;  print; next }
-         /^GITEA_SECRET_KEY=$/     { $2=GITEA_SECRET_KEY;      print; next }
-         /^GITEA_INTERNAL_TOKEN=$/ { $2=GITEA_INTERNAL_TOKEN;  print; next }
+         /^TESTBED_ROOT=/             { $2=TESTBED_ROOT;             print; next }
+         /^SOFTWARE_ROOT=/            { $2=SOFTWARE_ROOT;            print; next }
+         /^REPO_NAME=/                { $2=REPO_NAME;                print; next }
+         /^CVMFS_GATEWAY_SECRET=$/    { $2=CVMFS_GATEWAY_SECRET;     print; next }
+         /^PREPUB_API_TOKEN=$/        { $2=PREPUB_API_TOKEN;         print; next }
+         /^PREPUB_HMAC_SECRET=$/      { $2=PREPUB_HMAC_SECRET;       print; next }
+         /^CVMFS_GATEWAY_KEY_ID=/     { $2=CVMFS_GATEWAY_KEY_ID;     print; next }
+         /^GITEA_ADMIN_USER=/         { $2=GITEA_ADMIN_USER;         print; next }
+         /^GITEA_ADMIN_PASSWORD=$/    { $2=GITEA_ADMIN_PASSWORD;     print; next }
+         /^GITEA_SECRET_KEY=$/        { $2=GITEA_SECRET_KEY;         print; next }
+         /^GITEA_INTERNAL_TOKEN=$/    { $2=GITEA_INTERNAL_TOKEN;     print; next }
          { print }' \
         "$SCRIPT_DIR/.env.example" > "$ENV_FILE"
     success "Generated secrets and wrote $ENV_FILE"
@@ -377,9 +387,25 @@ distribution:
   stratum1_endpoints:
     - http://stratum1-a:9100
     - http://stratum1-b:9100
-  quorum: 0.5
+  # quorum: 0 — publish completes as soon as gateway/receiver commits.
+  # Stratum1 distribution continues asynchronously; the Status page
+  # tracks each stratum1's revision and lag vs stratum0 in real time.
+  quorum: 0
   timeout: 2m
   commit_anyway: true
+  # Queue-driven distribution worker settings.
+  # Each Stratum 1 endpoint gets its own persistent queue and worker pool.
+  worker_concurrency: 2       # goroutines per endpoint
+  queue_depth: 256            # in-memory queue slots per endpoint
+  attempt_timeout: 90s        # max time per single delivery attempt
+  initial_backoff: 5s         # backoff after first failure
+  max_backoff: 5m             # cap on exponential backoff
+  worker_max_attempts: 0      # 0 = retry indefinitely until success
+# Per-job wall-clock timeout.  Cancels any job that is stuck in pipeline,
+# catalog merge, SubmitPayload, or commit for longer than this duration.
+# Prevents jobs from hanging indefinitely when a remote endpoint stalls.
+# 30m is generous for typical payloads; increase for very large repos.
+job_timeout: 30m
 EOFCONFIG
 success "cvmfs-prepub config written."
 
@@ -809,12 +835,8 @@ else
 fi
 
 # ── Print next-steps summary ──────────────────────────────────────────────────
-# Grafana moves to port 3001 when the bits overlay is active (docker-compose.bits.yml
-# remaps it to avoid conflict with Gitea on 3000).
-GRAFANA_PORT=3000
 _BITS_AVAILABLE=false
 [[ -d "$SCRIPT_DIR/bits-console" ]] && _BITS_AVAILABLE=true
-$_BITS_AVAILABLE && GRAFANA_PORT=3001
 
 echo ""
 echo "========================================================"

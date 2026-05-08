@@ -250,4 +250,20 @@ else
     fi
 fi
 
+# ── 7. Install gateway stub scripts ──────────────────────────────────────────
+# Some cvmfs-gateway actions invoke scripts that are part of the full
+# cvmfs-server Debian package (e.g. upload_stats_plots.sh).  That package is
+# not installed in the lightweight gateway container, so the gateway logs an
+# error on every transaction.  Install harmless stubs so those paths exist.
+_stub_src="$SCRIPT_DIR/gateway/upload_stats_plots.sh"
+_stub_dst="$SOFTWARE_ROOT/upload_stats_plots.sh"
+if [[ -f "$_stub_src" ]]; then
+    cp "$_stub_src" "$_stub_dst"
+    chmod +x "$_stub_dst"
+    info "  upload_stats_plots.sh (stub)"
+    success "Gateway stubs installed."
+else
+    warn "Gateway stub not found: $_stub_src — skipping."
+fi
+
 success "install.sh complete.  Binaries are in $SOFTWARE_ROOT"

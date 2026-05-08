@@ -40,6 +40,28 @@
 #                   a subsequent start can restore from it without re-bootstrapping.
 #   reset           clean + init + start + bootstrap (full teardown and
 #                   reinitialisation including a fresh snapshot).
+#   server [port]   Start the testbed console HTTP backend server.
+#                   Default port: 8888.  Binds to 0.0.0.0 so the console is
+#                   reachable from any host on the network.
+#                   The server reverse-proxies all internal services (gateway,
+#                   stratum0, stratum1-a/b, …) through a single port,
+#                   solving the "localhost:3000 unreachable from remote host"
+#                   problem.  Run testbed.sh commands directly from the browser.
+#                   Requires Python 3.8+.
+#   mqtttest        End-to-end MQTT notification test.  Requires --mqtt.
+#                   Subscribes to cvmfs/repos/{repo}/published, runs one publish
+#                   job (default: --method bits), and verifies that a
+#                   PublishedMessage arrives, the JSON payload is valid, and that
+#                   the Stratum 1 receivers log the expected activity.
+#                   With --method ingest the test also checks stratum1 logs for
+#                   S0 pull activity triggered by the notification.
+#   unittest        Run Go unit tests for the broker and receiver packages.
+#                   Searches for the cvmfs-bits source tree next to this script
+#                   directory and runs:
+#                     go test -v ./internal/broker/...
+#                     go test -v ./internal/distribute/receiver/...
+#                   Falls back to running inside the cvmfs-prepub container if
+#                   the source is not found on the host.
 #   help            Show this help text.
 #
 # Options (accepted by all commands):
@@ -87,6 +109,20 @@
 #   ./testbed.sh stresstest 20
 #   ./testbed.sh stresstest 20 --method ingest
 #
+#   # Start the console server (accessible from any host):
+#   ./testbed.sh server          # plain testbed (port 8888)
+#   ./testbed.sh server --mqtt   # with MQTT overlay flags forwarded to server
+#   ./testbed.sh server --bits --mqtt 9090  # custom port
+#   # Then open: http://<hostname>:8888/
+#
+#   # MQTT end-to-end notification test:
+#   ./testbed.sh start --mqtt
+#   ./testbed.sh mqtttest --mqtt                    # bits path (default)
+#   ./testbed.sh mqtttest --mqtt --method ingest    # native ingest path
+#
+#   # Go unit tests (broker + receiver packages):
+#   ./testbed.sh unittest
+#
 #   # Compare catalog structure between the two publishing paths:
 #   ./testbed.sh test --method ingest
 #   ./testbed.sh catdump ingest
@@ -122,6 +158,7 @@ SOFTWARE_ROOT_OVERRIDE=""
 TESTBED_ROOT_OVERRIDE=""
 PUBLISH_METHOD="bits"   # bits | ingest
 AUTO_YES=false          # skip interactive confirmation prompts (e.g. for make)
+FOLLOW_LOGS=false       # set by -f/--follow; makes 'logs' stream continuously
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 # Extract the command first, then parse --flags.
@@ -160,6 +197,14 @@ while [[ $# -gt 0 ]]; do
             [[ "$PUBLISH_METHOD" == "bits" || "$PUBLISH_METHOD" == "ingest" ]] \
                 || { error "--method must be 'bits' or 'ingest'"; exit 1; } ;;
         -y|--yes)      AUTO_YES=true;                    shift ;;
+        -f|--follow)   FOLLOW_LOGS=true;                shift ;;
+        # Command-specific flags (e.g. upload-filelist, stresstest) — pass
+        # them through to the subcommand handler via POSITIONAL_ARGS.
+        --dir|--filelist|--ingest-path|--concurrency|-j|--run-log|\
+        --prepub-url|--repo|--token)
+            POSITIONAL_ARGS+=("$1" "${2:-}"); shift 2 ;;
+        --no-recursive)
+            POSITIONAL_ARGS+=("$1"); shift ;;
         --*)  error "Unknown option: $1"; exit 1 ;;
         *)    POSITIONAL_ARGS+=("$1");                           shift ;;
     esac
@@ -581,9 +626,6 @@ _cmd_status_inner() {
 
     if $USE_BITS; then
         _check_http "Gitea API" "http://localhost:3000/api/v1/version" || _status_ok=false
-        _check_http "Grafana"   "http://localhost:3001/api/health"     || _status_ok=false
-    else
-        _check_http "Grafana"   "http://localhost:3000/api/health"     || _status_ok=false
     fi
 
     if $_status_ok; then
@@ -601,10 +643,14 @@ cmd_status() {
 cmd_logs() {
     load_env
     local svc="${POSITIONAL_ARGS[0]:-}"
+    # Default: print the last 200 log lines and exit (safe for the web UI SSE stream).
+    # Pass -f / --follow to stream logs continuously (use Ctrl-C to stop).
+    local follow_flag=()
+    $FOLLOW_LOGS && follow_flag=("-f")
     if [[ -n "$svc" ]]; then
-        run_compose logs -f "$svc"
+        run_compose logs --tail=200 "${follow_flag[@]}" "$svc"
     else
-        run_compose logs -f
+        run_compose logs --tail=200 "${follow_flag[@]}"
     fi
 }
 
@@ -614,6 +660,12 @@ cmd_test() {
     case "$PUBLISH_METHOD" in
         bits)
             run_compose exec publisher /scripts/smoke-test.sh
+            # The bits pipeline is asynchronous but smoke-test.sh waits for the
+            # SSE "published" event before returning, so by this point the new
+            # manifest is live on stratum0.  Trigger a client remount and verify
+            # the expected files are visible through the FUSE mount.
+            # INGEST_BASE=test/smoke matches INGEST_PATH in smoke-test.sh.
+            run_compose exec -e INGEST_BASE=test/smoke cvmfs-client verify-ingest.sh
             ;;
         ingest)
             # The nested-catalog structure (test/native/smoke) is pre-created by
@@ -638,16 +690,41 @@ cmd_test() {
 cmd_stresstest() {
     local n="${POSITIONAL_ARGS[0]:-}"
     if [[ -z "$n" ]] || ! [[ "$n" =~ ^[1-9][0-9]*$ ]]; then
-        error "Usage: $0 stresstest <n>  (n must be a positive integer)"
+        error "Usage: $0 stresstest <n> [--concurrency <c>]  (n must be a positive integer)"
         exit 1
     fi
-    section "Running stress test: ${n} jobs (method: ${PUBLISH_METHOD})"
+
+    # Parse --concurrency / -j from remaining positional args.
+    local concurrency=""
+    local remaining_args=()
+    local i=1
+    while [[ $i -lt ${#POSITIONAL_ARGS[@]} ]]; do
+        local arg="${POSITIONAL_ARGS[$i]}"
+        if [[ "$arg" == "--concurrency" || "$arg" == "-j" ]]; then
+            i=$(( i + 1 ))
+            concurrency="${POSITIONAL_ARGS[$i]:-}"
+            if ! [[ "$concurrency" =~ ^[1-9][0-9]*$ ]]; then
+                error "--concurrency requires a positive integer (got: '${concurrency}')"
+                exit 1
+            fi
+        else
+            remaining_args+=("$arg")
+        fi
+        i=$(( i + 1 ))
+    done
+
+    local conc_display="${concurrency:-default}"
+    section "Running stress test: ${n} jobs, concurrency=${conc_display} (method: ${PUBLISH_METHOD})"
     load_env
     case "$PUBLISH_METHOD" in
         bits)
-            run_compose exec -e NUM_JOBS="$n" publisher /scripts/stress-test.sh
+            local exec_env=(-e NUM_JOBS="$n")
+            [[ -n "$concurrency" ]] && exec_env+=(-e CONCURRENCY="$concurrency")
+            run_compose exec "${exec_env[@]}" publisher /scripts/stress-test.sh
             ;;
         ingest)
+            # native-stress runs sequentially (cvmfs_server ingest is synchronous);
+            # --concurrency is silently ignored for the ingest path.
             run_compose exec -e NUM_JOBS="$n" cvmfs-native-publisher /scripts/native-stress.sh
             ;;
         *)
@@ -655,6 +732,86 @@ cmd_stresstest() {
             exit 1
             ;;
     esac
+}
+
+cmd_upload_filelist() {
+    # Upload tar.gz files to CVMFS via the bits API.
+    # Runs upload-filelist.sh on the HOST (not inside a container) so it can
+    # access files at arbitrary paths.
+    #
+    # Options (from POSITIONAL_ARGS):
+    #   --dir         <path> scan directory for *.tar.gz (preferred)
+    #   --concurrency <n>    max parallel uploads (default: 2)
+    #   --filelist    <path> explicit path to filelist.txt (fallback)
+    #   --ingest-path <p>    repository sub-path prefix (default: upload)
+    #   --no-recursive       do not descend into sub-directories when scanning
+
+    local concurrency=2
+    local dir_arg=""
+    local filelist_arg=""
+    local ingest_path="upload"
+    local no_recursive=false
+    local method="$PUBLISH_METHOD"   # inherits top-level --method (bits|ingest)
+
+    local i=0
+    while [[ $i -lt ${#POSITIONAL_ARGS[@]} ]]; do
+        local arg="${POSITIONAL_ARGS[$i]}"
+        case "$arg" in
+            --dir)
+                i=$(( i + 1 ))
+                dir_arg="${POSITIONAL_ARGS[$i]:-}"
+                ;;
+            --concurrency|-j)
+                i=$(( i + 1 ))
+                concurrency="${POSITIONAL_ARGS[$i]:-2}"
+                [[ "$concurrency" =~ ^[1-9][0-9]*$ ]] \
+                    || { error "--concurrency requires a positive integer"; exit 1; }
+                ;;
+            --filelist)
+                i=$(( i + 1 ))
+                filelist_arg="${POSITIONAL_ARGS[$i]:-}"
+                ;;
+            --ingest-path)
+                i=$(( i + 1 ))
+                ingest_path="${POSITIONAL_ARGS[$i]:-upload}"
+                ;;
+            --no-recursive)
+                no_recursive=true
+                ;;
+            --method)
+                i=$(( i + 1 ))
+                method="${POSITIONAL_ARGS[$i]:-bits}"
+                [[ "$method" == "bits" || "$method" == "ingest" ]] \
+                    || { error "--method must be 'bits' or 'ingest'"; exit 1; }
+                ;;
+        esac
+        i=$(( i + 1 ))
+    done
+
+    load_env
+
+    local upload_script="${SCRIPT_DIR}/upload-filelist.sh"
+    if [[ ! -f "$upload_script" ]]; then
+        error "upload-filelist.sh not found at $upload_script"
+        exit 1
+    fi
+
+    if [[ -n "$dir_arg" ]]; then
+        section "Uploading from directory: ${dir_arg} (concurrency=${concurrency})"
+    else
+        section "Uploading filelist (bits API, concurrency=${concurrency})"
+    fi
+
+    local args=()
+    args+=(--concurrency "$concurrency")
+    args+=(--ingest-path "$ingest_path")
+    args+=(--method "$method")
+    args+=(--run-log "${TESTBED_ROOT}/data/runs.ndjson")
+    [[ -n "$dir_arg"      ]] && args+=(--dir      "$dir_arg")
+    [[ -n "$filelist_arg" ]] && args+=(--filelist "$filelist_arg")
+    $no_recursive            && args+=(--no-recursive)
+
+    bash "$upload_script" "${args[@]}"
 }
 
 cmd_catdump() {
@@ -703,13 +860,50 @@ cmd_catdiff() {
         exit 1
     fi
 
-    info "Catalogs in $label_a: $(ls "$dir_a"/*.dump 2>/dev/null | wc -l)"
-    info "Catalogs in $label_b: $(ls "$dir_b"/*.dump 2>/dev/null | wc -l)"
+    local na nb
+    na=$(ls "$dir_a"/*.dump 2>/dev/null | wc -l)
+    nb=$(ls "$dir_b"/*.dump 2>/dev/null | wc -l)
+    info "Catalogs in $label_a: $na"
+    info "Catalogs in $label_b: $nb"
     echo ""
 
+    if [[ "$na" -eq 0 && "$nb" -eq 0 ]]; then
+        warn "Both dump directories are empty — run catdump first."
+        exit 1
+    fi
+
     local diff_out="$dumps_root/${label_a}_vs_${label_b}.diff"
-    diff -u --recursive --label "$label_a" --label "$label_b" "$dir_a" "$dir_b" \
-        > "$diff_out" 2>&1 || true
+
+    # Quick pre-check with --brief so the user sees which files differ without
+    # waiting for the full unified diff (which can be slow on large SQL dumps).
+    info "Quick file comparison (--brief)…"
+    local brief_out
+    brief_out=$(diff --recursive --brief "$dir_a" "$dir_b" 2>&1 || true)
+    if [[ -z "$brief_out" ]]; then
+        ok "No differences found — the two catalog sets are identical."
+        rm -f "$diff_out"
+        return 0
+    fi
+    echo "$brief_out"
+    echo ""
+
+    # Full unified diff — can be slow; give it up to 5 minutes.
+    info "Computing full unified diff (may take a while for large catalogs)…"
+    local timeout_bin=""
+    command -v timeout >/dev/null 2>&1 && timeout_bin="timeout 300"
+
+    $timeout_bin diff -u --recursive --label "$label_a" --label "$label_b" \
+        "$dir_a" "$dir_b" > "$diff_out" 2>&1 || {
+        local exit_code=$?
+        if [[ $exit_code -eq 124 ]]; then
+            warn "diff timed out after 5 minutes — dump files are very large."
+            warn "Use the brief output above or compare files manually:"
+            warn "  diff $dir_a/<file>.dump $dir_b/<file>.dump | head -100"
+            exit 1
+        fi
+        # exit code 1 = differences found, which is expected — continue.
+        true
+    }
 
     local nlines
     nlines=$(wc -l < "$diff_out")
@@ -718,7 +912,6 @@ cmd_catdiff() {
     else
         info "Diff written to: $diff_out  (${nlines} lines)"
         echo ""
-        # Print a summary: which files differ, added, removed.
         grep -E "^(---|\+\+\+|Only in)" "$diff_out" | head -40 || true
         echo ""
         info "View full diff:  less $diff_out"
@@ -813,6 +1006,428 @@ cmd_reset() {
     cmd_bootstrap
 }
 
+# ── cmd_server ────────────────────────────────────────────────────────────────
+# Start the testbed console backend server (testbed-server.py).
+#
+# The server:
+#   - Serves testbed-console.html over HTTPS on the specified port (default: 8888).
+#   - Generates a self-signed TLS certificate on first run (next to this script).
+#   - Prints a one-time secret token to stdout; paste it in the browser when prompted.
+#   - Reverse-proxies all internal services so the console works from ANY host.
+#   - Runs ./testbed.sh commands on behalf of the browser and streams output
+#     line-by-line via Server-Sent Events.
+#
+# Usage:
+#   ./testbed.sh server [port]
+#   ./testbed.sh server [port] --no-tls      # plain HTTP (trusted networks only)
+#   ./testbed.sh server [port] --no-auth     # disable token (trusted networks only)
+#
+# Examples:
+#   ./testbed.sh server             # HTTPS on port 8888
+#   ./testbed.sh server 9090        # HTTPS on port 9090
+#   ./testbed.sh --mqtt server      # HTTPS on 8888, MQTT overlay
+#   ./testbed.sh server --no-tls    # plain HTTP
+cmd_server() {
+    section "Starting testbed console server"
+    load_env
+
+    # Optional port from positional args; default 8888.
+    local port="${POSITIONAL_ARGS[0]:-8888}"
+    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+        error "Invalid port: $port (must be a number)"
+        exit 1
+    fi
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        error "python3 not found — required for the testbed server."
+        error "Install it: sudo apt install python3  (or equivalent)"
+        exit 1
+    fi
+
+    local server_script="$SCRIPT_DIR/testbed-server.py"
+    if [[ ! -f "$server_script" ]]; then
+        error "testbed-server.py not found at $server_script"
+        exit 1
+    fi
+
+    local server_args=(
+        --port   "$port"
+        --script "$SCRIPT_DIR/testbed.sh"
+    )
+    [[ -n "${TESTBED_ROOT:-}" ]] && server_args+=(--testbed-root "$TESTBED_ROOT")
+    if $USE_BITS; then server_args+=(--bits); fi
+    if $USE_MQTT; then server_args+=(--mqtt); fi
+    # Pass through --no-tls / --no-auth if given as extra positional args
+    for arg in "${POSITIONAL_ARGS[@]:1}"; do
+        case "$arg" in
+            --no-tls|--no-auth|--verbose) server_args+=("$arg") ;;
+        esac
+    done
+
+    # testbed-server.py prints the token and access URL at startup.
+    python3 "$server_script" "${server_args[@]}"
+}
+
+# ── cmd_mqtttest ───────────────────────────────────────────────────────────────
+# End-to-end test that verifies the MQTT published-notification flow:
+#
+#  1. Subscribe to cvmfs/repos/{repo}/published inside the mosquitto container.
+#  2. Run one publish job (bits or native ingest, controlled by --method).
+#  3. Verify a PublishedMessage arrives within 30 s and the JSON is valid.
+#  4. Inspect stratum1-a logs for the activity expected on each path:
+#       bits path   → "received published notification" (object pre-warmed)
+#       ingest path → S0 pull activity (root catalog fetched from stratum0)
+#  5. Optionally test debounce by sending a duplicate notification and
+#     confirming only one pull goroutine fires.
+#
+# Requires: --mqtt flag, containers started with: ./testbed.sh start --mqtt
+cmd_mqtttest() {
+    section "MQTT notification end-to-end test (method: ${PUBLISH_METHOD})"
+    load_env
+
+    # ── Guard: MQTT overlay must be active ────────────────────────────────────
+    if ! $USE_MQTT; then
+        error "This command requires the --mqtt flag."
+        error "  ./testbed.sh mqtttest --mqtt [--method bits|ingest]"
+        exit 1
+    fi
+
+    # ── Confirm broker is reachable ───────────────────────────────────────────
+    info "Checking Mosquitto broker ..."
+    if ! run_compose exec -T mosquitto mosquitto_sub --help >/dev/null 2>&1; then
+        error "mosquitto container not running or mosquitto_sub not found."
+        error "Start the testbed with: ./testbed.sh start --mqtt"
+        exit 1
+    fi
+    ok "Broker reachable."
+
+    local REPO="${REPO_NAME:?REPO_NAME not set — run: ./testbed.sh init}"
+    local TOPIC="cvmfs/repos/${REPO}/published"
+
+    # ── Step 1: subscribe in background, capture up to 10 messages / 90 s ────
+    section "Step 1: subscribing to ${TOPIC}"
+    local capture_file
+    capture_file="$(mktemp)"
+    trap 'rm -f "${capture_file}"' EXIT
+
+    # -C 10  → exit after 10 messages (prevent hanging indefinitely)
+    # -W 90  → wait up to 90 s for first message (mosquitto_sub ≥ 2.0)
+    # --quiet → suppress connection banners to keep output clean
+    run_compose exec -T mosquitto \
+        mosquitto_sub \
+            -h localhost -p 1883 \
+            -t "${TOPIC}" \
+            -q 1 \
+            -C 10 \
+            --quiet \
+        2>/dev/null \
+        > "${capture_file}" &
+    local sub_pid=$!
+    sleep 1  # give subscriber time to connect before triggering publish
+
+    ok "Subscriber running (PID ${sub_pid}), waiting for notification ..."
+
+    # ── Step 2: run one publish job ───────────────────────────────────────────
+    section "Step 2: running publish job (method: ${PUBLISH_METHOD})"
+    local test_ok=true
+    case "$PUBLISH_METHOD" in
+        bits)
+            run_compose exec publisher /scripts/smoke-test.sh || test_ok=false
+            ;;
+        ingest)
+            run_compose exec cvmfs-native-publisher /scripts/native-smoke.sh || test_ok=false
+            ;;
+        *)
+            error "Unknown method: ${PUBLISH_METHOD}"
+            kill "$sub_pid" 2>/dev/null || true; exit 1
+            ;;
+    esac
+
+    if ! $test_ok; then
+        error "Publish job failed — aborting MQTT test."
+        kill "$sub_pid" 2>/dev/null || true; exit 1
+    fi
+    ok "Publish job completed."
+
+    # ── Step 3: wait for notification (up to 30 s beyond job completion) ──────
+    section "Step 3: waiting for MQTT notification (up to 30 s) ..."
+    local deadline=$(( $(date +%s) + 30 ))
+    local got_notif=false
+    while [[ $(date +%s) -lt $deadline ]]; do
+        if [[ -s "${capture_file}" ]]; then
+            got_notif=true
+            break
+        fi
+        sleep 1
+        echo -n "."
+    done
+    echo ""
+
+    # Stop the background subscriber
+    kill "$sub_pid" 2>/dev/null || true
+    wait "$sub_pid" 2>/dev/null || true
+
+    if ! $got_notif; then
+        error "No MQTT notification received within 30 s after publish."
+        error "Check broker logs: ./testbed.sh logs mosquitto"
+        error "Check prepub logs: ./testbed.sh logs cvmfs-prepub"
+        exit 1
+    fi
+
+    ok "Notification received (${capture_file} is non-empty)."
+    info "Raw payload(s):"
+    while IFS= read -r msg; do
+        info "  ${msg}"
+    done < "${capture_file}"
+
+    # ── Step 4: validate the JSON payload ─────────────────────────────────────
+    section "Step 4: validating payload"
+    local first_msg
+    first_msg="$(head -1 "${capture_file}")"
+    local payload_ok=true
+
+    # Required fields
+    for field in '"repo"' '"new_root_hash"' '"published_at"'; do
+        if echo "${first_msg}" | grep -q "${field}"; then
+            ok "  field ${field} present"
+        else
+            error "  field ${field} MISSING"
+            payload_ok=false
+        fi
+    done
+
+    # repo value must match REPO_NAME
+    if echo "${first_msg}" | grep -q "\"${REPO}\""; then
+        ok "  repo value matches: ${REPO}"
+    else
+        error "  repo value does not match '${REPO}'"
+        payload_ok=false
+    fi
+
+    # new_root_hash must be a non-empty hex-looking string (≥32 chars)
+    local hash_val
+    hash_val="$(echo "${first_msg}" | grep -oP '(?<="new_root_hash":")[^"]+' || true)"
+    if [[ ${#hash_val} -ge 32 ]]; then
+        ok "  new_root_hash looks valid: ${hash_val:0:16}..."
+    else
+        error "  new_root_hash is absent or too short: '${hash_val}'"
+        payload_ok=false
+    fi
+
+    # published_at must look like an ISO-8601 timestamp
+    if echo "${first_msg}" | grep -qP '"published_at"\s*:\s*"\d{4}-\d{2}-\d{2}'; then
+        ok "  published_at is ISO-8601 formatted"
+    else
+        error "  published_at does not look like an ISO-8601 timestamp"
+        payload_ok=false
+    fi
+
+    if ! $payload_ok; then
+        error "Payload validation failed."
+        exit 1
+    fi
+    ok "Payload is valid."
+
+    # ── Step 5: check Stratum 1 receiver logs ─────────────────────────────────
+    section "Step 5: checking stratum1-a receiver logs"
+
+    # Allow up to 10 s for log lines to appear after the notification.
+    local log_deadline=$(( $(date +%s) + 10 ))
+    local s1_log=""
+    while [[ $(date +%s) -lt $log_deadline ]]; do
+        s1_log="$(run_compose logs --no-log-prefix --tail=80 stratum1-a 2>&1 || true)"
+        local found=false
+        case "$PUBLISH_METHOD" in
+            bits)
+                # bits path: S1 already holds objects from the data-plane push;
+                # receiver logs the incoming notification.
+                if echo "${s1_log}" | grep -qi \
+                    "published\|PublishedMessage\|mqtt.*notif\|notif.*received"; then
+                    found=true
+                fi
+                ;;
+            ingest)
+                # ingest path: receiver fetches the root catalog from S0.
+                if echo "${s1_log}" | grep -qi \
+                    "pull.*S0\|pullFromS0\|fetched.*stratum0\|S0.*pull\|pulling catalog"; then
+                    found=true
+                fi
+                ;;
+        esac
+        if $found; then break; fi
+        sleep 2
+    done
+
+    case "$PUBLISH_METHOD" in
+        bits)
+            if echo "${s1_log}" | grep -qi \
+                "published\|PublishedMessage\|mqtt.*notif\|notif.*received"; then
+                ok "stratum1-a: published notification logged."
+            else
+                warn "stratum1-a: expected log line not visible in last 80 lines."
+                warn "Check manually: ./testbed.sh logs stratum1-a"
+            fi
+            ;;
+        ingest)
+            if echo "${s1_log}" | grep -qi \
+                "pull.*S0\|pullFromS0\|fetched.*stratum0\|S0.*pull\|pulling catalog"; then
+                ok "stratum1-a: S0 pull activity logged."
+            else
+                warn "stratum1-a: S0 pull activity not visible in last 80 lines."
+                warn "Check manually: ./testbed.sh logs stratum1-a"
+                warn "(S0 pull may still be in progress or receiver-stratum0-url not set)"
+            fi
+            ;;
+    esac
+
+    # ── Step 6: debounce check — rapid duplicate notification ─────────────────
+    if [[ "$PUBLISH_METHOD" == "ingest" ]]; then
+        section "Step 6: debounce — sending a duplicate notification"
+        info "Publishing the same hash twice in quick succession ..."
+
+        # Re-use the hash from the received notification.
+        local dup_hash="${hash_val}"
+        local dup_payload
+        dup_payload="$(printf '{"repo":"%s","new_root_hash":"%s","published_at":"%s"}' \
+            "${REPO}" "${dup_hash}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+
+        # Send two identical notifications back-to-back.
+        for _n in 1 2; do
+            run_compose exec -T mosquitto \
+                mosquitto_pub -h localhost -p 1883 \
+                    -t "${TOPIC}" -m "${dup_payload}" -q 1 2>/dev/null || true
+        done
+
+        # Check that only ONE pull goroutine fires (TryLock debounce).
+        sleep 5
+        local dup_log
+        dup_log="$(run_compose logs --no-log-prefix --tail=30 stratum1-a 2>&1 || true)"
+        local pull_count
+        pull_count="$(echo "${dup_log}" | grep -c "pullFromS0\|S0.*pull\|pulling catalog" || true)"
+        if [[ "${pull_count}" -le 1 ]]; then
+            ok "Debounce working: at most 1 pull goroutine observed for duplicate notifications."
+        else
+            warn "Debounce: ${pull_count} pull log lines — may or may not indicate concurrent goroutines."
+            warn "Check: ./testbed.sh logs stratum1-a"
+        fi
+    fi
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    echo ""
+    ok "══ MQTT notification end-to-end test PASSED ══"
+}
+
+# ── cmd_unittest ───────────────────────────────────────────────────────────────
+# Run Go unit tests for the internal/broker and internal/distribute/receiver
+# packages.  These packages contain the MQTT message types, topic helpers, and
+# the PublishedMessage handler that were added for the MQTT notification flow.
+#
+# Discovery order for the Go source tree:
+#   1. $SCRIPT_DIR/../cvmfs-bits  (sibling to cvmfs-testbed — the typical layout)
+#   2. $SCRIPT_DIR/../../cvmfs-bits  (one level up from a nested checkout)
+#   3. $BITS_SRC env var, if set
+#
+# Fallback: if no on-host source is found, the tests are executed inside the
+# cvmfs-prepub container (which has Go installed and its source mounted).
+cmd_unittest() {
+    section "Running MQTT / broker Go unit tests"
+
+    # ── Locate the cvmfs-bits source tree ─────────────────────────────────────
+    # Search order:
+    #   1. Inside the testbed directory itself (default Makefile layout).
+    #   2. BITS_SRC env var (explicit override for unittest).
+    #   3. BITS_DIR env var (same variable used by the Makefile build target).
+    #   4. One and two levels above SCRIPT_DIR (legacy layout).
+    local candidates=(
+        "${SCRIPT_DIR}/cvmfs-bits"
+        "${BITS_SRC:-__unset__}"
+        "${BITS_DIR:-__unset__}"
+        "${SCRIPT_DIR}/../cvmfs-bits"
+        "${SCRIPT_DIR}/../../cvmfs-bits"
+    )
+    local bits_dir=""
+    for d in "${candidates[@]}"; do
+        [[ "$d" == "__unset__" ]] && continue
+        if [[ -f "$d/go.mod" ]]; then
+            bits_dir="$(cd "$d" && pwd)"
+            break
+        fi
+    done
+
+    # ── Run tests on host (preferred) ─────────────────────────────────────────
+    if [[ -n "$bits_dir" ]]; then
+        info "Found cvmfs-bits source at: ${bits_dir}"
+
+        if ! command -v go >/dev/null 2>&1; then
+            error "'go' not found in PATH — install Go (≥ 1.22) or use the container fallback."
+            error "Re-run with the testbed running so the container fallback activates:"
+            error "  ./testbed.sh unittest  (without 'go' on host, but containers running)"
+            exit 1
+        fi
+
+        local go_ver
+        go_ver="$(go version 2>&1 | grep -oP 'go\d+\.\d+' | head -1)"
+        info "Using ${go_ver} on host."
+
+        local overall_ok=true
+
+        section "broker package tests"
+        info "  go test -v -count=1 ./internal/broker/..."
+        (cd "$bits_dir" && go test -v -count=1 ./internal/broker/...) \
+            && ok "broker tests PASSED" \
+            || { error "broker tests FAILED"; overall_ok=false; }
+
+        section "receiver package tests"
+        info "  go test -v -count=1 ./internal/distribute/receiver/..."
+        (cd "$bits_dir" && go test -v -count=1 ./internal/distribute/receiver/...) \
+            && ok "receiver tests PASSED" \
+            || { error "receiver tests FAILED"; overall_ok=false; }
+
+        if $overall_ok; then
+            echo ""
+            ok "══ All unit tests PASSED ══"
+        else
+            echo ""
+            error "══ Some unit tests FAILED ══"
+            exit 1
+        fi
+        return
+    fi
+
+    # ── Container fallback ────────────────────────────────────────────────────
+    warn "cvmfs-bits source not found on host — trying container fallback."
+    load_env
+
+    # Look for the source mount inside the cvmfs-prepub container.
+    # The container's working directory is set to /workspace or /go/src/... by
+    # the Dockerfile.  We probe both candidates.
+    local container_src=""
+    for ws in /workspace /go/src/cvmfs.io/prepub; do
+        if run_compose exec cvmfs-prepub test -f "${ws}/go.mod" 2>/dev/null; then
+            container_src="$ws"
+            break
+        fi
+    done
+
+    if [[ -z "$container_src" ]]; then
+        error "Cannot find Go workspace inside cvmfs-prepub container either."
+        error "Mount the source tree into the container at /workspace, or set"
+        error "BITS_SRC to point to the cvmfs-bits checkout on the host."
+        exit 1
+    fi
+
+    info "Running tests inside cvmfs-prepub container (src: ${container_src})"
+    run_compose exec cvmfs-prepub sh -c "
+        set -e
+        cd '${container_src}'
+        echo '── broker tests ──'
+        go test -v -count=1 ./internal/broker/...
+        echo '── receiver tests ──'
+        go test -v -count=1 ./internal/distribute/receiver/...
+    " && ok "══ All unit tests PASSED ══" \
+      || { error "══ Unit tests FAILED (see output above) ══"; exit 1; }
+}
+
 cmd_help() {
     # Print the file-header comment block (lines 2+ that start with #).
     # Skip line 1 (the shebang) by anchoring the range to '# testbed.sh —'.
@@ -823,10 +1438,6 @@ cmd_help() {
 cmd_info() {
     load_env
     local W=34   # label column width
-
-    # Grafana port: 3000 normally, 3001 when bits overlay remaps it.
-    local grafana_port=3000
-    if $USE_BITS; then grafana_port=3001; fi
 
     echo ""
     echo "╔══════════════════════════════════════════════════════════════════════╗"
@@ -871,7 +1482,6 @@ cmd_info() {
 
     _isep
     echo "║  ── Monitoring ────────────────────────────────────────────────────────║"
-    _iline "  Grafana:"      "http://localhost:${grafana_port}  (admin / admin)"
     _iline "  VictoriaMetrics:" "internal only (scraped by vmagent)"
 
     if $USE_BITS && [[ -n "${GITEA_ADMIN_USER:-}" ]]; then
@@ -896,7 +1506,6 @@ cmd_info() {
 
     # ── Architecture diagram ───────────────────────────────────────────────────
     local repo="${REPO_NAME:-<repo>}"
-    local gport="${grafana_port}"
     cat <<EOF
 
   ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -938,11 +1547,12 @@ cmd_info() {
 
    ── MONITORING ────────────────────────────────────────────────────────────────
 
-     ┌──────────┐  scrape  ┌───────────────────┐  query  ┌──────────────────┐
-     │  vmagent │─────────►│  victoriametrics  │────────►│  Grafana  :${gport}  │
-     └──────────┘          └───────────────────┘         │  admin / admin   │
-          │                                               └──────────────────┘
+     ┌──────────┐  scrape  ┌───────────────────┐
+     │  vmagent │─────────►│  victoriametrics  │
+     └──────────┘          └───────────────────┘
+          │
           └── scrapes: prepub :8080, gateway :4929, stratum1-a/b :9100
+          (metrics visible in the testbed console Monitoring tab)
 
 EOF
 }
@@ -961,9 +1571,13 @@ case "$CMD" in
     restore)        cmd_restore ;;
     test)           cmd_test ;;
     stresstest)     cmd_stresstest ;;
+    upload-filelist) cmd_upload_filelist ;;
     catdump)        cmd_catdump ;;
     catdiff)        cmd_catdiff ;;
     verify)         cmd_verify ;;
+    server)         cmd_server ;;
+    mqtttest)       cmd_mqtttest ;;
+    unittest)       cmd_unittest ;;
     clean)          cmd_clean ;;
     reset)          cmd_reset ;;
     help|--help|-h) cmd_help ;;

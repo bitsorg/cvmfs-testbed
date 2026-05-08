@@ -19,6 +19,9 @@ services:
       # cvmfs_gateway spawns cvmfs_receiver as a subprocess; hardcoded default path
       # is /usr/bin/cvmfs_receiver (see gateway/internal/gateway/config.go:52).
       - ${SOFTWARE_ROOT}/cvmfs_receiver:/usr/bin/cvmfs_receiver:ro
+      # Stub for the cvmfs-server statistics upload script that the gateway calls
+      # but that isn't present in this lightweight container image.
+      - ${SOFTWARE_ROOT}/upload_stats_plots.sh:/usr/share/cvmfs-server/upload_stats_plots.sh:ro
       # Mount the full SOFTWARE_ROOT so cvmfs_receiver can resolve its shared libs.
       - ${SOFTWARE_ROOT}:/opt/cvmfs-software:ro
       - ${TESTBED_ROOT}/config/gateway:/etc/cvmfs/gateway:ro
@@ -135,6 +138,9 @@ services:
       PREPUB_API_TOKEN: ${PREPUB_API_TOKEN}
       PREPUB_URL: http://cvmfs-prepub:8080
       REPO_NAME: ${REPO_NAME}
+      RUN_LOG_FILE: /data/runs.ndjson
+    volumes:
+      - ${TESTBED_ROOT}/data/runs.ndjson:/data/runs.ndjson
     networks:
       - cvmfs-net
     depends_on:
@@ -189,6 +195,7 @@ services:
       # libs installed into SOFTWARE_ROOT.  LD_LIBRARY_PATH makes them findable
       # without needing ldconfig inside the container.
       LD_LIBRARY_PATH: /opt/cvmfs-software
+      RUN_LOG_FILE: /data/runs.ndjson
     volumes:
       # Inject all CVMFS server binaries and shared libraries from SOFTWARE_ROOT.
       - ${SOFTWARE_ROOT}:/opt/cvmfs-software:ro
@@ -202,6 +209,11 @@ services:
       - ${TESTBED_ROOT}/config/native-publisher:/etc/cvmfs/repositories.d/${REPO_NAME}:ro
       # Spool directory for cvmfs_server transaction lock files.
       - ${TESTBED_ROOT}/data/native-ingest:/var/spool/cvmfs
+      # Ingest job log — appended by native-stress.sh / native-smoke.sh so the
+      # testbed web console can display ingest jobs on the Monitoring tab.
+      - ${TESTBED_ROOT}/data/ingest-jobs.ndjson:/data/ingest-jobs.ndjson
+      # Run history log — appended at the end of each test run.
+      - ${TESTBED_ROOT}/data/runs.ndjson:/data/runs.ndjson
       # Read-only access to the repo filesystem so cvmfs_server can read the
       # current .cvmfspublished without going through HTTP (optional but faster).
       - ${TESTBED_ROOT}/repos/${REPO_NAME}:/srv/cvmfs/${REPO_NAME}:ro
@@ -283,26 +295,6 @@ services:
       - "-promscrape.config=/etc/vmagent/scrape.yml"
       - "-remoteWrite.url=http://victoriametrics:8428/api/v1/write"
       - "-promscrape.maxScrapeSize=64MiB"
-
-  grafana:
-    image: grafana/grafana:10.4.2
-    container_name: cvmfs-grafana
-    volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - ${TESTBED_ROOT}/data/monitoring/grafana:/var/lib/grafana
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-      GF_LOG_LEVEL: warn
-    ports:
-      - "3000:3000"
-    networks:
-      - cvmfs-net
-    depends_on:
-      - victoriametrics
 
   # ── cAdvisor — per-container CPU / memory / network / disk metrics ──────────
   cadvisor:

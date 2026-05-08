@@ -5,12 +5,15 @@
 #   docker compose -f docker-compose.yml -f docker-compose.mqtt.yml up -d
 #
 # What this changes vs the base compose file:
-#   - Adds the Mosquitto broker as a dependency for cvmfs-prepub and both
-#     Stratum 1 receivers.
+#   - Adds the Mosquitto broker as a dependency for cvmfs-prepub, both
+#     Stratum 1 receivers, and the native publisher.
 #   - Passes --broker-url to cvmfs-prepub so it uses MQTT for the announce/
-#     ready exchange instead of direct HTTP.
-#   - Passes --broker-url, --node-id, and --repos to both Stratum 1 receivers
-#     so they subscribe to the broker for job notifications.
+#     ready exchange AND for post-commit PublishedMessage notifications.
+#   - Passes --broker-url, --node-id, --repos, and --receiver-stratum0-url to
+#     both Stratum 1 receivers so they subscribe to the broker for job
+#     notifications AND pull new objects from S0 on commit.
+#   - Passes MQTT_BROKER_HOST / MQTT_BROKER_PORT to the native publisher so
+#     that native-stress.sh can publish commit notifications via mosquitto_pub.
 #
 # The data plane (CAS object PUTs from publisher to receivers on TCP 9101)
 # is unchanged; MQTT replaces only the control-plane signalling.
@@ -39,6 +42,16 @@ services:
       --config /etc/cvmfs-prepub/config.yaml
       --broker-url tcp://mosquitto:1883
 
+  # Inject MQTT broker coordinates into the native publisher so that
+  # native-stress.sh can call mosquitto_pub to broadcast commit notifications.
+  cvmfs-native-publisher:
+    depends_on:
+      - mosquitto
+    environment:
+      MQTT_BROKER_HOST: mosquitto
+      MQTT_BROKER_PORT: "1883"
+      STRATUM0_URL: http://stratum0
+
   stratum1-a:
     depends_on:
       - mosquitto
@@ -48,6 +61,7 @@ services:
       --broker-url tcp://mosquitto:1883
       --node-id stratum1-a
       --repos ${REPO_NAME}
+      --receiver-stratum0-url http://stratum0/cvmfs
 
   stratum1-b:
     depends_on:
@@ -58,3 +72,4 @@ services:
       --broker-url tcp://mosquitto:1883
       --node-id stratum1-b
       --repos ${REPO_NAME}
+      --receiver-stratum0-url http://stratum0/cvmfs

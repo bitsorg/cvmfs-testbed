@@ -34,13 +34,6 @@
 #        Safari requires: echo "127.0.0.1 testbed.localhost" | sudo tee -a /etc/hosts
 
 services:
-  # ── Grafana port override ─────────────────────────────────────────────────
-  # The base compose file exposes Grafana on :3000.  When this overlay is
-  # active, Gitea also needs :3000.  Move Grafana to :3001 to avoid conflict.
-  grafana:
-    ports:
-      - "3001:3000"
-
   gitea:
     image: gitea/gitea:1.21
     container_name: cvmfs-gitea

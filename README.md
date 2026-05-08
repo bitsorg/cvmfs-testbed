@@ -17,7 +17,7 @@ The system simulates the complete CVMFS publishing workflow:
 
 Two control-plane modes are available. The default mode uses direct HTTP announces between cvmfs-prepub and the Stratum 1 receivers. Activating `docker-compose.mqtt.yml` instead routes all control-plane signalling through a Mosquitto MQTT broker, exercising the Option B MQTT path described in REFERENCE.md §20.11.
 
-Monitoring is built in with VictoriaMetrics, vmagent, and Grafana, providing real-time visibility into all services.
+Monitoring is built in with VictoriaMetrics and vmagent; real-time host metrics and run history are shown directly in the testbed web console.
 
 ## Architecture Diagrams
 
@@ -52,7 +52,7 @@ Monitoring is built in with VictoriaMetrics, vmagent, and Grafana, providing rea
 ║  │              │                                                       │   ║
 ║  │         cvmfs-client (FUSE)                                          │   ║
 ║  │                                                                       │   ║
-║  │  victoriametrics + vmagent + grafana:3001                            │   ║
+║  │  victoriametrics + vmagent + cAdvisor                               │   ║
 ║  └──────────────────────────────────────────────────────────────────────┘   ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 ```
@@ -109,7 +109,7 @@ publisher ──POST /api/v1/jobs──► cvmfs-prepub:8080
 
 vmagent ──scrapes──► cvmfs-prepub, gateway, stratum1-a, stratum1-b
 vmagent ──push──► victoriametrics:8428
-grafana ──queries──► victoriametrics:8428
+testbed-console ──reads──► /api/host-metrics, /api/runs
 ```
 
 ### MQTT mode (docker-compose.mqtt.yml overlay)
@@ -213,15 +213,7 @@ cvmfs-testbed/               ← this repository
 │   ├── config.yaml
 │   └── act_runner.service
 └── monitoring/
-    ├── scrape.yml
-    └── grafana/
-        ├── provisioning/
-        │   ├── datasources/
-        │   │   └── victoriametrics.yaml
-        │   └── dashboards/
-        │       └── dashboards.yaml
-        └── dashboards/
-            └── cvmfs-prepub.json
+    └── scrape.yml
 
 ${TESTBED_ROOT}/             ← All persistent runtime state (default: $HOME/cvmfs-testbed)
 ├── repos/                   # CVMFS repository data (created by cvmfs_server mkfs,
@@ -239,8 +231,7 @@ ${TESTBED_ROOT}/             ← All persistent runtime state (default: $HOME/cv
 │   ├── gitea/               # Gitea database + repos (bits overlay)
 │   └── monitoring/
 │       ├── vm/              # VictoriaMetrics data
-│       ├── vmagent/         # vmagent data
-│       └── grafana/         # Grafana data
+│       └── vmagent/         # vmagent data
 └── config/                  # Generated configs (init.sh writes these)
     ├── gateway/
     │   ├── gw.json
@@ -458,11 +449,6 @@ The recommended entry point is `make`. It handles the full build-install-deploy 
    make test-ingest       # cvmfs_server ingest path
    ```
 
-6. **Open Grafana**
-   ```
-   http://localhost:3000  (admin / admin)
-   ```
-
 ### With `testbed.sh` (step by step)
 
 1. **Clone the repository and enter it**
@@ -519,12 +505,6 @@ The recommended entry point is `make`. It handles the full build-install-deploy 
    ./testbed.sh verify <uuid_from_smoke_test> usr/share/test/hello.txt
    ```
 
-9. **Open Grafana**
-   ```
-   http://localhost:3000  (core stack)
-   http://localhost:3001  (when --bits overlay is active)
-   Credentials: admin / admin
-   ```
 
 ## Running Tests
 
@@ -697,8 +677,6 @@ The `docker-compose.bits.yml` overlay adds two services to the core stack:
 - **gitea** — a lightweight Gitea git server (gitea/gitea:1.21, ~300 MB RAM). Serves the bits-console SPA via Gitea Pages at `http://testbed.localhost:3000/bits-project/testbed/` and provides the REST API and Actions CI at `http://localhost:3000/api/v1/`.
 - **seeder** — a one-shot Python container that runs after Gitea becomes healthy. It creates the `testbed` organisation and `bits-project` repository, pushes bits-console source and the testbed community config to the `main` branch, builds the Pages static tree, pushes it to the `gh-pages` branch, sets CI variables and secrets, and prints the act_runner registration token.
 
-The overlay also remaps Grafana from port 3000 to port 3001 to avoid conflict with Gitea.
-
 ### Quick start (bits overlay)
 
 1. **Clone (or symlink) bits-console inside cvmfs-testbed**
@@ -751,11 +729,6 @@ The overlay also remaps Grafana from port 3000 to port 3001 to avoid conflict wi
 
 6. **Submit a build job** from the bits-console UI. The workflow dispatches to Gitea Actions, act_runner picks it up, runs `bits build` and `bits publish` on the host, and cvmfs-prepub handles the rest.
 
-7. **Monitor Grafana** (moved to port 3001 when the overlay is active):
-   ```
-   http://localhost:3001  (admin / admin)
-   ```
-
 ### CORS and browser notes
 
 bits-console is served from `testbed.localhost:3000` (a Gitea Pages subdomain) and calls the Gitea API at `localhost:3000` — two different browser origins. Gitea is configured with `CORS_ALLOW_DOMAIN = http://testbed.localhost:3000` to allow this.
@@ -788,21 +761,6 @@ docker compose -f docker-compose.yml -f docker-compose.bits.yml \
 ---
 
 ## Monitoring
-
-### Grafana
-- **URL**: http://localhost:3000 (core stack) or http://localhost:3001 (when bits overlay is active)
-- **Credentials**: admin / admin
-- **Dashboard**: "cvmfs-prepub testbed" (auto-loaded)
-- **Metrics**: Updated every 30 seconds
-
-The dashboard includes:
-- **Job Submission Rate**: How many jobs are being submitted per second
-- **Pipeline Duration**: p50, p95, p99 latencies for the full publishing workflow
-- **CAS Upload Duration**: How long it takes to upload objects
-- **Stratum 1 Distribution**: Time to replicate to each receiver
-- **Object Counts**: CAS occupancy and S1 object reception rates
-- **Dedup Hit Rate**: Percentage of objects already in CAS
-- **Lease Metrics**: Lease acquisition time and heartbeat errors
 
 ### VictoriaMetrics
 - **URL**: http://localhost:8428 (internal only)
@@ -859,7 +817,7 @@ If jobs hang in "pending" state:
 - Verify the HMAC secret is correct: `docker compose exec cvmfs-prepub env | grep HMAC`
 - Check Stratum 1 connectivity: `docker compose exec cvmfs-prepub curl -v http://stratum1-a:9100/metrics`
 
-### Grafana not showing metrics
+### Metrics not appearing in console
 - Check vmagent: `docker compose logs vmagent` for scrape errors
 - Verify scrape config: `docker compose exec vmagent cat /etc/vmagent/scrape.yml`
 - Test VictoriaMetrics: `curl -s http://localhost:8428/api/v1/query?query=up | jq .`

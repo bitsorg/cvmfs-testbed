@@ -41,6 +41,7 @@
 #   TESTBED_ROOT  Path to testbed data root (default: $HOME/cvmfs-testbed).
 #                 Used to locate repo-seed.tar.gz for the bootstrap target.
 #   N             Number of jobs for stresstest targets (default: 10)
+#   C             Concurrency (max parallel jobs) for the bits stresstest (default: unset = script default of 2)
 #
 # Examples:
 #   make                            # full pipeline from scratch
@@ -48,7 +49,8 @@
 #   make test-ingest                # run ingest smoke test (needs bootstrap)
 #   make test-ingest test-bits      # run both paths
 #   make catdiff                    # diff catalog dumps
-#   make stresstest N=50            # 50-job bits stress test
+#   make stresstest N=50            # 50-job bits stress test (concurrency=2)
+#   make stresstest N=50 C=10       # 50-job bits stress test, 10 at a time
 #   make BITS_DIR=~/cvmfs-bits      # custom bits source location
 #   rm .make/bootstrap && make bootstrap  # force re-bootstrap
 
@@ -67,12 +69,27 @@ BITS_DIR ?= $(MAKEFILE_DIR)/cvmfs-bits
 # Number of jobs for stresstest targets.
 N ?= 10
 
+# Concurrency (max parallel active jobs) for the bits stresstest.
+# Leave unset to use the script's built-in default (currently 2).
+# Example: make stresstest N=100 C=20
+C ?=
+_CONCURRENCY := $(if $(C),--concurrency $(C),)
+
+# Set MQTT=1 to start the Mosquitto broker and enable the MQTT control-plane
+# for all relevant targets.  Example:
+#   make MQTT=1 start          # start testbed with MQTT overlay
+#   make MQTT=1 test           # smoke test via MQTT path
+#   make MQTT=1 stresstest N=20
+#   make start-mqtt            # convenience alias (same as MQTT=1 start)
+MQTT ?= 0
+_MQTT := $(if $(filter 1 yes true,$(MQTT)),--mqtt,)
+
 # ── Default goal ──────────────────────────────────────────────────────────────
 .DEFAULT_GOAL := all
 
-.PHONY: all build install init start bootstrap snapshot restore redeploy clean \
-        test test-ingest test-bits \
-        stresstest stresstest-ingest \
+.PHONY: all build install init start start-mqtt bootstrap snapshot restore redeploy clean \
+        test test-ingest test-bits test-mqtt \
+        stresstest stresstest-ingest stresstest-mqtt \
         catdump-ingest catdump-bits catdiff \
         help
 
@@ -120,7 +137,11 @@ init: $(MAKE_DIR)/init
 # Depends on init having run.  auto-restores snapshot if repo is absent.
 start: $(MAKE_DIR)/init
 	@echo "── Starting testbed ──────────────────────────────────────────────────"
-	bash "$(TESTBED)" start
+	bash "$(TESTBED)" start $(_MQTT)
+
+start-mqtt: $(MAKE_DIR)/init
+	@echo "── Starting testbed with MQTT overlay ────────────────────────────────"
+	bash "$(TESTBED)" start --mqtt
 
 # ── bootstrap ─────────────────────────────────────────────────────────────────
 # Run once: seeds the nested-catalog structure required by cvmfs_server ingest,
@@ -146,6 +167,13 @@ restore:
 # ── redeploy ──────────────────────────────────────────────────────────────────
 # Full rebuild: wipe sentinels + state, then run the full pipeline from scratch.
 redeploy: install
+	@if [[ ! -f "$(MAKE_DIR)/init" ]]; then \
+	    printf '\n'; \
+	    printf '[WARN] testbed is not initialised — $(MAKE_DIR)/init not found.\n'; \
+	    printf '       Run '"'"'make'"'"' instead to do a clean first-time setup.\n'; \
+	    printf '\n'; \
+	    exit 1; \
+	fi
 	@echo "── Stopping testbed ──────────────────────────────────────────────────"
 	-bash "$(TESTBED)" stop
 	@echo "── Full reset (wipes snapshot too) ───────────────────────────────────"
@@ -161,30 +189,48 @@ redeploy: install
 # ── clean ─────────────────────────────────────────────────────────────────────
 # Stop containers and remove runtime state.  Snapshot is PRESERVED.
 # Wipe .make/init and .make/bootstrap so make knows to re-run them next time.
+#
+# Guard: refuse to run if the testbed has never been initialised.  Without this
+# guard, docker compose expands unset ${TESTBED_ROOT} volume paths to wrong
+# host paths, creating root-owned placeholder directories that overwrite files
+# in the repo tree.
 clean:
-	@echo "── Stopping testbed ──────────────────────────────────────────────────"
-	-bash "$(TESTBED)" stop
-	@echo "── Cleaning testbed state ────────────────────────────────────────────"
-	bash "$(TESTBED)" clean --yes
-	rm -f $(MAKE_DIR)/init $(MAKE_DIR)/bootstrap
+	@if [[ ! -f "$(MAKE_DIR)/init" ]]; then \
+	    printf '\n'; \
+	    printf '[WARN] testbed is not initialised — $(MAKE_DIR)/init not found.\n'; \
+	    printf '       Nothing to clean.  Run '"'"'make'"'"' first to set up the testbed.\n'; \
+	    printf '\n'; \
+	else \
+	    echo "── Stopping testbed ──────────────────────────────────────────────────"; \
+	    bash "$(TESTBED)" stop || true; \
+	    echo "── Cleaning testbed state ────────────────────────────────────────────"; \
+	    bash "$(TESTBED)" clean --yes; \
+	    rm -f $(MAKE_DIR)/init $(MAKE_DIR)/bootstrap; \
+	fi
 
 # ── test targets ──────────────────────────────────────────────────────────────
 test:
-	bash "$(TESTBED)" test --method bits
+	bash "$(TESTBED)" test --method bits $(_MQTT)
 
 # test-ingest requires the bootstrap to have run (nested catalog in snapshot).
 test-ingest: $(MAKE_DIR)/bootstrap
-	bash "$(TESTBED)" test --method ingest
+	bash "$(TESTBED)" test --method ingest $(_MQTT)
 
 test-bits:
-	bash "$(TESTBED)" test --method bits
+	bash "$(TESTBED)" test --method bits $(_MQTT)
+
+test-mqtt:
+	bash "$(TESTBED)" mqtttest --mqtt
 
 # ── stresstest targets ────────────────────────────────────────────────────────
 stresstest:
-	bash "$(TESTBED)" stresstest $(N) --method bits
+	bash "$(TESTBED)" stresstest $(N) $(_CONCURRENCY) --method bits $(_MQTT)
 
 stresstest-ingest: $(MAKE_DIR)/bootstrap
-	bash "$(TESTBED)" stresstest $(N) --method ingest
+	bash "$(TESTBED)" stresstest $(N) --method ingest $(_MQTT)
+
+stresstest-mqtt:
+	bash "$(TESTBED)" stresstest $(N) $(_CONCURRENCY) --mqtt --method bits
 
 # ── catalog comparison ────────────────────────────────────────────────────────
 catdump-ingest:
@@ -215,9 +261,14 @@ help:
 	@echo "  make test                 Smoke test (bits method)"
 	@echo "  make test-ingest          Smoke test (cvmfs_server ingest, needs bootstrap)"
 	@echo "  make test-bits            Smoke test (cvmfs-prepub REST API)"
+	@echo "  make test-mqtt            End-to-end MQTT notification test"
 	@echo ""
 	@echo "  make stresstest [N=10]    Stress test, N jobs (bits)"
 	@echo "  make stresstest-ingest    Stress test (ingest path)"
+	@echo "  make stresstest-mqtt [N=10]  Stress test via MQTT path"
+	@echo ""
+	@echo "  make start-mqtt           Start testbed with Mosquitto MQTT broker"
+	@echo "  make MQTT=1 <target>      Enable MQTT overlay for any target"
 	@echo ""
 	@echo "  make catdump-ingest       Dump catalogs after ingest test"
 	@echo "  make catdump-bits         Dump catalogs after bits test"
@@ -231,6 +282,11 @@ help:
 	@echo "  Variables:"
 	@echo "    BITS_DIR  = $(BITS_DIR)"
 	@echo "    N         = $(N)  (jobs for stresstest)"
+	@echo "    C         = $(if $(C),$(C),(unset = script default of 2))  (concurrency for stresstest)"
+	@echo ""
+	@echo "  Examples:"
+	@echo "    make stresstest N=50           # 50 jobs, default concurrency"
+	@echo "    make stresstest N=100 C=20     # 100 jobs, 20 at a time"
 	@echo ""
 	@echo "  Full comparison workflow:"
 	@echo "    make test-ingest catdump-ingest test-bits catdump-bits catdiff"

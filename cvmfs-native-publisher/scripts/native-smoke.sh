@@ -33,6 +33,44 @@ NC='\033[0m'
 
 INGEST_BASE="${INGEST_BASE:-test/native/smoke}"
 
+# ── Job logging ────────────────────────────────────────────────────────────────
+JOB_LOG_FILE="${JOB_LOG_FILE:-/data/ingest-jobs.ndjson}"
+
+# Run log — when set, the completed smoke test run is recorded here.
+RUN_LOG_FILE="${RUN_LOG_FILE:-/data/runs.ndjson}"
+
+# ── Run recording helper ───────────────────────────────────────────────────────
+log_run() {
+    local run_id="$1" n_pub="$2" n_fail="$3" start_ts="$4" end_ts="$5"
+    [[ -n "${RUN_LOG_FILE:-}" ]] || return 0
+    local elapsed=$(( end_ts - start_ts ))
+    local start_time end_time
+    start_time="$(date -u -d "@${start_ts}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+               || date -u -r "${start_ts}" +%Y-%m-%dT%H:%M:%SZ)"
+    end_time="$(date -u -d "@${end_ts}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+             || date -u -r "${end_ts}" +%Y-%m-%dT%H:%M:%SZ)"
+    printf '{"run_id":"%s","method":"ingest","test_type":"smoke","n_requested":1,"n_published":%d,"n_failed":%d,"start_time":"%s","end_time":"%s","duration_s":%d,"avg_s":%d,"min_s":%d,"max_s":%d,"p50_s":%d,"p95_s":%d,"throughput_per_min":0}\n' \
+        "$run_id" "$n_pub" "$n_fail" \
+        "$start_time" "$end_time" \
+        "$elapsed" "$elapsed" "$elapsed" "$elapsed" "$elapsed" "$elapsed" \
+        >> "$RUN_LOG_FILE" 2>/dev/null || true
+}
+
+log_ingest_job() {
+    local job_id="$1" state="$2" repo="$3" path="$4"
+    local created_epoch="$5" updated_epoch="$6"
+    [[ -n "$JOB_LOG_FILE" ]] || return 0
+    local created_at updated_at
+    created_at="$(date -u -d "@${created_epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+               || date -u -r "${created_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
+    updated_at="$(date -u -d "@${updated_epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+               || date -u -r "${updated_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
+    local duration_s=$(( updated_epoch - created_epoch ))
+    printf '{"job_id":"%s","state":"%s","method":"ingest","repo":"%s","path":"%s","created_at":"%s","updated_at":"%s","duration_s":%d}\n' \
+        "$job_id" "$state" "$repo" "$path" "$created_at" "$updated_at" "$duration_s" \
+        >> "$JOB_LOG_FILE" 2>/dev/null || true
+}
+
 # ── Clear stale transaction state ─────────────────────────────────────────────
 # A session_token left by a previously crashed ingest causes the gateway to reject
 # the next payload upload ("broken pipe").  Remove it unconditionally before each run.
@@ -82,10 +120,17 @@ echo "  Tar size: $(du -sh "$PAYLOAD_TAR" | cut -f1)"
 # Flags:
 #   -t <tar>   tar file to publish
 #   -b <base>  destination sub-path within the repository (nested catalog root)
+JOB_ID="ingest-smoke-$(date +%Y%m%d-%H%M%S)"
+JOB_START_TS=$(date +%s)
+
 if cvmfs_server ingest \
         -t "${PAYLOAD_TAR}" \
         -b "${INGEST_BASE}" \
         "${REPO_NAME}"; then
+    JOB_END_TS=$(date +%s)
+    _RUN_DATE="$(date -u -d "@${JOB_START_TS}" +%Y%m%d-%H%M%S 2>/dev/null || date -u -r "${JOB_START_TS}" +%Y%m%d-%H%M%S)"
+    log_ingest_job "$JOB_ID" "published" "$REPO_NAME" "$INGEST_BASE" "$JOB_START_TS" "$JOB_END_TS"
+    log_run "ingest-smoke-${_RUN_DATE}" 1 0 "$JOB_START_TS" "$JOB_END_TS"
     echo ""
     echo -e "${GREEN}Native ingest complete${NC}"
     echo ""
@@ -96,6 +141,10 @@ if cvmfs_server ingest \
     echo "  /cvmfs/${REPO_NAME}/${INGEST_BASE}/unusual-names/unicode-日本語.txt"
     exit 0
 else
+    JOB_END_TS=$(date +%s)
+    _RUN_DATE="$(date -u -d "@${JOB_START_TS}" +%Y%m%d-%H%M%S 2>/dev/null || date -u -r "${JOB_START_TS}" +%Y%m%d-%H%M%S)"
+    log_ingest_job "$JOB_ID" "failed" "$REPO_NAME" "$INGEST_BASE" "$JOB_START_TS" "$JOB_END_TS"
+    log_run "ingest-smoke-${_RUN_DATE}" 0 1 "$JOB_START_TS" "$JOB_END_TS"
     echo ""
     echo -e "${RED}Native ingest failed${NC}"
     exit 1
