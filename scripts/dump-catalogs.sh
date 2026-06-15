@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-FileCopyrightText: 2026 CERN (European Organization for Nuclear Research)
+# SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: Apache-2.0
 
 # dump-catalogs.sh — Decompress and SQL-dump all CVMFS catalogs reachable from
