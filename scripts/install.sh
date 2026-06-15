@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 CERN (European Organization for Nuclear Research)
+# SPDX-License-Identifier: Apache-2.0
+
 # install.sh — Populate software/ from the CVMFS build tree, rebuild cvmfs_server,
 #              and copy cvmfs-prepub binaries from the cvmfs-bits build.
 #
 # Convention (enforced here and checked by init.sh):
 #   <cvmfs-testbed>/cvmfs/          CVMFS source tree (git clone / symlink)
 #   <cvmfs-testbed>/cvmfs-bits/     cvmfs-bits source tree (git clone / symlink)
+#   <cvmfs-testbed>/act_runner      Gitea CI runner binary (optional, bits overlay)
 #   <cvmfs-testbed>/software/       destination for built binaries and libraries
 #
 # Run this once after cloning, and again after every code change:
@@ -12,7 +16,7 @@
 #   cmake -S cvmfs -B cvmfs/build
 #   make -C cvmfs/build -j$(nproc)
 #   make -C cvmfs-bits build
-#   ./install.sh
+#   ./testbed install          # or:  bash scripts/install.sh
 #
 # The script:
 #   1. Verifies that the CVMFS source tree is present.
@@ -43,20 +47,22 @@ error()   { echo -e "${RED}[ERR ]${NC}  $*"; }
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Preferred location: cvmfs-testbed/cvmfs/ (symlink or clone next to this script).
-# Fallback: the cvmfs/ sibling directory one level up (../cvmfs), which is the
-# layout used when cvmfs and cvmfs-testbed are siblings inside the same parent.
-if [[ -f "$SCRIPT_DIR/cvmfs/cvmfs/make_cvmfs_server.sh" ]]; then
-    CVMFS_SRC="$SCRIPT_DIR/cvmfs"
-elif [[ -f "$SCRIPT_DIR/../cvmfs/cvmfs/make_cvmfs_server.sh" ]]; then
-    CVMFS_SRC="$(cd "$SCRIPT_DIR/../cvmfs" && pwd)"
+TESTBED_DIR="$(dirname "$SCRIPT_DIR")"   # root of the cvmfs-testbed checkout
+
+# Canonical location: cvmfs-testbed/cvmfs/ (clone or symlink at the testbed root).
+# Fallback: cvmfs/ as a sibling of the testbed root (../cvmfs), the layout when
+# cvmfs and cvmfs-testbed are checked out side-by-side in the same parent directory.
+if [[ -f "$TESTBED_DIR/cvmfs/cvmfs/make_cvmfs_server.sh" ]]; then
+    CVMFS_SRC="$TESTBED_DIR/cvmfs"
+elif [[ -f "$TESTBED_DIR/../cvmfs/cvmfs/make_cvmfs_server.sh" ]]; then
+    CVMFS_SRC="$(cd "$TESTBED_DIR/../cvmfs" && pwd)"
     warn "Using sibling CVMFS source at $CVMFS_SRC"
-    warn "Recommended convention: ln -s ../cvmfs $SCRIPT_DIR/cvmfs"
+    warn "Recommended convention: ln -s ../cvmfs $TESTBED_DIR/cvmfs"
 else
-    CVMFS_SRC="$SCRIPT_DIR/cvmfs"   # keep the canonical path for the error message
+    CVMFS_SRC="$TESTBED_DIR/cvmfs"   # keep the canonical path for the error message
 fi
-SOFTWARE_ROOT="${SOFTWARE_ROOT:-$SCRIPT_DIR/software}"
-BITS_DIR="${BITS_DIR:-$SCRIPT_DIR/cvmfs-bits}"
+SOFTWARE_ROOT="${SOFTWARE_ROOT:-$TESTBED_DIR/software}"
+BITS_DIR="${BITS_DIR:-$TESTBED_DIR/cvmfs-bits}"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -84,13 +90,13 @@ if [[ ! -f "$CVMFS_SRC/cvmfs/make_cvmfs_server.sh" ]]; then
     error "CVMFS source tree not found at $CVMFS_SRC"
     error ""
     error "The convention requires the CVMFS source to live at:"
-    error "  $SCRIPT_DIR/cvmfs"
+    error "  $TESTBED_DIR/cvmfs"
     error ""
     error "Either clone it there:"
-    error "  git clone https://github.com/cvmfs/cvmfs $SCRIPT_DIR/cvmfs"
+    error "  git clone https://github.com/cvmfs/cvmfs $TESTBED_DIR/cvmfs"
     error ""
     error "Or create a symlink from a checkout elsewhere:"
-    error "  ln -s /path/to/your/cvmfs $SCRIPT_DIR/cvmfs"
+    error "  ln -s /path/to/your/cvmfs $TESTBED_DIR/cvmfs"
     exit 1
 fi
 
@@ -136,13 +142,13 @@ while IFS= read -r _f; do
         (( _copied++ )) || true
     fi
 done < <(find "$_cvmfs_build" -maxdepth 5 \
-    \( -name "cvmfs_*" -o -name "libcvmfs_*" \) \
+    \( -name "cvmfs_*" -o -name "libcvmfs_*" -o -name "cvmfs2" -o -name "cvmfs2_*" \) \
     -not -path "*/externals/*" \
     -not -path "*CMakeFiles*" \
     2>/dev/null)
 
 if [[ $_copied -eq 0 ]]; then
-    error "No cvmfs_* binaries or libcvmfs_* libraries found in $_cvmfs_build."
+    error "No cvmfs binaries or libraries found in $_cvmfs_build."
     error "Did the cmake build complete successfully?"
     exit 1
 fi
@@ -250,12 +256,25 @@ else
     fi
 fi
 
-# ── 7. Install gateway stub scripts ──────────────────────────────────────────
+# ── 7. Copy act_runner ───────────────────────────────────────────────────────
+# act_runner is the Gitea CI runner required by the bits-console overlay.
+# It is expected at <cvmfs-testbed>/act_runner (download from
+# https://gitea.com/gitea/act_runner/releases and place there).
+# Copying it to SOFTWARE_ROOT puts it on PATH so init.sh can find it.
+_act_runner_src="$TESTBED_DIR/act_runner"
+if [[ -f "$_act_runner_src" ]]; then
+    cp "$_act_runner_src" "$SOFTWARE_ROOT/act_runner"
+    chmod +x "$SOFTWARE_ROOT/act_runner"
+    success "act_runner installed → $SOFTWARE_ROOT/act_runner"
+fi
+# If act_runner is not present, init.sh will warn when bits-console/ is present.
+
+# ── 8. Install gateway stub scripts ──────────────────────────────────────────
 # Some cvmfs-gateway actions invoke scripts that are part of the full
 # cvmfs-server Debian package (e.g. upload_stats_plots.sh).  That package is
 # not installed in the lightweight gateway container, so the gateway logs an
 # error on every transaction.  Install harmless stubs so those paths exist.
-_stub_src="$SCRIPT_DIR/gateway/upload_stats_plots.sh"
+_stub_src="$TESTBED_DIR/cvmfs-elements/containers/gateway/upload_stats_plots.sh"
 _stub_dst="$SOFTWARE_ROOT/upload_stats_plots.sh"
 if [[ -f "$_stub_src" ]]; then
     cp "$_stub_src" "$_stub_dst"

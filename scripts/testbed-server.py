@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 CERN (European Organization for Nuclear Research)
+# SPDX-License-Identifier: Apache-2.0
+
 """
 testbed-server.py — Backend server for the CVMFS Testbed Console.
 
 Usage:
     python3 testbed-server.py [--port 8888] [--bind 0.0.0.0]
     # Or via the testbed.sh wrapper (preferred):
-    ./testbed.sh server [port]
+    ./testbed server [port]
 
 What it does:
   1. Serves testbed-console.html and any static assets from this directory
@@ -30,6 +33,10 @@ Authentication:
   Every /api/* request must supply the token printed at startup, either as:
     - Header:      X-Testbed-Token: <token>
     - Query param: ?token=<token>  (convenient for the first page load URL)
+    - Cookie:      testbed-session=<token>  (set automatically on first page load)
+  When the browser opens /?token=<token>, the server validates the token and sets
+  an HttpOnly session cookie.  Subsequent API calls and page refreshes are then
+  authenticated automatically via that cookie — no JS involvement required.
   Use --no-auth to disable token checking (trusted networks only).
 
 TLS:
@@ -65,12 +72,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 # ── Globals ───────────────────────────────────────────────────────────────────
-SCRIPT_DIR = Path(__file__).parent.resolve()
+SCRIPT_DIR  = Path(__file__).parent.resolve()
+TESTBED_DIR = SCRIPT_DIR.parent   # root of cvmfs-testbed checkout
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mKHABCDGJ]')
 
 # Commands allowed via /api/run (security whitelist — no shell metacharacters).
@@ -213,8 +220,25 @@ class Handler(BaseHTTPRequestHandler):
         if qs.get('token', [None])[0] == token:
             return True
 
-        self._json({'error': 'Unauthorized — supply X-Testbed-Token or Authorization: Bearer header'}, 401)
+        # 4. Session cookie — set automatically when the page is loaded with ?token=
+        cookie_hdr = self.headers.get('Cookie', '')
+        for part in cookie_hdr.split(';'):
+            name, _, val = part.strip().partition('=')
+            if name.strip() == 'testbed-session' and val.strip() == token:
+                return True
+
+        self._json({'error': 'Unauthorized — open the startup URL with ?token= to authenticate, '
+                             'or supply X-Testbed-Token header'}, 401)
         return False
+
+    # ── Session cookie ────────────────────────────────────────────────────────
+    def _set_session_cookie(self, token: str):
+        """Emit a Set-Cookie header that persists the auth token for this browser."""
+        secure = '; Secure' if self.server.use_tls else ''
+        self.send_header(
+            'Set-Cookie',
+            f'testbed-session={token}; HttpOnly{secure}; SameSite=Strict; Path=/',
+        )
 
     # ── CORS / common response helpers ────────────────────────────────────────
     def _cors(self):
@@ -269,8 +293,34 @@ class Handler(BaseHTTPRequestHandler):
 
         # Static HTML page — served without auth so the user can load the page
         # and supply the token via the ?token= URL parameter.
+        # If ?token= is present and valid, set a session cookie so all subsequent
+        # API calls are authenticated automatically (even if JS fails to read the
+        # URL param, or the URL is copy-pasted without the query string later).
         if path in ('/', '/testbed-console.html'):
-            self._serve_static(SCRIPT_DIR / 'testbed-console.html',
+            auth_token = getattr(self.server, 'auth_token', None)
+            if auth_token:
+                qs = urllib.parse.parse_qs(parsed.query)
+                url_token = qs.get('token', [None])[0]
+                if url_token == auth_token:
+                    # Valid token in URL — serve HTML and set a session cookie so
+                    # that all subsequent API requests are authenticated automatically
+                    # via the cookie, even without the token in later URLs.
+                    try:
+                        data = (TESTBED_DIR / 'testbed-console.html').read_bytes()
+                    except FileNotFoundError:
+                        self.send_response(404)
+                        self._cors()
+                        self.end_headers()
+                        return
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.send_header('Content-Length', str(len(data)))
+                    self._cors()
+                    self._set_session_cookie(auth_token)
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+            self._serve_static(TESTBED_DIR / 'testbed-console.html',
                                'text/html; charset=utf-8')
             return
 
@@ -308,16 +358,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._host_metrics()
                 return
 
-            if path == '/api/host-metrics/history':
-                self._host_metrics_history()
-                return
-
             if path == '/api/cas-stats':
                 self._cas_stats()
                 return
 
-            if path == '/api/cas-stats/history':
-                self._cas_stats_history()
+            if path == '/api/push-status':
+                err = self.server._push_error
+                self._json({'ok': err is None, 'error': err})
                 return
 
             if path == '/api/services':
@@ -330,6 +377,10 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == '/api/scan-dir':
                 self._scan_dir(parsed.query)
+                return
+
+            if path == '/api/list-dir':
+                self._list_dir(parsed.query)
                 return
 
             if path == '/api/probe':
@@ -346,8 +397,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # Static assets (JS, CSS, images, …)
-        fpath = SCRIPT_DIR / path.lstrip('/')
-        if fpath.is_file() and fpath.is_relative_to(SCRIPT_DIR):
+        fpath = TESTBED_DIR / path.lstrip('/')
+        if fpath.is_file() and fpath.is_relative_to(TESTBED_DIR):
             self._serve_static(fpath, _mime(fpath.suffix))
         else:
             self.send_response(404)
@@ -395,7 +446,7 @@ class Handler(BaseHTTPRequestHandler):
         GET /api/filelist
         Looks for filelist.txt in:
           1. TESTBED_ROOT/data/filelist.txt
-          2. SCRIPT_DIR/filelist.txt  (same directory as this script)
+          2. TESTBED_DIR/filelist.txt  (testbed root directory)
         Returns:
           {
             "exists": true|false,
@@ -409,7 +460,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         candidates = [
             self.server.testbed_root / 'data' / 'filelist.txt',
-            SCRIPT_DIR / 'filelist.txt',
+            TESTBED_DIR / 'filelist.txt',
         ]
         filelist_path = None
         for c in candidates:
@@ -464,17 +515,18 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     # ── Directory scanner ─────────────────────────────────────────────────────
-    DEFAULT_SCAN_DIR = '/home/pbuncic/Software/Bits/sw-lhcb/TARS'
-
     def _scan_dir(self, query_string: str):
         """
         GET /api/scan-dir?path=<dir>[&recursive=1]
         Scans the given directory for *.tar.gz files and returns metadata.
-        Default path: /home/pbuncic/Software/Bits/sw-lhcb/TARS
         Response: {path, exists, files: [{name, path, size_bytes, size_human}]}
         """
         params = urllib.parse.parse_qs(query_string or '')
-        scan_path = (params.get('path', [self.DEFAULT_SCAN_DIR])[0]).strip()
+        scan_path = (params.get('path', [''])[0]).strip()
+        if not scan_path:
+            self._json({'path': '', 'exists': False, 'files': [],
+                        'error': 'path parameter required'})
+            return
         recursive = params.get('recursive', ['1'])[0] not in ('0', 'false', 'no')
 
         d = Path(scan_path)
@@ -517,6 +569,48 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json({'path': scan_path, 'exists': True, 'files': files})
 
+    # ── Directory browser ─────────────────────────────────────────────────────
+    def _list_dir(self, query_string: str):
+        """
+        GET /api/list-dir?path=<dir>
+        Lists subdirectories under the given path for the browser-side directory
+        picker.  Hidden directories (name starting with '.') are excluded.
+        Response: {path, parent, exists, dirs: [{name, path}]}
+          parent is null when path is the filesystem root.
+        """
+        params = urllib.parse.parse_qs(query_string or '')
+        raw_path = (params.get('path', ['/'])[0]).strip() or '/'
+        try:
+            d = Path(raw_path).resolve()
+        except Exception:
+            self._json({'path': raw_path, 'parent': None, 'exists': False, 'dirs': []})
+            return
+
+        if not d.exists() or not d.is_dir():
+            # Return the parent so the caller can navigate up automatically.
+            parent = str(d.parent) if d != d.parent else None
+            self._json({'path': str(d), 'parent': parent, 'exists': False, 'dirs': []})
+            return
+
+        parent = str(d.parent) if d != d.parent else None
+        dirs = []
+        try:
+            for child in sorted(d.iterdir()):
+                try:
+                    if child.is_dir() and not child.name.startswith('.'):
+                        dirs.append({'name': child.name, 'path': str(child)})
+                except PermissionError:
+                    pass
+        except PermissionError:
+            pass
+
+        self._json({
+            'path':   str(d),
+            'parent': parent,
+            'exists': True,
+            'dirs':   dirs[:300],   # cap to avoid huge responses on busy roots
+        })
+
     # ── Ingest job list ───────────────────────────────────────────────────────
     def _ingest_jobs(self):
         """
@@ -524,23 +618,34 @@ class Handler(BaseHTTPRequestHandler):
         Reads TESTBED_ROOT/data/ingest-jobs.ndjson (written by native-stress.sh
         and native-smoke.sh) and returns a JSON array sorted newest-first.
         Returns [] when the file is absent or empty — never an error.
+        Result is cached by file mtime so repeated polls don't re-read the file.
         """
         log_path = self.server.testbed_root / 'data' / 'ingest-jobs.ndjson'
-        jobs = []
-        try:
-            with open(log_path, 'r', encoding='utf-8') as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        jobs.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass  # skip corrupt lines
-        except FileNotFoundError:
-            pass  # log not created yet — return empty list
-        # Newest first (sort by created_at string; ISO-8601 sorts lexicographically)
-        jobs.sort(key=lambda j: j.get('created_at', ''), reverse=True)
+        with self.server._ndjson_lock:
+            try:
+                mtime = log_path.stat().st_mtime
+                c = self.server._ingest_jobs_cache
+                if c is not None and c['mtime'] == mtime:
+                    self._json(c['data'])
+                    return
+            except FileNotFoundError:
+                self._json([])
+                return
+            jobs = []
+            try:
+                with open(log_path, 'r', encoding='utf-8') as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            jobs.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+            except FileNotFoundError:
+                pass
+            jobs.sort(key=lambda j: j.get('created_at', ''), reverse=True)
+            self.server._ingest_jobs_cache = {'mtime': mtime, 'data': jobs}
         self._json(jobs)
 
     # ── Run history ───────────────────────────────────────────────────────────
@@ -549,22 +654,34 @@ class Handler(BaseHTTPRequestHandler):
         GET /api/runs
         Reads TESTBED_ROOT/data/runs.ndjson and returns a JSON array sorted
         newest-first.  Returns [] when the file is absent or empty.
+        Result is cached by file mtime so repeated polls don't re-read the file.
         """
         log_path = self.server.testbed_root / 'data' / 'runs.ndjson'
-        runs = []
-        try:
-            with open(log_path, 'r', encoding='utf-8') as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        runs.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
-        except FileNotFoundError:
-            pass
-        runs.sort(key=lambda r: r.get('start_time', ''), reverse=True)
+        with self.server._ndjson_lock:
+            try:
+                mtime = log_path.stat().st_mtime
+                c = self.server._runs_cache
+                if c is not None and c['mtime'] == mtime:
+                    self._json(c['data'])
+                    return
+            except FileNotFoundError:
+                self._json([])
+                return
+            runs = []
+            try:
+                with open(log_path, 'r', encoding='utf-8') as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            runs.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+            except FileNotFoundError:
+                pass
+            runs.sort(key=lambda r: r.get('start_time', ''), reverse=True)
+            self.server._runs_cache = {'mtime': mtime, 'data': runs}
         self._json(runs)
 
     # ── CVMFS manifest ────────────────────────────────────────────────────────
@@ -618,7 +735,7 @@ class Handler(BaseHTTPRequestHandler):
         if timestamp:
             try:
                 import datetime
-                iso_time = datetime.datetime.utcfromtimestamp(int(timestamp)).strftime('%Y-%m-%dT%H:%M:%SZ')
+                iso_time = datetime.datetime.fromtimestamp(int(timestamp), datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
             except (ValueError, OSError):
                 pass
 
@@ -684,10 +801,9 @@ class Handler(BaseHTTPRequestHandler):
     def _cas_stats(self):
         """
         GET /api/cas-stats
-        Counts CAS objects and sums their sizes by running two short commands
+        Counts CAS objects and sums their sizes by running a single awk pipeline
         inside the prepub Docker container via docker exec.
-        Results are cached for _CAS_CACHE_TTL seconds and appended to a
-        rolling history ring so /api/cas-stats/history can power a chart.
+        Results are cached for _CAS_CACHE_TTL seconds.
 
         Returns JSON: {count, bytes, bytes_gb, cached, ts, error?}
         """
@@ -704,24 +820,20 @@ class Handler(BaseHTTPRequestHandler):
 
         count, total_bytes, err = 0, 0, None
         try:
-            # File count
+            # Single docker exec: count files and sum sizes atomically via awk.
+            # This avoids the race between two separate exec calls and halves
+            # the process-fork overhead on a busy host.
             cp = subprocess.run(
                 ['docker', 'exec', container, 'bash', '-c',
-                 f'find {data_path} -type f 2>/dev/null | wc -l'],
+                 f'find {data_path} -type f -printf "%s\\n" 2>/dev/null'
+                 r" | awk 'BEGIN{c=0;s=0}{c++;s+=$1}END{print c,s}'"],
                 capture_output=True, text=True, timeout=45,
             )
             if cp.returncode == 0:
-                count = int(cp.stdout.strip() or '0')
-
-            # Total size in bytes via du -sb (works on GNU/BusyBox)
-            cs = subprocess.run(
-                ['docker', 'exec', container, 'bash', '-c',
-                 f'du -sb {data_path} 2>/dev/null | cut -f1 || echo 0'],
-                capture_output=True, text=True, timeout=45,
-            )
-            if cs.returncode == 0:
-                raw = cs.stdout.strip().splitlines()
-                total_bytes = int(raw[0]) if raw else 0
+                parts = cp.stdout.strip().split()
+                if len(parts) == 2:
+                    count       = int(parts[0])
+                    total_bytes = int(parts[1])
 
         except subprocess.TimeoutExpired:
             err = 'docker exec timed out (CAS may be very large)'
@@ -742,23 +854,10 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             result['error'] = err
 
-        snap = {'ts': int(now), 'count': count, 'bytes': total_bytes}
         with self.server._cas_lock:
             self.server._cas_cache = result
-            if count > 0:          # only record valid snapshots
-                self.server._cas_history.append(snap)
 
         self._json(result)
-
-    def _cas_stats_history(self):
-        """
-        GET /api/cas-stats/history
-        Returns the rolling history of CAS snapshots as a JSON array (oldest first).
-        Each entry: {ts, count, bytes}
-        """
-        with self.server._cas_lock:
-            history = list(self.server._cas_history)
-        self._json(history)
 
     # ── Host metrics ──────────────────────────────────────────────────────────
     @staticmethod
@@ -808,8 +907,9 @@ class Handler(BaseHTTPRequestHandler):
         """
         GET /api/host-metrics
         Reads live host metrics from /proc and /sys.  Computes network and disk
-        I/O rates (KB/s) by differencing successive calls.  Appends a flat
-        snapshot to the server-side history ring for /api/host-metrics/history.
+        I/O rates (KB/s) by differencing successive calls.
+        Historical trends are available via VictoriaMetrics (node_* metrics from
+        node-exporter scraped by vmagent).
         """
         now = time.time()
         result: dict = {}
@@ -930,39 +1030,7 @@ class Handler(BaseHTTPRequestHandler):
             self.server._prev_disk = (now, disk_rb, disk_wb)
 
         result['timestamp'] = int(now)
-
-        # ── Append flat snapshot to history ring ──────────────────────────
-        snap: dict = {'ts': int(now)}
-        if result['cpu_load']:
-            snap['cpu_load1']  = result['cpu_load']['load1']
-            snap['cpu_load5']  = result['cpu_load']['load5']
-            snap['cpu_load15'] = result['cpu_load']['load15']
-        if result['memory']:
-            snap['mem_pct'] = result['memory']['percent_used']
-        if result['disk']:
-            snap['disk_pct'] = result['disk']['percent_used']
-        if result['cpu_temp_c'] is not None:
-            snap['cpu_temp'] = result['cpu_temp_c']
-        if result['net_io']:
-            snap['net_rx_kbs'] = result['net_io']['rx_kbs']
-            snap['net_tx_kbs'] = result['net_io']['tx_kbs']
-        if result['disk_io']:
-            snap['disk_read_kbs']  = result['disk_io']['read_kbs']
-            snap['disk_write_kbs'] = result['disk_io']['write_kbs']
-        with self.server._metrics_lock:
-            self.server._metrics_history.append(snap)
-
         self._json(result)
-
-    def _host_metrics_history(self):
-        """
-        GET /api/host-metrics/history
-        Returns the in-memory ring of flat metric snapshots as a JSON array,
-        oldest first (chronological order for charting).
-        """
-        with self.server._metrics_lock:
-            history = list(self.server._metrics_history)
-        self._json(history)
 
     # ── Probe / connectivity diagnostics ─────────────────────────────────────
     def _probe(self, qs_str):
@@ -1022,6 +1090,33 @@ class Handler(BaseHTTPRequestHandler):
             self._json({'error': f'Unknown service: {service}'}, 404)
             return
 
+        # ── Stratum1 .cvmfspublished intercept ────────────────────────────────
+        # The testbed s1a/s1b nodes run cvmfs-prepub in receiver mode, not Apache
+        # httpd, so they have no /cvmfs/ HTTP endpoint.  Their data mux only serves
+        # /api/v1/objects/ — forwarding the manifest request would always 404.
+        #
+        # Instead, serve the stratum0 .cvmfspublished directly from the host
+        # filesystem (TESTBED_ROOT/repos/<repo>/.cvmfspublished).  In this testbed
+        # distribution is fire-and-forget (quorum: 0), so stratum0's manifest is
+        # the best available proxy for what s1a/s1b have received.
+        if service in ('s1a', 's1b') and method == 'GET' and sub.endswith('/.cvmfspublished'):
+            # sub = /cvmfs/<repo>/.cvmfspublished
+            path_parts = [p for p in sub.split('/') if p]  # strip leading ''
+            if len(path_parts) == 3 and path_parts[0] == 'cvmfs':
+                repo = path_parts[1]
+                pub_path = self.server.testbed_root / 'repos' / repo / '.cvmfspublished'
+                try:
+                    data = pub_path.read_bytes()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/octet-stream')
+                    self.send_header('Content-Length', str(len(data)))
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+                except FileNotFoundError:
+                    pass  # fall through → real proxy → 404 (acceptable)
+
         target = base.rstrip('/') + sub + ('?' + qs if qs else '')
 
         # Forward a curated set of request headers; strip X-Testbed-Token so it
@@ -1031,6 +1126,11 @@ class Handler(BaseHTTPRequestHandler):
             val = self.headers.get(hdr)
             if val:
                 fwd_headers[hdr] = val
+
+        # When a browser opens a prepub log link directly (no JS auth header),
+        # inject the prepub bearer token so the backend doesn't reject it.
+        if service == 'prepub' and 'Authorization' not in fwd_headers and self.server.prepub_token:
+            fwd_headers['Authorization'] = f'Bearer {self.server.prepub_token}'
 
         body = None
         if method == 'POST':
@@ -1150,7 +1250,7 @@ class Handler(BaseHTTPRequestHandler):
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                cwd=str(SCRIPT_DIR),
+                cwd=str(TESTBED_DIR),
                 env=env,
             )
             self._sse(str(proc.pid), event='pid')
@@ -1201,20 +1301,14 @@ class TestbedServer(ThreadingHTTPServer):
         self.verbose      = args.verbose
         self.auth_token    = None if args.no_auth else (args.token or secrets.token_hex(24))
         self.prepub_token      = args.prepub_token
-        # ── Host-metrics history ──────────────────────────────────────────────
-        # Rolling buffer of flat metric snapshots, one per /api/host-metrics call.
-        # 120 samples × 30 s auto-refresh ≈ 60 minutes of history.
-        self._metrics_history: deque = deque(maxlen=120)
-        self._metrics_lock    = threading.Lock()
         # Previous raw counters for rate computation (set on first call).
         self._prev_net : tuple | None = None   # (ts, rx_bytes, tx_bytes)
         self._prev_disk: tuple | None = None   # (ts, read_bytes, write_bytes)
+        self._metrics_lock = threading.Lock()  # guards _prev_net / _prev_disk
 
-        self.cas_container = args.cas_container
-        self.cas_data_path = args.cas_data_path
-        # Rolling CAS stats history (200 samples × 20 s TTL ≈ ~67 min)
-        self._cas_history: deque = deque(maxlen=200)
-        self._cas_cache: dict | None = None   # latest result, refreshed every TTL
+        self.cas_container  = args.cas_container
+        self.cas_data_path  = args.cas_data_path
+        self._cas_cache: dict | None = None   # latest CAS snapshot, refreshed every TTL
         self._cas_lock = threading.Lock()
 
         self.services = {
@@ -1225,6 +1319,221 @@ class TestbedServer(ThreadingHTTPServer):
             's1b':             args.s1b,
             'victoriametrics': args.victoriametrics,
         }
+
+        # ── NDJSON file caches ────────────────────────────────────────────────
+        # Avoid reading runs.ndjson / ingest-jobs.ndjson on every HTTP request.
+        # Each cache entry: {mtime: float, data: list}.  Invalidated when the
+        # file's mtime changes (written by testbed.sh after each run).
+        self._runs_cache: dict | None = None
+        self._ingest_jobs_cache: dict | None = None
+        self._ndjson_lock = threading.Lock()
+
+        # ── Metrics push loop ─────────────────────────────────────────────────
+        # Background thread: every _PUSH_INTERVAL seconds, fetches the prepub job
+        # list and pushes derived time-series metrics to VictoriaMetrics.
+        # On every Nth cycle also pushes CAS object/byte counts via docker exec.
+        self._push_error: str | None = None   # last push error (None = OK)
+        t = threading.Thread(target=self._metrics_push_loop, daemon=True)
+        t.start()
+
+
+# ── Metrics push loop ─────────────────────────────────────────────────────────
+    # Defined as a method on TestbedServer so it can access self.services and
+    # self.prepub_token.  Runs as a daemon thread started in __init__.
+    _PUSH_INTERVAL  = 5    # seconds between push cycles
+    _CAS_PUSH_EVERY = 12   # push CAS stats every N cycles (~60 s)
+
+    def _metrics_push_loop(self):
+        """
+        Background daemon thread.  Every _PUSH_INTERVAL seconds:
+
+        1. Fetches the prepub job list and pushes derived metrics to
+           VictoriaMetrics via POST /api/v1/import/prometheus:
+
+           testbed_prepub_bytes_total               — total compressed bytes across all jobs
+           testbed_s1_bytes_distributed_total{node} — bytes confirmed per S1 node
+           testbed_jobs_total{state}                — job count per state
+           testbed_publish_duration_seconds{quantile="0.5"|"0.95"}
+           testbed_publish_duration_seconds_sum / _count
+           testbed_stage_duration_seconds{stage,quantile="0.5"}
+
+        2. Every _CAS_PUSH_EVERY cycles also runs a docker exec inside the
+           prepub container to push:
+
+           testbed_cas_objects_total                — number of CAS files
+           testbed_cas_bytes_total                  — total CAS bytes
+
+        Distribution model:
+          distribution_confirmed is a count of S1 endpoints that have ACKed.
+          confirmed>=1 → s1a  confirmed>=2 → s1b (order-based heuristic;
+          both converge to the same total once all endpoints confirm).
+        """
+        prepub_url = self.services.get('prepub', 'http://localhost:8080')
+        vm_url     = self.services.get('victoriametrics', 'http://localhost:8428')
+        jobs_url   = f'{prepub_url}/api/v1/jobs'
+        push_url   = f'{vm_url}/api/v1/import/prometheus'
+        cycle      = 0
+
+        while True:
+            try:
+                ts_ms  = int(time.time() * 1000)
+                lines: list[str] = []
+
+                # ── Fetch jobs ────────────────────────────────────────────────
+                req = urllib.request.Request(jobs_url)
+                if self.prepub_token:
+                    req.add_header('Authorization', f'Bearer {self.prepub_token}')
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    jobs = json.loads(resp.read().decode())
+
+                if not isinstance(jobs, list):
+                    raise ValueError(f'unexpected jobs response: {type(jobs).__name__}')
+
+                # ── Bytes distributed (S1 ring / distribution fill) ───────────
+                # testbed_prepub_bytes_total: sum of compressed bytes across all
+                # jobs — useful for throughput tracking but NOT a good ring
+                # reference because dedup means the same bytes are counted once per
+                # job that contains them, inflating the total.
+                # testbed_s1_bytes_distributed_total: actual bytes on each S1 node's
+                # disk, measured via docker exec every _CAS_PUSH_EVERY cycles (same
+                # cadence as CAS stats).  This avoids the job-confirmation heuristic
+                # which under-reports when NewObjectHashes is empty (full-dedup jobs).
+                prepub_bytes = 0
+                for j in jobs:
+                    prepub_bytes += int(j.get('n_bytes_compressed') or 0)
+
+                lines.append(f'testbed_prepub_bytes_total {prepub_bytes} {ts_ms}')
+
+                # ── Job state counts ──────────────────────────────────────────
+                state_counts: dict[str, int] = {}
+                for j in jobs:
+                    st = str(j.get('state') or 'unknown')
+                    state_counts[st] = state_counts.get(st, 0) + 1
+                for state, count in state_counts.items():
+                    safe = state.replace('"', '')
+                    lines.append(f'testbed_jobs_total{{state="{safe}"}} {count} {ts_ms}')
+
+                # ── Publish duration percentiles (published jobs only) ─────────
+                # Try ISO-8601 created_at / published_at first; fall back to
+                # pre-computed duration_s or duration_seconds fields.
+                durations: list[float] = []
+                for j in jobs:
+                    if str(j.get('state') or '') != 'published':
+                        continue
+                    d = j.get('duration_s') or j.get('duration_seconds') or j.get('publish_duration_s')
+                    if d is not None:
+                        try:
+                            durations.append(float(d))
+                            continue
+                        except (TypeError, ValueError):
+                            pass
+                    # Compute from timestamps
+                    ca = j.get('created_at') or j.get('start_time') or ''
+                    pa = j.get('published_at') or j.get('finish_time') or ''
+                    if ca and pa:
+                        try:
+                            import datetime as _dt
+                            def _parse(s):
+                                s = s.rstrip('Z').split('+')[0]
+                                for fmt in ('%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S'):
+                                    try:
+                                        return _dt.datetime.strptime(s, fmt)
+                                    except ValueError:
+                                        continue
+                                return None
+                            t0, t1 = _parse(ca), _parse(pa)
+                            if t0 and t1:
+                                delta = (t1 - t0).total_seconds()
+                                if 0 < delta < 86400:
+                                    durations.append(delta)
+                        except Exception:
+                            pass
+
+                if durations:
+                    durations_s = sorted(durations)
+                    n = len(durations_s)
+                    def _pct(p):
+                        i = max(0, int(p / 100.0 * n) - 1)
+                        return durations_s[min(i, n - 1)]
+                    p50 = _pct(50)
+                    p95 = _pct(95)
+                    total = sum(durations_s)
+                    lines.append(f'testbed_publish_duration_seconds{{quantile="0.5"}} {p50:.3f} {ts_ms}')
+                    lines.append(f'testbed_publish_duration_seconds{{quantile="0.95"}} {p95:.3f} {ts_ms}')
+                    lines.append(f'testbed_publish_duration_seconds_sum {total:.3f} {ts_ms}')
+                    lines.append(f'testbed_publish_duration_seconds_count {n} {ts_ms}')
+
+                # ── Stage duration percentiles ─────────────────────────────────
+                # Jobs may carry stage-level durations in stage_durations dict or
+                # individual fields (duration_pipeline_s, etc.).
+                stage_fields = {
+                    'pipeline':     ('duration_pipeline_s', 'pipeline_duration_s', 'pipeline_s'),
+                    'lease_commit': ('duration_lease_commit_s', 'lease_commit_s', 'commit_duration_s'),
+                    'distribution': ('duration_distribution_s', 'distribution_s', 'dist_duration_s'),
+                }
+                for stage, field_names in stage_fields.items():
+                    vals: list[float] = []
+                    for j in jobs:
+                        if str(j.get('state') or '') != 'published':
+                            continue
+                        # Try nested stage_durations map first
+                        sd = j.get('stage_durations') or {}
+                        v = sd.get(stage)
+                        if v is None:
+                            for fn in field_names:
+                                v = j.get(fn)
+                                if v is not None:
+                                    break
+                        if v is not None:
+                            try:
+                                vals.append(float(v))
+                            except (TypeError, ValueError):
+                                pass
+                    if vals:
+                        vals_s = sorted(vals)
+                        n = len(vals_s)
+                        p50 = vals_s[max(0, int(0.5 * n) - 1)]
+                        lines.append(
+                            f'testbed_stage_duration_seconds{{stage="{stage}",quantile="0.5"}}'
+                            f' {p50:.3f} {ts_ms}'
+                        )
+
+                # ── CAS disk stats (every _CAS_PUSH_EVERY cycles) ─────────────
+                if cycle % self._CAS_PUSH_EVERY == 0:
+                    try:
+                        cp = subprocess.run(
+                            ['docker', 'exec', self.cas_container, 'bash', '-c',
+                             f'find {self.cas_data_path} -type f -printf "%s\\n" 2>/dev/null'
+                             r" | awk 'BEGIN{c=0;s=0}{c++;s+=$1}END{print c,s}'"],
+                            capture_output=True, text=True, timeout=45,
+                        )
+                        if cp.returncode == 0:
+                            parts = cp.stdout.strip().split()
+                            if len(parts) == 2:
+                                cas_count = int(parts[0])
+                                cas_bytes = int(parts[1])
+                                if cas_count > 0:
+                                    lines.append(f'testbed_cas_objects_total {cas_count} {ts_ms}')
+                                    lines.append(f'testbed_cas_bytes_total {cas_bytes} {ts_ms}')
+                    except Exception:
+                        pass  # CAS push is best-effort; don't fail the whole cycle
+
+                # ── Push to VictoriaMetrics ───────────────────────────────────
+                payload = '\n'.join(lines) + '\n'
+                push_req = urllib.request.Request(
+                    push_url,
+                    data=payload.encode(),
+                    method='POST',
+                    headers={'Content-Type': 'text/plain'},
+                )
+                urllib.request.urlopen(push_req, timeout=5)
+                self._push_error = None
+
+            except Exception as exc:
+                self._push_error = str(exc)
+
+            cycle += 1
+            time.sleep(self._PUSH_INTERVAL)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -1288,16 +1597,25 @@ def main():
         params = f'token={urllib.parse.quote(token, safe="")}'
         if prepub_token:
             params += f'&prepub-token={urllib.parse.quote(prepub_token, safe="")}'
-        url_with_token = f'{proto}://{hostname}:{args.port}/?{params}'
+        base_url   = f'{proto}://{hostname}:{args.port}/'
+        url_with_token = f'{base_url}?{params}'
         print(sep)
         print(f'  Secret token  : {token}')
         if prepub_token:
             print(f'  Prepub token  : {prepub_token}')
         print()
-        print(f'  *** Open this URL in your browser (all tokens pre-filled): ***')
+        print(f'  *** Open this URL in your browser — all tokens are pre-filled: ***')
+        print()
         print(f'  {url_with_token}')
         print()
-        print(f'  (The server token is required for all /api/* requests.)')
+        # Also print just the base URL with a note about copy-paste resilience.
+        # The server sets a session cookie when it sees ?token= on the page load,
+        # so even if the browser is later refreshed (without the query string) it
+        # stays authenticated for the lifetime of the browser session.
+        print(f'  Base URL (works after first login): {base_url}')
+        print()
+        print(f'  Tip: copy the FULL URL above — it must include the ?token= part.')
+        print(f'       If you get a login prompt, paste the secret token into the field.')
     else:
         base_url = f'{proto}://{hostname}:{args.port}/'
         if prepub_token:

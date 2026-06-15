@@ -5,163 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CVMFS Testbed Console</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-<style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --sidebar-w:220px;--hdr-h:52px;
-  --c-bg:#eaecef;--c-surface:#fff;--c-sidebar:#1a2332;--c-sidebar2:#243040;
-  --c-accent:#2ea44f;--c-accent-h:#22863a;--c-danger:#d73a49;
-  --c-warn:#e36209;--c-info:#0075ca;--c-muted:#6a737d;
-  --c-border:#e1e4e8;--c-text:#24292e;
-  --radius:6px;--shadow:0 1px 3px rgba(0,0,0,.12);
-  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
-  --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
-}
-html,body{height:100%}
-body{font-family:var(--font);font-size:13px;color:var(--c-text);background:var(--c-bg);display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
-
-/* Header */
-#header{height:var(--hdr-h);background:var(--c-sidebar);color:#fff;display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0;border-bottom:1px solid #111}
-.logo{font-size:18px;font-weight:700;letter-spacing:-.3px;color:#fff}
-.logo span{color:var(--c-accent)}
-.subtitle{font-size:12px;color:#8b949e;margin-top:1px}
-.spacer{flex:1}
-.dot{width:8px;height:8px;border-radius:50%;background:#586069;display:inline-block;transition:background .3s}
-.dot.ok{background:var(--c-accent)}.dot.err{background:var(--c-danger)}.dot.warn{background:var(--c-warn)}
-#mode-badge{font-size:11px;color:#8b949e;padding:2px 8px;border:1px solid #444;border-radius:10px}
-#mode-badge.server{color:var(--c-accent);border-color:var(--c-accent)}
-#hdr-refresh{background:none;border:1px solid #444;color:#ccc;padding:4px 10px;border-radius:var(--radius);cursor:pointer;font-size:12px}
-#hdr-refresh:hover{border-color:#888;color:#fff}
-
-/* Layout */
-#layout{display:flex;flex:1;overflow:hidden}
-
-/* Sidebar */
-#sidebar{width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--c-sidebar);flex-shrink:0;display:flex;flex-direction:column;padding:12px 0;overflow-y:auto;overflow-x:hidden}
-.nav-section{padding:8px 16px 4px;font-size:11px;color:#586069;text-transform:uppercase;letter-spacing:.6px}
-.nav-item{display:flex;align-items:center;gap:9px;padding:7px 16px;cursor:pointer;color:#c9d1d9;font-size:13px;border-left:3px solid transparent;transition:background .1s;white-space:nowrap;overflow:hidden}
-.nav-item:hover{background:var(--c-sidebar2);color:#fff}
-.nav-item.active{background:var(--c-sidebar2);color:#fff;border-left-color:var(--c-accent)}
-.nav-item .icon{width:16px;text-align:center}
-.nav-badge{margin-left:auto;font-size:10px;background:var(--c-danger);color:#fff;border-radius:10px;padding:1px 6px;display:none}
-.nav-badge.info{background:var(--c-info)}
-#sidebar-footer{margin-top:auto;padding:12px 16px;font-size:11px;color:#586069;border-top:1px solid #243040}
-
-/* Main */
-#main{flex:1;min-width:0;overflow-y:auto;overflow-x:hidden;padding:24px}
-.tab-content{display:none}.tab-content.active{display:block}
-.page-title{font-size:20px;font-weight:600;margin-bottom:6px}
-.page-sub{color:var(--c-muted);margin-bottom:20px;font-size:13px}
-
-/* Cards */
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px;margin-bottom:24px}
-.card{background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow)}
-.card-label{font-size:12px;color:var(--c-muted);margin-bottom:6px}
-.card-value{font-size:22px;font-weight:700}
-.card-value.green{color:var(--c-accent)}.card-value.orange{color:var(--c-warn)}
-.card-value.red{color:var(--c-danger)}.card-value.blue{color:var(--c-info)}
-.card-sub{font-size:11px;color:var(--c-muted);margin-top:4px;font-family:var(--mono)}
-
-/* Box */
-.box{background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--radius);margin-bottom:20px;box-shadow:var(--shadow)}
-.box-header{padding:10px 16px;border-bottom:1px solid var(--c-border);display:flex;align-items:center;gap:8px}
-.box-title{font-weight:600;font-size:13px;flex:1}
-.box-body{padding:0}
-.box-pad{padding:16px}
-
-/* Tables */
-table{width:100%;border-collapse:collapse;font-size:13px}
-th{padding:8px 12px;background:#f6f8fa;text-align:left;font-weight:600;border-bottom:1px solid var(--c-border);color:var(--c-muted);font-size:12px}
-td{padding:9px 12px;border-bottom:1px solid var(--c-border);vertical-align:middle}
-tr:last-child td{border-bottom:none}
-tr:hover td{background:#f6f8fa}
-
-/* Badges */
-.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600}
-.ok{background:#dcffe4;color:#1a7f37}.err{background:#ffd7d7;color:#b91c1c}
-.warn{background:#fff3cd;color:#854d0e}.info{background:#ddf4ff;color:#0550ae}
-.badge-unknown{background:#f0f0f0;color:#888}
-
-/* Buttons */
-.btn{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;border-radius:var(--radius);cursor:pointer;font-size:13px;font-weight:500;border:1px solid transparent;transition:background .1s,opacity .1s}
-.btn:disabled{opacity:.5;cursor:default}
-.btn-primary{background:var(--c-accent);color:#fff;border-color:var(--c-accent-h)}
-.btn-primary:hover:not(:disabled){background:var(--c-accent-h)}
-.btn-outline{background:#fff;color:var(--c-text);border-color:var(--c-border)}
-.btn-outline:hover:not(:disabled){background:#f3f4f6}
-.btn-danger{background:var(--c-danger);color:#fff;border-color:#b91c1c}
-.btn-danger:hover:not(:disabled){background:#b91c1c}
-.btn-sm{padding:3px 10px;font-size:12px}
-.btn-xs{padding:2px 8px;font-size:11px}
-
-/* Forms */
-.form-row{margin-bottom:14px}
-.form-row label{display:block;font-weight:500;font-size:13px;margin-bottom:4px}
-.form-row input,.form-row select,.form-row textarea{width:100%;padding:6px 10px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:13px;font-family:var(--font);background:#fff}
-.form-row input:focus,.form-row select:focus{outline:none;border-color:var(--c-info);box-shadow:0 0 0 3px rgba(0,117,202,.15)}
-.form-hint{font-size:11px;color:var(--c-muted);margin-top:3px}
-
-/* Alert */
-.alert{padding:12px 16px;border-radius:var(--radius);font-size:13px;margin-bottom:16px}
-.alert-info{background:#ddf4ff;border:1px solid #a3c8f5;color:#0550ae}
-.alert-warn{background:#fff3cd;border:1px solid #fcd34d;color:#854d0e}
-.alert-error{background:#ffd7d7;border:1px solid #f5a5a5;color:#b91c1c}
-.alert-ok{background:#dcffe4;border:1px solid #a3d9a5;color:#1a7f37}
-
-/* Terminal / Log viewer */
-.term{background:#0d1117;color:#c9d1d9;font-family:var(--mono);font-size:12px;padding:14px;border-radius:var(--radius);overflow-y:auto;white-space:pre-wrap;word-break:break-all;border:1px solid #30363d}
-.term .ts{color:#586069}.term .err{color:#ff7b72}.term .ok{color:#56d364}
-.term .info{color:#79c0ff}.term .warn{color:#d29922}.term .cmd{color:#e3b341}
-
-/* Spinner */
-.spinner{width:10px;height:10px;border-radius:50%;border:2px solid #b3d4ff;border-top-color:#0550ae;animation:spin .7s linear infinite;display:inline-block}
-@keyframes spin{to{transform:rotate(360deg)}}
-
-/* Pipeline visualization */
-.pipeline{display:flex;align-items:center}
-.pipe-step{flex:1;text-align:center;padding:5px 3px;background:#f6f8fa;border:1px solid var(--c-border);font-size:11px;font-weight:500;position:relative}
-.pipe-step:not(:last-child)::after{content:'→';position:absolute;right:-9px;top:50%;transform:translateY(-50%);color:var(--c-muted);z-index:1;font-size:12px}
-.pipe-step:first-child{border-radius:var(--radius) 0 0 var(--radius)}
-.pipe-step:last-child{border-radius:0 var(--radius) var(--radius) 0}
-.pipe-step.done{background:#dcffe4;border-color:#a3d9a5}
-.pipe-step.active{background:#ddf4ff;border-color:#a3c8f5}
-.pipe-step.failed{background:#ffd7d7;border-color:#f5a5a5}
-
-/* Command buttons area */
-.cmd-group{margin-bottom:16px}
-.cmd-group-label{font-size:11px;color:var(--c-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;font-weight:600}
-.cmd-buttons{display:flex;flex-wrap:wrap;gap:8px}
-
-/* Chart containers */
-.chart-wrap{position:relative;height:220px}
-.chart-wrap-sm{position:relative;height:160px}
-.metrics-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
-@media(max-width:700px){.metrics-grid{grid-template-columns:1fr}}
-
-/* Misc */
-.mono{font-family:var(--mono);font-size:12px}
-.muted{color:var(--c-muted)}
-.flex{display:flex;gap:8px;align-items:center}
-.loading{text-align:center;padding:30px;color:var(--c-muted)}
-.empty{text-align:center;padding:30px;color:var(--c-muted)}
-hr{border:none;border-top:1px solid var(--c-border);margin:16px 0}
-a{color:var(--c-info);text-decoration:none}
-a:hover{text-decoration:underline}
-code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;border-radius:3px}
-</style>
+<link rel="stylesheet" href="cvmfs-elements/css/console.css">
 </head>
 <body>
 
 <!-- Header -->
 <div id="header">
   <div>
-    <div class="logo">CVMFS <span>Testbed</span></div>
+    <div class="logo" id="hdr-logo-name">CVMFS <span>Testbed</span></div>
     <div class="subtitle" id="hdr-sub">Initialising…</div>
   </div>
+  <div id="env-badge"></div>
   <div class="spacer"></div>
   <span id="mode-badge">direct</span>
   <span class="dot" id="dot-main"></span>
   <span style="font-size:11px;color:#8b949e" id="hdr-ts"></span>
+  <span id="hdr-refresh-in"></span>
   <button id="hdr-refresh" onclick="refreshAll()">↻ Refresh</button>
 </div>
 
@@ -171,21 +30,18 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
 <!-- Sidebar -->
 <div id="sidebar">
   <div class="nav-section">Monitor</div>
-  <div class="nav-item active" onclick="showTab('dashboard')" id="nav-dashboard"><span class="icon">📊</span> Dashboard</div>
-  <div class="nav-item" onclick="showTab('services')" id="nav-services"><span class="icon">🔌</span> Services<span class="nav-badge" id="badge-services"></span></div>
-  <div class="nav-item" onclick="showTab('monitoring')" id="nav-monitoring"><span class="icon">📈</span> Monitoring</div>
-  <div class="nav-item" onclick="showTab('topology')" id="nav-topology"><span class="icon">🗺</span> Topology</div>
+  <div class="nav-item active" onclick="showTab('dashboard')" id="nav-dashboard"><span class="icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></span> Dashboard</div>
+  <div class="nav-item" onclick="showTab('monitoring')" id="nav-monitoring"><span class="icon"><svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span> Monitoring</div>
 
   <div class="nav-section">Operations</div>
-  <div class="nav-item" onclick="showTab('commands')" id="nav-commands"><span class="icon">⌨️</span> Commands</div>
-  <div class="nav-item" onclick="showTab('jobs')" id="nav-jobs"><span class="icon">📦</span> Jobs<span class="nav-badge info" id="badge-jobs"></span></div>
-  <div class="nav-item" onclick="showTab('mqtt')" id="nav-mqtt"><span class="icon">📡</span> MQTT Monitor</div>
-  <div class="nav-item" onclick="showTab('upload')" id="nav-upload"><span class="icon">📤</span> Upload<span class="nav-badge info" id="badge-upload" style="display:none"></span></div>
-  <div class="nav-item" onclick="showTab('stratum0')" id="nav-stratum0"><span class="icon">🔍</span> Status</div>
+  <div class="nav-item" onclick="showTab('testbed')" id="nav-testbed"><span class="icon"><svg viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span> Testbed</div>
+  <div class="nav-item" onclick="showTab('jobs')" id="nav-jobs"><span class="icon"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></span> Jobs<span class="nav-badge info" id="badge-jobs"></span></div>
+  <div class="nav-item" onclick="showTab('mqtt')" id="nav-mqtt"><span class="icon"><svg viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg></span> MQTT Monitor</div>
+  <div class="nav-item" onclick="showTab('upload')" id="nav-upload"><span class="icon"><svg viewBox="0 0 24 24"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg></span> Upload<span class="nav-badge info" id="badge-upload" style="display:none"></span></div>
+  <div class="nav-item" onclick="showTab('stratum0')" id="nav-stratum0"><span class="icon"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span> Status</div>
 
   <div class="nav-section">Config</div>
-  <div class="nav-item" onclick="showTab('settings')" id="nav-settings"><span class="icon">⚙️</span> Settings</div>
-  <div class="nav-item" onclick="showTab('admin')" id="nav-admin"><span class="icon">🛠</span> Admin</div>
+  <div class="nav-item" onclick="showTab('settings')" id="nav-settings"><span class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span> Settings</div>
 
   <div id="sidebar-footer">
     <div id="sf-repo" style="margin-bottom:4px"></div>
@@ -202,202 +58,11 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
   <div class="page-title">Dashboard</div>
   <div class="page-sub" id="dash-sub">Loading…</div>
 
-  <div class="cards">
-    <div class="card"><div class="card-label">Services up</div><div class="card-value blue" id="c-svc">–</div></div>
-    <div class="card"><div class="card-label">Active jobs</div><div class="card-value orange" id="c-active">–</div></div>
-    <div class="card"><div class="card-label">Jobs today</div><div class="card-value blue" id="c-today">–</div></div>
-    <div class="card"><div class="card-label">Avg publish</div><div class="card-value green" id="c-avg-pub">–</div><div class="card-sub">seconds</div></div>
-    <div class="card"><div class="card-label">Last root hash</div><div class="card-value mono" id="c-hash" style="font-size:12px;word-break:break-all">–</div><div class="card-sub" id="c-hash-age"></div></div>
-    <div class="card"><div class="card-label">S1 peers</div><div class="card-value" id="c-s1">2</div></div>
-  </div>
-
-  <div class="box">
-    <div class="box-header"><span class="box-title">Service Health</span>
-      <button class="btn btn-outline btn-sm" onclick="refreshServices()">↻ Recheck</button>
-    </div>
-    <table><thead><tr><th>Service</th><th>URL</th><th>Status</th><th>Latency</th></tr></thead>
-    <tbody id="dash-health-tbody"><tr><td colspan="4" class="loading"><span class="spinner"></span></td></tr></tbody></table>
-  </div>
-
-  <div class="box">
-    <div class="box-header"><span class="box-title">Recent Jobs</span>
-      <button class="btn btn-outline btn-sm" onclick="refreshJobs()">↻</button>
-    </div>
-    <table><thead><tr><th>ID</th><th>Repo</th><th>State</th><th>Publish time</th><th>Root hash</th><th>Age</th></tr></thead>
-    <tbody id="dash-jobs-tbody"><tr><td colspan="6" class="loading"><span class="spinner"></span></td></tr></tbody>
-  </table></div>
-</div>
-
-<!-- ═══════════════════════════ SERVICES ════════════════════════════════ -->
-<div id="tab-services" class="tab-content">
-  <div class="page-title">Services</div>
-  <div class="page-sub">Live health — auto-refreshed every 15 s. All requests route through the backend proxy when in server mode.</div>
-  <div class="box">
-    <div class="box-header"><span class="box-title">All Services</span>
-      <button class="btn btn-outline btn-sm" onclick="refreshServices()">↻ Recheck</button>
-    </div>
-    <table><thead><tr><th>Service</th><th>Role</th><th>Proxy path</th><th>Status</th><th>ms</th><th></th></tr></thead>
-    <tbody id="svc-tbody"><tr><td colspan="6" class="loading"><span class="spinner"></span></td></tr></tbody></table>
-  </div>
-</div>
-
-<!-- ═══════════════════════════ MONITORING ══════════════════════════════ -->
-<div id="tab-monitoring" class="tab-content">
-  <div class="page-title">Monitoring</div>
-  <div class="page-sub" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
-    <span>Job timing statistics and Prometheus metrics.</span>
-    <span style="margin-left:4px;font-size:12px;color:var(--c-muted)">Method:</span>
-    <select id="mon-method-filter" style="font-size:12px;padding:3px 6px;border:1px solid var(--c-border);border-radius:var(--radius);background:var(--c-bg)" onchange="applyJobsFilter('mon-method-filter');buildMonitoringCharts()">
-      <option value="all">All</option>
-      <option value="bits">Bits (prepub)</option>
-      <option value="ingest">Ingest (native)</option>
-    </select>
-    <button class="btn btn-outline btn-sm" onclick="refreshMonitoring()">↻ Refresh</button>
-    <button class="btn btn-outline btn-sm" id="mon-range-btn" onclick="cycleRange()">Last 20 jobs</button>
-    <button class="btn btn-sm" style="background:#d73a49;color:#fff;border:none" onclick="resetMonStats()" title="Zero the baseline — only jobs submitted after this moment will appear in the charts and summary cards">⊘ Reset stats</button>
-    <span id="mon-since-label" style="font-size:11px;color:var(--c-muted);display:none"></span>
-  </div>
-
-  <!-- Timing cards -->
-  <div class="cards" id="mon-cards">
-    <div class="card"><div class="card-label">Avg publish time</div><div class="card-value green" id="m-avg">–</div><div class="card-sub">seconds (end-to-end)</div></div>
-    <div class="card"><div class="card-label">Median publish</div><div class="card-value blue" id="m-p50">–</div><div class="card-sub">seconds</div></div>
-    <div class="card"><div class="card-label">p95 publish</div><div class="card-value orange" id="m-p95">–</div><div class="card-sub">seconds</div></div>
-    <div class="card"><div class="card-label">Throughput</div><div class="card-value" id="m-tput">–</div><div class="card-sub">jobs / hour</div></div>
-    <div class="card"><div class="card-label">Success rate</div><div class="card-value green" id="m-rate">–</div><div class="card-sub">% published</div></div>
-    <div class="card"><div class="card-label">Total jobs</div><div class="card-value blue" id="m-total">–</div></div>
-  </div>
-
-  <!-- Charts row -->
-  <div class="metrics-grid">
-    <div class="box">
-      <div class="box-header"><span class="box-title">Upload Volume — Cumulative per Run (MB)</span></div>
-      <div class="box-pad">
-        <div id="chart-volume-note" style="display:none;font-size:11px;color:var(--c-muted);margin-bottom:6px;padding:6px 8px;background:#f6f8fa;border-radius:4px;border-left:3px solid var(--c-warn)"></div>
-        <div class="chart-wrap"><canvas id="chart-latency"></canvas></div>
-      </div>
-    </div>
-    <div class="box">
-      <div class="box-header"><span class="box-title">Job State Distribution</span></div>
-      <div class="box-pad"><div class="chart-wrap"><canvas id="chart-states"></canvas></div></div>
-    </div>
-  </div>
-
-  <!-- Stage timing (shown only if stage timestamps are present in job data) -->
-  <div class="box" id="box-stages" style="display:none">
-    <div class="box-header" style="cursor:pointer" onclick="toggleCollapse('stages-body','stages-chevron')">
-      <span class="box-title">Time per Pipeline Stage (avg, seconds)</span>
-      <span id="stages-chevron" style="font-size:13px;color:var(--c-muted);transition:transform .2s">▼</span>
-    </div>
-    <div id="stages-body" class="box-pad">
-      <div style="font-size:11px;color:var(--c-muted);margin-bottom:10px;line-height:1.5">
-        Average wall time per phase for completed bits (prepub) jobs.
-        <b>Pipeline</b>: compress + dedup + CAS upload.
-        <b>Lease+Commit</b>: waiting for per-repo commit slot + gateway lease + catalog merge + commit (serialised per repo — high values with concurrent jobs indicate mutex contention).
-        <b>S1 Distribution</b>: async S1 pre-warming queued at publish time; timer ends when all endpoints confirm — may finish after Published.
-        Hover bars for exact values.  Only jobs with per-stage timestamps are included.
-        Per-job breakdown is available as a tooltip on the Duration cell in the Jobs table.
-      </div>
-      <div class="chart-wrap"><canvas id="chart-stages"></canvas></div>
-    </div>
-  </div>
-
-  <!-- Prometheus metrics -->
-  <div class="box">
-    <div class="box-header" style="cursor:pointer" onclick="toggleCollapse('metrics-body','metrics-chevron')">
-      <span class="box-title">Prometheus Metrics <span class="muted" style="font-size:11px">(prepub /api/v1/metrics)</span></span>
-      <button class="btn btn-outline btn-sm" onclick="event.stopPropagation();refreshMetrics()">↻</button>
-      <span id="metrics-chevron" style="margin-left:8px;font-size:13px;color:var(--c-muted);transition:transform .2s">▼</span>
-    </div>
-    <div id="metrics-body" class="box-pad" style="display:none">
-      <input id="metrics-filter" placeholder="Filter metric names…" style="width:100%;padding:6px 10px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px;margin-bottom:12px;font-family:var(--mono)" oninput="renderMetricsTable()">
-      <div id="metrics-tbody-wrap" style="max-height:340px;overflow-y:auto">
-        <table><thead><tr><th>Metric</th><th>Labels</th><th style="text-align:right">Value</th></tr></thead>
-        <tbody id="metrics-tbody"><tr><td colspan="3" class="loading"><span class="spinner"></span></td></tr></tbody></table>
-      </div>
-    </div>
-  </div>
-
-  <!-- Host metrics -->
-  <div class="box">
-    <div class="box-header">
-      <span class="box-title">Host Metrics</span>
-      <span class="muted" style="font-size:11px" id="hm-ts"></span>
-      <button class="btn btn-outline btn-sm" onclick="refreshHostMetrics()">↻</button>
-    </div>
-    <div class="box-pad">
-      <div style="font-size:11px;color:var(--c-muted);margin-bottom:8px">Click any card to view history.</div>
-      <div class="cards" id="hm-cards" style="margin-bottom:0;grid-template-columns:repeat(auto-fill,minmax(140px,1fr))">
-        <div class="card" style="cursor:pointer" title="Click for history" onclick="showMetricHistory('cpu_load1','CPU Load 1m','')">
-          <div class="card-label">CPU load 1m</div><div class="card-value" id="hm-load1">–</div>
-          <div class="card-sub" id="hm-load-sub">5m: – · 15m: –</div></div>
-        <div class="card" style="cursor:pointer" title="Click for history" onclick="showMetricHistory('mem_pct','Memory Used','%')">
-          <div class="card-label">Memory used</div><div class="card-value" id="hm-mem">–</div>
-          <div class="card-sub" id="hm-mem-sub">of – GB</div></div>
-        <div class="card" style="cursor:pointer" title="Click for history" onclick="showMetricHistory('disk_pct','Disk Used','%')">
-          <div class="card-label">Disk used</div><div class="card-value" id="hm-disk">–</div>
-          <div class="card-sub" id="hm-disk-sub">of – GB</div></div>
-        <div class="card" style="cursor:pointer" title="Click for history" onclick="showMetricHistory('cpu_temp','CPU Temp','°C')">
-          <div class="card-label">CPU temp</div><div class="card-value" id="hm-temp">–</div>
-          <div class="card-sub">°C</div></div>
-        <div class="card" style="cursor:pointer" title="Click for network I/O history" onclick="showMetricHistory('net_rx_kbs','Network RX','KB/s','net_tx_kbs','TX')">
-          <div class="card-label">Network I/O</div><div class="card-value blue" id="hm-net-rx">–</div>
-          <div class="card-sub" id="hm-net-sub">rx KB/s · tx –</div></div>
-        <div class="card" style="cursor:pointer" title="Click for disk I/O history" onclick="showMetricHistory('disk_read_kbs','Disk I/O Read','KB/s','disk_write_kbs','Write')">
-          <div class="card-label">Disk I/O</div><div class="card-value blue" id="hm-disk-rd">–</div>
-          <div class="card-sub" id="hm-diskio-sub">rd KB/s · wr –</div></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- History panel (slide-in overlay within monitoring tab) -->
-  <div id="hm-history-panel" style="display:none;background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--radius);box-shadow:var(--shadow);margin-bottom:20px">
-    <div class="box-header">
-      <span class="box-title" id="hm-history-title">Metric History</span>
-      <span class="muted" style="font-size:11px" id="hm-history-sub"></span>
-      <button class="btn btn-outline btn-sm" onclick="closeMetricHistory()">✕ Close</button>
-    </div>
-    <div class="box-pad"><div style="position:relative;height:220px"><canvas id="chart-hm-history"></canvas></div></div>
-  </div>
-
-  <!-- Run history -->
-  <div class="box">
-    <div class="box-header">
-      <span class="box-title">Run History</span>
-      <span class="muted" style="font-size:11px" id="run-count-label"></span>
-      <button class="btn btn-outline btn-sm" onclick="refreshRuns()">↻</button>
-      <button class="btn btn-outline btn-sm" onclick="clearRunComparison()" id="run-clear-cmp" style="display:none">✕ Clear compare</button>
-    </div>
-    <div class="box-pad" id="run-hint" style="color:var(--c-muted);font-size:12px;padding-bottom:8px">
-      Click any two rows to compare runs side by side.
-    </div>
-    <div id="runs-tbody-wrap" style="max-height:300px;overflow-y:auto">
-      <table>
-        <thead><tr>
-          <th></th><th>Run ID</th><th>Method</th><th>Type</th>
-          <th>Jobs (ok/req)</th><th>Avg</th><th>p50</th><th>p95</th>
-          <th>Throughput</th><th>Duration</th><th>Started</th>
-        </tr></thead>
-        <tbody id="runs-tbody"><tr><td colspan="11" class="loading"><span class="spinner"></span></td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Run comparison panel -->
-  <div class="box" id="box-run-cmp" style="display:none">
-    <div class="box-header"><span class="box-title">Run Comparison</span></div>
-    <div class="box-pad">
-      <div id="run-cmp-cards" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px"></div>
-      <div class="chart-wrap" style="height:240px"><canvas id="chart-run-cmp"></canvas></div>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════════════════ TOPOLOGY ════════════════════════════════ -->
-<div id="tab-topology" class="tab-content">
-  <div class="page-title">Topology</div>
-  <div class="page-sub" id="topology-sub">Testbed architecture. MQTT elements (greyed) are not configured — start with --mqtt to enable.</div>
   <div class="box" style="padding:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span class="box-title">Architecture</span>
+      <span class="page-sub" id="topology-sub" style="margin:0;font-size:11px">Testbed architecture. MQTT elements (greyed) are not configured — start with --mqtt to enable.</span>
+    </div>
     <svg viewBox="0 0 860 540" xmlns="http://www.w3.org/2000/svg"
          style="width:100%;max-width:900px;display:block;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12px">
       <rect width="860" height="540" fill="#f6f8fa" rx="8"/>
@@ -492,11 +157,216 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
       <text x="126" y="511" font-size="10" fill="#586069">publish flow</text>
     </svg>
   </div>
+
+  <div class="cards">
+    <div class="card"><div class="card-label">Services up</div><div class="card-value blue" id="c-svc">–</div></div>
+    <div class="card"><div class="card-label">Active jobs</div><div class="card-value orange" id="c-active">–</div></div>
+    <div class="card"><div class="card-label">Jobs today</div><div class="card-value blue" id="c-today">–</div></div>
+    <div class="card"><div class="card-label">Avg publish</div><div class="card-value green" id="c-avg-pub">–</div><div class="card-sub">seconds</div></div>
+    <div class="card"><div class="card-label">Last root hash</div><div class="card-value mono" id="c-hash" style="font-size:12px;word-break:break-all">–</div><div class="card-sub" id="c-hash-age"></div></div>
+    <div class="card"><div class="card-label">S1 peers</div><div class="card-value" id="c-s1">–</div></div>
+  </div>
+
+  <div class="box">
+    <div class="box-header"><span class="box-title">Services</span>
+      <button class="btn btn-outline btn-sm" onclick="refreshServices()">↻ Recheck</button>
+    </div>
+    <table><thead><tr><th>Service</th><th>Role</th><th>Proxy path</th><th>Status</th><th>ms</th><th></th></tr></thead>
+    <tbody id="svc-tbody"><tr><td colspan="6" class="loading"><span class="spinner"></span></td></tr></tbody></table>
+  </div>
+
 </div>
 
-<!-- ═══════════════════════════ COMMANDS ════════════════════════════════ -->
-<div id="tab-commands" class="tab-content">
-  <div class="page-title">Commands</div>
+<!-- ═══════════════════════════ MONITORING ══════════════════════════════ -->
+<div id="tab-monitoring" class="tab-content">
+  <div class="page-title">Monitoring</div>
+  <div class="page-sub" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px">
+    <span>Job timing statistics and Prometheus metrics.</span>
+    <span style="margin-left:4px;font-size:12px;color:var(--c-muted)">Method:</span>
+    <select id="mon-method-filter" style="font-size:12px;padding:3px 6px;border:1px solid var(--c-border);border-radius:var(--radius);background:var(--c-bg)" onchange="applyJobsFilter('mon-method-filter');buildMonitoringCharts()">
+      <option value="all">All</option>
+      <option value="bits">Bits (prepub)</option>
+      <option value="ingest">Ingest (native)</option>
+    </select>
+    <button class="btn btn-outline btn-sm" onclick="refreshMonitoring()">↻ Refresh</button>
+    <button class="btn btn-outline btn-sm" id="mon-range-btn" onclick="cycleRange()">Last 20 jobs</button>
+    <button class="btn btn-sm" style="background:#d73a49;color:#fff;border:none" onclick="resetMonStats()" title="Zero the baseline — only jobs submitted after this moment will appear in the charts and summary cards">⊘ Reset stats</button>
+    <span id="mon-since-label" style="font-size:11px;color:var(--c-muted);display:none"></span>
+  </div>
+
+  <!-- Timing cards -->
+  <div class="cards" id="mon-cards">
+    <div class="card"><div class="card-label">Avg publish time</div><div class="card-value green" id="m-avg">–</div><div class="card-sub">seconds (end-to-end)</div></div>
+    <div class="card"><div class="card-label">Median publish</div><div class="card-value blue" id="m-p50">–</div><div class="card-sub">seconds</div></div>
+    <div class="card"><div class="card-label">p95 publish</div><div class="card-value orange" id="m-p95">–</div><div class="card-sub">seconds</div></div>
+    <div class="card"><div class="card-label">Throughput</div><div class="card-value" id="m-tput">–</div><div class="card-sub">jobs / hour</div></div>
+    <div class="card"><div class="card-label">Success rate</div><div class="card-value green" id="m-rate">–</div><div class="card-sub">% published</div></div>
+    <div class="card"><div class="card-label">Total jobs</div><div class="card-value blue" id="m-total">–</div></div>
+  </div>
+
+  <!-- 2×2 chart grid -->
+  <div class="metrics-grid">
+    <!-- Row 1 col 1: Upload Volume -->
+    <div class="box">
+      <div class="box-header"><span class="box-title">Upload Volume — Cumulative per Run (MB)</span></div>
+      <div class="box-pad">
+        <div id="chart-volume-note" style="display:none;font-size:11px;color:var(--c-muted);margin-bottom:6px;padding:6px 8px;background:#f6f8fa;border-radius:4px;border-left:3px solid var(--c-warn)"></div>
+        <div class="chart-wrap"><canvas id="chart-volume"></canvas></div>
+      </div>
+    </div>
+    <!-- Row 1 col 2: Job State Distribution -->
+    <div class="box">
+      <div class="box-header"><span class="box-title">Job State Distribution</span></div>
+      <div class="box-pad"><div class="chart-wrap"><canvas id="chart-states"></canvas></div></div>
+    </div>
+  </div>
+
+  <!-- Stage timing (avg per phase, collapsible) -->
+  <div class="box" id="box-stages" style="display:none">
+    <div class="box-header" style="cursor:pointer" onclick="toggleCollapse('stages-body','stages-chevron')">
+      <span class="box-title">Time per Pipeline Stage (avg, seconds)</span>
+      <span id="stages-chevron" style="font-size:13px;color:var(--c-muted);transition:transform .2s">▼</span>
+    </div>
+    <div id="stages-body" class="box-pad">
+      <div style="font-size:11px;color:var(--c-muted);margin-bottom:10px;line-height:1.5">
+        Average wall time per phase for completed bits (prepub) jobs.
+        <b>Pipeline</b>: compress + dedup + CAS upload.
+        <b>Lease+Commit</b>: waiting for per-repo commit slot + gateway lease + catalog merge + commit.
+        <b>S1 Distribution</b>: async S1 pre-warming; ends when all endpoints confirm.
+        Hover bars for exact values.
+      </div>
+      <div class="chart-wrap"><canvas id="chart-stages"></canvas></div>
+    </div>
+  </div>
+
+  <!-- CAS Storage (moved from Status tab) -->
+  <div class="box" id="box-cas-stats">
+    <div class="box-header">
+      <span class="box-title">CAS Storage</span>
+      <span style="font-size:11px;color:var(--c-muted);margin-left:8px">Content-addressable object store on cvmfs-prepub</span>
+      <button class="btn btn-outline btn-sm" onclick="refreshCASStats()" style="margin-left:auto">↻</button>
+    </div>
+    <div class="box-pad">
+      <div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap">
+        <div class="card" style="min-width:130px;flex:1">
+          <div class="card-label">Total size</div>
+          <div class="card-value blue" id="cas-size-val">–</div>
+          <div class="card-sub" id="cas-size-sub">GB</div>
+        </div>
+        <div class="card" style="min-width:130px;flex:1">
+          <div class="card-label">Objects (files)</div>
+          <div class="card-value" id="cas-count-val">–</div>
+          <div class="card-sub" id="cas-count-sub"></div>
+        </div>
+        <div class="card" style="min-width:130px;flex:1">
+          <div class="card-label">Avg object size</div>
+          <div class="card-value" id="cas-avg-val">–</div>
+          <div class="card-sub">KB / object</div>
+        </div>
+      </div>
+      <div style="height:140px;position:relative">
+        <canvas id="cas-history-chart"></canvas>
+      </div>
+      <div id="cas-error" style="display:none;font-size:11px;color:var(--c-warn);margin-top:6px"></div>
+      <div id="cas-note" style="font-size:10px;color:var(--c-muted);margin-top:4px">Requires server mode · sampled every ~60 s · graph shows last hour from VictoriaMetrics</div>
+    </div>
+  </div>
+
+  <!-- Run history -->
+  <div class="box">
+    <div class="box-header">
+      <span class="box-title">Run History</span>
+      <span class="muted" style="font-size:11px" id="run-count-label"></span>
+      <button class="btn btn-outline btn-sm" onclick="refreshRuns()">↻</button>
+      <button class="btn btn-outline btn-sm" onclick="clearRunComparison()" id="run-clear-cmp" style="display:none">✕ Clear compare</button>
+    </div>
+    <div class="box-pad" id="run-hint" style="color:var(--c-muted);font-size:12px;padding-bottom:8px">
+      Click any two rows to compare runs side by side.
+    </div>
+    <div id="runs-tbody-wrap" style="max-height:300px;overflow-y:auto">
+      <table>
+        <thead><tr>
+          <th></th><th>Run ID</th><th>Method</th><th>Type</th>
+          <th>Jobs (ok/req)</th><th>Avg</th><th>p50</th><th>p95</th>
+          <th>Throughput</th><th>Duration</th><th>Started</th>
+        </tr></thead>
+        <tbody id="runs-tbody"><tr><td colspan="11" class="loading"><span class="spinner"></span></td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Run comparison panel -->
+  <div class="box" id="box-run-cmp" style="display:none">
+    <div class="box-header"><span class="box-title">Run Comparison</span></div>
+    <div class="box-pad">
+      <div id="run-cmp-cards" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px"></div>
+      <div class="chart-wrap" style="height:240px"><canvas id="chart-run-cmp"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Host metrics -->
+  <div class="box">
+    <div class="box-header">
+      <span class="box-title">Host Metrics</span>
+      <span class="muted" style="font-size:11px" id="hm-ts"></span>
+      <button class="btn btn-outline btn-sm" onclick="refreshHostMetrics()">↻</button>
+    </div>
+    <div class="box-pad">
+      <div style="font-size:11px;color:var(--c-muted);margin-bottom:8px">Click any card to view history.</div>
+      <div class="cards" id="hm-cards" style="margin-bottom:0;grid-template-columns:repeat(auto-fill,minmax(140px,1fr))">
+        <div class="card" style="cursor:pointer" title="Click for history" onclick="showMetricHistory('cpu_load1','CPU Load 1m','')">
+          <div class="card-label">CPU load 1m</div><div class="card-value" id="hm-load1">–</div>
+          <div class="card-sub" id="hm-load-sub">5m: – · 15m: –</div></div>
+        <div class="card" style="cursor:pointer" title="Click for history" onclick="showMetricHistory('mem_pct','Memory Used','%')">
+          <div class="card-label">Memory used</div><div class="card-value" id="hm-mem">–</div>
+          <div class="card-sub" id="hm-mem-sub">of – GB</div></div>
+        <div class="card" style="cursor:pointer" title="Click for history" onclick="showMetricHistory('disk_pct','Disk Used','%')">
+          <div class="card-label">Disk used</div><div class="card-value" id="hm-disk">–</div>
+          <div class="card-sub" id="hm-disk-sub">of – GB</div></div>
+        <div class="card" style="cursor:pointer" title="Click for history" onclick="showMetricHistory('cpu_temp','CPU Temp','°C')">
+          <div class="card-label">CPU temp</div><div class="card-value" id="hm-temp">–</div>
+          <div class="card-sub">°C</div></div>
+        <div class="card" style="cursor:pointer" title="Click for network I/O history" onclick="showMetricHistory('net_rx_kbs','Network RX','KB/s','net_tx_kbs','TX')">
+          <div class="card-label">Network I/O</div><div class="card-value blue" id="hm-net-rx">–</div>
+          <div class="card-sub" id="hm-net-sub">rx KB/s · tx –</div></div>
+        <div class="card" style="cursor:pointer" title="Click for disk I/O history" onclick="showMetricHistory('disk_read_kbs','Disk I/O Read','KB/s','disk_write_kbs','Write')">
+          <div class="card-label">Disk I/O</div><div class="card-value blue" id="hm-disk-rd">–</div>
+          <div class="card-sub" id="hm-diskio-sub">rd KB/s · wr –</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- History panel (slide-in overlay within monitoring tab) -->
+  <div id="hm-history-panel" style="display:none;background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--radius);box-shadow:var(--shadow);margin-bottom:20px">
+    <div class="box-header">
+      <span class="box-title" id="hm-history-title">Metric History</span>
+      <span class="muted" style="font-size:11px" id="hm-history-sub"></span>
+      <button class="btn btn-outline btn-sm" onclick="closeMetricHistory()">✕ Close</button>
+    </div>
+    <div class="box-pad"><div style="position:relative;height:220px"><canvas id="chart-hm-history"></canvas></div></div>
+  </div>
+
+  <!-- Prometheus metrics -->
+  <div class="box">
+    <div class="box-header" style="cursor:pointer" onclick="toggleCollapse('metrics-body','metrics-chevron')">
+      <span class="box-title">Prometheus Metrics <span class="muted" style="font-size:11px">(prepub /api/v1/metrics)</span></span>
+      <button class="btn btn-outline btn-sm" onclick="event.stopPropagation();refreshMetrics()">↻</button>
+      <span id="metrics-chevron" style="margin-left:8px;font-size:13px;color:var(--c-muted);transition:transform .2s">▼</span>
+    </div>
+    <div id="metrics-body" class="box-pad" style="display:none">
+      <input id="metrics-filter" placeholder="Filter metric names…" style="width:100%;padding:6px 10px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px;margin-bottom:12px;font-family:var(--mono)" oninput="renderMetricsTable()">
+      <div id="metrics-tbody-wrap" style="max-height:340px;overflow-y:auto">
+        <table><thead><tr><th>Metric</th><th>Labels</th><th style="text-align:right">Value</th></tr></thead>
+        <tbody id="metrics-tbody"><tr><td colspan="3" class="loading"><span class="spinner"></span></td></tr></tbody></table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════════ TESTBED ════════════════════════════════ -->
+<div id="tab-testbed" class="tab-content">
+  <div class="page-title">Testbed</div>
   <div class="page-sub">Run <code>./testbed.sh</code> commands from the browser. Output streams live via SSE. <span id="cmd-server-warn" class="muted" style="display:none">⚠️ Server mode required — start <code>./testbed.sh server</code> on the testbed host.</span></div>
 
   <!-- Global flags -->
@@ -585,13 +455,52 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
         <button class="btn btn-outline btn-sm" onclick="copyTerm()">📋 Copy</button>
       </div>
     </div>
-    <div class="term" id="terminal" style="height:420px">
+    <div class="term" id="terminal" style="height:520px;resize:vertical;overflow:auto">
       <span class="muted">Select a command above to run it.</span>
     </div>
     <div style="padding:8px 16px;background:#f6f8fa;border-top:1px solid var(--c-border);border-radius:0 0 var(--radius) var(--radius);display:flex;gap:8px;align-items:center">
       <span style="font-size:11px;color:var(--c-muted)">$</span>
       <span id="term-cmdline" style="font-family:var(--mono);font-size:12px;color:var(--c-muted)">—</span>
       <span style="margin-left:auto;font-size:11px" id="term-exit"></span>
+    </div>
+  </div>
+
+  <!-- ── Container Console ─────────────────────────────────────────────── -->
+  <div class="box" id="box-container-console">
+    <div class="box-header" style="cursor:pointer" onclick="toggleCollapse('container-console-body','container-console-chevron')">
+      <span class="box-title">Container Console</span>
+      <span style="font-size:11px;color:var(--c-muted);margin-left:8px">Run commands inside testbed containers</span>
+      <span id="container-console-chevron" style="font-size:13px;color:var(--c-muted);transition:transform .2s">▼</span>
+    </div>
+    <div id="container-console-body" class="box-pad">
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+        <div>
+          <label style="font-size:11px;color:var(--c-muted);display:block;margin-bottom:3px">Container</label>
+          <select id="cc-container" style="padding:5px 8px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px;font-family:var(--mono)">
+            <!-- Populated dynamically from CONTAINER_DEF at boot -->
+          </select>
+        </div>
+        <div style="flex:1;min-width:200px">
+          <label style="font-size:11px;color:var(--c-muted);display:block;margin-bottom:3px">Command</label>
+          <input id="cc-cmd" type="text" placeholder="ls /cvmfs/test.cvmfs.io" autocomplete="off" spellcheck="false"
+                 style="width:100%;padding:5px 8px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px;font-family:var(--mono)"
+                 onkeydown="if(event.key==='Enter')execContainerCmd()">
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="execContainerCmd()" style="white-space:nowrap">▶ Run</button>
+        <button class="btn btn-outline btn-sm" onclick="clearContainerOutput()" title="Clear output">✕ Clear</button>
+      </div>
+      <!-- Quick-access buttons -->
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+        <span style="font-size:11px;color:var(--c-muted);align-self:center">Quick:</span>
+        <button class="btn btn-sm" style="font-size:11px" onclick="ccQuick('ls /cvmfs/test.cvmfs.io')">ls /cvmfs/…</button>
+        <button class="btn btn-sm" style="font-size:11px" onclick="ccQuick('ls /cvmfs/test.cvmfs.io/upload 2>/dev/null || ls /cvmfs/test.cvmfs.io/')">ls upload/</button>
+        <button class="btn btn-sm" style="font-size:11px" onclick="ccQuick('cat /cvmfs/test.cvmfs.io/.cvmfspublished 2>/dev/null || echo not mounted')">manifest</button>
+        <button class="btn btn-sm" style="font-size:11px" onclick="ccQuick('df -h /cvmfs/test.cvmfs.io 2>/dev/null; cvmfs_config stat test.cvmfs.io 2>/dev/null || echo no cvmfs_config')">stat</button>
+        <button class="btn btn-sm" style="font-size:11px" onclick="ccQuick('cvmfs_config reload test.cvmfs.io 2>&1 || echo reload failed')">reload</button>
+        <button class="btn btn-sm" style="font-size:11px" onclick="ccQuick('env | grep -i cvmfs || echo no cvmfs vars')">env</button>
+      </div>
+      <div id="cc-output" style="background:#0d1117;color:#c9d1d9;border-radius:var(--radius);padding:12px;font-family:var(--mono);font-size:12px;min-height:120px;max-height:420px;overflow-y:auto;white-space:pre-wrap;display:none"></div>
+      <div id="cc-placeholder" style="color:var(--c-muted);font-size:12px;padding:8px 0">Run a command to see output here. Requires server mode and Docker access.</div>
     </div>
   </div>
 </div>
@@ -625,8 +534,8 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
     <div class="box-header"><span class="box-title">All Jobs</span>
       <button class="btn btn-outline btn-sm" onclick="refreshJobs()">↻</button>
     </div>
-    <table><thead><tr><th>ID</th><th>Repo</th><th>State</th><th>Pipeline</th><th>Publish time</th><th>Hash</th><th>Age</th></tr></thead>
-    <tbody id="jobs-tbody"><tr><td colspan="7" class="loading"><span class="spinner"></span></td></tr></tbody></table>
+    <table><thead><tr><th>ID</th><th>Repo</th><th>State</th><th>Pipeline</th><th>Publish time</th><th>Hash</th><th>Age</th><th>Log</th></tr></thead>
+    <tbody id="jobs-tbody"><tr><td colspan="8" class="loading"><span class="spinner"></span></td></tr></tbody></table>
   </div>
 </div>
 
@@ -675,10 +584,10 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
     <div class="box-pad">
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
         <input id="ul-dir-input" type="text"
-               value="/home/pbuncic/Software/Bits/sw-lhcb/TARS"
                style="flex:1;padding:6px 10px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:13px;font-family:var(--mono)"
                placeholder="/path/to/directory"
                onkeydown="if(event.key==='Enter') scanUploadDir()">
+        <button class="btn btn-outline" onclick="openDirPicker(document.getElementById('ul-dir-input')?.value?.trim()||'/')" title="Browse server filesystem">📁 Browse</button>
         <label style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">
           <input id="ul-recursive" type="checkbox" checked> recursive
         </label>
@@ -704,7 +613,7 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
         <label>Concurrency</label>
         <div style="display:flex;align-items:center;gap:8px">
           <input id="ul-concurrency" type="range" min="1" max="16" value="4"
-                 style="flex:1" oninput="$('ul-conc-val').textContent=this.value">
+                 style="flex:1" oninput="document.getElementById('ul-conc-val').textContent=this.value">
           <span id="ul-conc-val" style="min-width:18px;font-weight:600">4</span>
         </div>
         <div style="font-size:11px;color:var(--c-muted);margin-top:4px">max parallel uploads in flight (1–16; ingest forced to 1)</div>
@@ -841,12 +750,12 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
         <text id="sd-m-net"  x="425" y="234" font-size="10" fill="#24292e">Net: –</text>
 
         <!-- ── arrow: stratum0 → s1a ────────────────────────── -->
-        <line x1="568" y1="100" x2="628" y2="68" stroke="#586069" stroke-width="1.5" marker-end="url(#sd-ar)"/>
+        <line id="sd-arrow-s1a" x1="568" y1="100" x2="628" y2="68" stroke="#586069" stroke-width="1.5" marker-end="url(#sd-ar)"/>
         <!-- net I/O label on replication link s1a -->
         <text id="sd-net-link-label" x="596" y="74" text-anchor="middle" font-size="9" fill="#586069"></text>
 
         <!-- ── arrow: stratum0 → s1b ────────────────────────── -->
-        <line x1="568" y1="200" x2="628" y2="210" stroke="#586069" stroke-width="1.5" marker-end="url(#sd-ar)"/>
+        <line id="sd-arrow-s1b" x1="568" y1="200" x2="628" y2="210" stroke="#586069" stroke-width="1.5" marker-end="url(#sd-ar)"/>
         <!-- net I/O label on replication link s1b -->
         <text id="sd-net-link-s1b-label" x="596" y="198" text-anchor="middle" font-size="9" fill="#586069"></text>
 
@@ -893,90 +802,7 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
     </div>
   </div>
 
-  <!-- ── CAS Storage ──────────────────────────────────────────────────── -->
-  <div class="box" id="box-cas-stats">
-    <div class="box-header">
-      <span class="box-title">CAS Storage</span>
-      <span style="font-size:11px;color:var(--c-muted);margin-left:8px">Content-addressable object store on cvmfs-prepub</span>
-      <button class="btn btn-outline btn-sm" onclick="refreshCASStats()" style="margin-left:auto">↻</button>
-    </div>
-    <div class="box-pad">
-      <div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap">
-        <div class="card" style="min-width:130px;flex:1">
-          <div class="card-label">Total size</div>
-          <div class="card-value blue" id="cas-size-val">–</div>
-          <div class="card-sub" id="cas-size-sub">GB</div>
-        </div>
-        <div class="card" style="min-width:130px;flex:1">
-          <div class="card-label">Objects (files)</div>
-          <div class="card-value" id="cas-count-val">–</div>
-          <div class="card-sub" id="cas-count-sub"></div>
-        </div>
-        <div class="card" style="min-width:130px;flex:1">
-          <div class="card-label">Avg object size</div>
-          <div class="card-value" id="cas-avg-val">–</div>
-          <div class="card-sub">KB / object</div>
-        </div>
-      </div>
-      <!-- File-count history chart -->
-      <div style="height:140px;position:relative">
-        <canvas id="cas-history-chart"></canvas>
-      </div>
-      <div id="cas-error" style="display:none;font-size:11px;color:var(--c-warn);margin-top:6px"></div>
-      <div id="cas-note" style="font-size:10px;color:var(--c-muted);margin-top:4px">Requires server mode · sampled every ~20 s · graph shows last ~67 min</div>
-    </div>
-  </div>
 
-</div>
-
-<!-- ═══════════════════════════ ADMIN ════════════════════════════════════ -->
-<div id="tab-admin" class="tab-content">
-  <div class="page-title">Admin</div>
-  <div class="page-sub">Container console and advanced testbed operations. Requires server mode.</div>
-
-  <!-- ── Container Console ─────────────────────────────────────────────── -->
-  <div class="box" id="box-container-console">
-    <div class="box-header" style="cursor:pointer" onclick="toggleCollapse('container-console-body','container-console-chevron')">
-      <span class="box-title">Container Console</span>
-      <span style="font-size:11px;color:var(--c-muted);margin-left:8px">Run commands inside testbed containers</span>
-      <span id="container-console-chevron" style="font-size:13px;color:var(--c-muted);transition:transform .2s">▼</span>
-    </div>
-    <div id="container-console-body" class="box-pad">
-      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
-        <div>
-          <label style="font-size:11px;color:var(--c-muted);display:block;margin-bottom:3px">Container</label>
-          <select id="cc-container" style="padding:5px 8px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px;font-family:var(--mono)">
-            <option value="cvmfs-client">cvmfs-client</option>
-            <option value="cvmfs-native-publisher">cvmfs-native-publisher</option>
-            <option value="stratum0">stratum0</option>
-            <option value="cvmfs-gateway">cvmfs-gateway</option>
-            <option value="stratum1-a">stratum1-a</option>
-            <option value="stratum1-b">stratum1-b</option>
-          </select>
-        </div>
-        <div style="flex:1;min-width:200px">
-          <label style="font-size:11px;color:var(--c-muted);display:block;margin-bottom:3px">Command</label>
-          <input id="cc-cmd" type="text" placeholder="ls /cvmfs/test.cvmfs.io" autocomplete="off" spellcheck="false"
-                 style="width:100%;padding:5px 8px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px;font-family:var(--mono)"
-                 onkeydown="if(event.key==='Enter')execContainerCmd()">
-        </div>
-        <button class="btn btn-outline btn-sm" onclick="execContainerCmd()" style="white-space:nowrap">▶ Run</button>
-        <button class="btn btn-outline btn-sm" onclick="clearContainerOutput()" title="Clear output">✕ Clear</button>
-      </div>
-      <!-- Quick-access buttons -->
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
-        <span style="font-size:11px;color:var(--c-muted);align-self:center">Quick:</span>
-        <button class="btn btn-sm" style="font-size:11px" onclick="ccQuick('ls /cvmfs/test.cvmfs.io')">ls /cvmfs/…</button>
-        <button class="btn btn-sm" style="font-size:11px" onclick="ccQuick('ls /cvmfs/test.cvmfs.io/upload 2>/dev/null || ls /cvmfs/test.cvmfs.io/')">ls upload/</button>
-        <button class="btn btn-sm" style="font-size:11px" onclick="ccQuick('cat /cvmfs/test.cvmfs.io/.cvmfspublished 2>/dev/null || echo not mounted')">manifest</button>
-        <button class="btn btn-sm" style="font-size:11px" onclick="ccQuick('df -h /cvmfs/test.cvmfs.io 2>/dev/null; cvmfs_config stat test.cvmfs.io 2>/dev/null || echo no cvmfs_config')">stat</button>
-        <button class="btn btn-sm" style="font-size:11px" onclick="ccQuick('cvmfs_config reload test.cvmfs.io 2>&1 || echo reload failed')">reload</button>
-        <button class="btn btn-sm" style="font-size:11px" onclick="ccQuick('env | grep -i cvmfs || echo no cvmfs vars')">env</button>
-      </div>
-      <div id="cc-output" style="background:#0d1117;color:#c9d1d9;border-radius:var(--radius);padding:12px;font-family:var(--mono);font-size:12px;min-height:120px;max-height:420px;overflow-y:auto;white-space:pre-wrap;display:none"></div>
-      <div id="cc-placeholder" style="color:var(--c-muted);font-size:12px;padding:8px 0">Run a command to see output here. Requires server mode and Docker access.</div>
-    </div>
-  </div>
 </div>
 
 <!-- ═══════════════════════════ SETTINGS ════════════════════════════════ -->
@@ -1003,6 +829,7 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
       <div class="form-row"><label>Stratum 1-B control</label><input id="cfg-s1b" placeholder="http://localhost:9102"></div>
     </div>
     <div class="form-row"><label>Bearer token (prepub API)</label><input id="cfg-token" type="password" placeholder="PREPUB_API_TOKEN from .env"></div>
+    <div class="form-row"><label>Console name / environment label</label><input id="cfg-consoleName" placeholder="e.g. Production · LHCb · Testbed (shown in header)"><div class="form-hint">Leave empty to hide the label. Names containing "prod" show red; "test" green; "dev" orange; others purple.</div></div>
     <div style="display:flex;gap:8px;margin-top:4px">
       <button class="btn btn-primary" onclick="saveSettings()">💾 Save</button>
       <button class="btn btn-outline" onclick="resetSettings()">Reset to defaults</button>
@@ -1010,25 +837,27 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
     <div id="cfg-saved" style="color:var(--c-accent);font-size:12px;margin-top:8px;display:none">✓ Saved.</div>
   </div>
 
-  <div class="box box-pad">
-    <div class="box-title" style="margin-bottom:12px">Quick start</div>
-    <div class="term" style="height:auto;max-height:200px;font-size:12px">
-<span class="info"># Start the console server (enables remote access + command runner):</span>
-<span>./testbed.sh server          # port 8888</span>
-<span>./testbed.sh server --mqtt   # with MQTT overlay flags</span>
-<span>./testbed.sh server --bits --mqtt 9090</span>
-<span></span>
-<span class="info"># Or manually:</span>
-<span>python3 testbed-server.py --port 8888 --bind 0.0.0.0</span>
-<span></span>
-<span class="info"># Then open from any host:</span>
-<span>http://&lt;testbed-host&gt;:8888/</span>
-    </div>
-  </div>
 </div>
 
 </div><!-- #main -->
 </div><!-- #layout -->
+
+<!-- ═══════════════════ Directory picker modal ═══════════════ -->
+<div id="dir-picker-modal">
+  <div id="dir-picker-box">
+    <div id="dir-picker-header">
+      <button class="btn btn-outline btn-sm" onclick="dpNavUp()" id="dp-up-btn" title="Go up">↑ Up</button>
+      <span id="dir-picker-path" class="mono">/</span>
+      <button class="btn btn-outline btn-sm" onclick="closeDirPicker()">✕</button>
+    </div>
+    <div id="dir-picker-list"><div class="loading"><span class="spinner"></span></div></div>
+    <div id="dir-picker-footer">
+      <span id="dir-picker-current" class="mono">—</span>
+      <button class="btn btn-primary btn-sm" onclick="dpSelectCurrent()">Select</button>
+      <button class="btn btn-outline btn-sm" onclick="closeDirPicker()">Cancel</button>
+    </div>
+  </div>
+</div>
 
 <!-- ═══════════════════ Token auth dialog ═══════════════════ -->
 <div id="token-dialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center">
@@ -1048,8 +877,28 @@ code{font-family:var(--mono);font-size:12px;background:#f6f8fa;padding:1px 5px;b
   </div>
 </div>
 
-<script>
+<script type="module">
 'use strict';
+// ── cvmfs-elements imports ────────────────────────────────────────────────────
+import { $, esc, relTime, shortHash, fmtSec, percentile }
+  from './cvmfs-elements/js/utils.js';
+import { toggleCollapse, restoreCollapseStates }
+  from './cvmfs-elements/js/ui/collapse.js';
+import { startRefreshCountdown, clearRefreshCountdown }
+  from './cvmfs-elements/js/ui/refresh.js';
+import { applyEnvBadge }
+  from './cvmfs-elements/js/ui/env-badge.js';
+import { initDirPicker, openDirPicker, _dpNav, dpNavUp, dpSelectCurrent, closeDirPicker }
+  from './cvmfs-elements/js/ui/dir-picker.js';
+import { SERVICE_TYPES }
+  from './cvmfs-elements/js/services/definitions.js';
+import { CONTAINER_TYPES, populateContainerSelect }
+  from './cvmfs-elements/js/services/containers.js';
+import { renderJobsTable, stateBadge, miniPipeline, STAGES }
+  from './cvmfs-elements/js/widgets/jobs.js';
+import { renderServiceRows }
+  from './cvmfs-elements/js/widgets/service-health.js';
+
 // ═══════════════════════════ Configuration ═══════════════════════════════════
 const DEFAULTS = {
   prepub: 'http://localhost:8080',
@@ -1059,6 +908,7 @@ const DEFAULTS = {
   s1a:'http://localhost:9101',
   s1b:'http://localhost:9102',
   token:'',
+  consoleName:'',
 };
 let cfg = {...DEFAULTS};
 let SERVER_MODE = false;  // true when testbed-server.py is reachable
@@ -1066,30 +916,12 @@ let SERVER_TOKEN = '';    // secret token for X-Testbed-Token header
 let USE_MQTT    = false;  // set from /api/health flags.mqtt
 let USE_BITS    = false;  // set from /api/health flags.bits
 
-// ═══════════════════════════ Utilities ═══════════════════════════════════════
-const $  = id => document.getElementById(id);
-const esc= s  => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
-function relTime(ts){
-  if(!ts) return '–';
-  const d=typeof ts==='string'?new Date(ts):ts;
-  if(isNaN(d)) return String(ts);
-  const s=(Date.now()-d)/1000;
-  if(s<60)   return `${~~s}s ago`;
-  if(s<3600) return `${~~(s/60)}m ago`;
-  if(s<86400)return `${~~(s/3600)}h ago`;
-  return d.toLocaleDateString();
-}
-function shortHash(h){ return h?(h.length>16?h.slice(0,16)+'…':h):'–'; }
-function fmtSec(v){ if(!v&&v!==0) return '–'; if(v<1) return `${(v*1000).toFixed(0)}ms`; return `${v.toFixed(1)}s`; }
-function percentile(arr,p){ if(!arr.length) return 0; const s=[...arr].sort((a,b)=>a-b); const i=Math.ceil(p/100*s.length)-1; return s[Math.max(0,i)]; }
-function toggleCollapse(bodyId, chevronId){
-  const body=$(bodyId), chev=$(chevronId);
-  if(!body) return;
-  const collapsed = body.style.display==='none';
-  body.style.display = collapsed ? '' : 'none';
-  if(chev) chev.style.transform = collapsed ? '' : 'rotate(-90deg)';
-}
+// ── Collapse map — sections that persist open/closed state ───────────────────
+const COLLAPSE_MAP = {
+  'metrics-body':          'metrics-chevron',
+  'stages-body':           'stages-chevron',
+  'container-console-body':'container-console-chevron',
+};
 
 // ═══════════════════════════ URL routing ═════════════════════════════════════
 // In server mode all calls go through the proxy; in direct mode to localhost.
@@ -1187,8 +1019,15 @@ async function ping(service, path){
 // ═══════════════════════════ Server-mode detection ════════════════════════════
 async function detectMode(){
   try{
+    // Primary: send the token as a custom header.
+    // The server also accepts it as a ?token= query param and as a session cookie
+    // (cookie is set automatically when the page is first loaded with ?token=).
     const hdrs = SERVER_TOKEN ? {'X-Testbed-Token': SERVER_TOKEN} : {};
-    const r = await fetch('/api/health', {headers: hdrs, signal:AbortSignal.timeout(3000)});
+    let url = '/api/health';
+    // Include the token in the URL as well — this activates the server's ?token=
+    // query-param check and is a fallback if a proxy strips custom headers.
+    if(SERVER_TOKEN) url += `?token=${encodeURIComponent(SERVER_TOKEN)}`;
+    const r = await fetch(url, {headers: hdrs, signal:AbortSignal.timeout(3000)});
     if(r.status === 401){
       // Server is reachable but token is wrong/missing
       SERVER_MODE = true;
@@ -1298,6 +1137,7 @@ function applyOverlayState(){
 }
 
 // ═══════════════════════════ Tab navigation ═══════════════════════════════════
+
 function showTab(name){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -1307,21 +1147,41 @@ function showTab(name){
   if(name==='services')   refreshServices();
   if(name==='jobs')       refreshJobs();
   if(name==='stratum0')   refreshStatusDiagram();
-  if(name==='monitoring') refreshMonitoring();
+  if(name==='monitoring'){ refreshMonitoring(); }
   if(name==='upload')     refreshUploadFilelist();
 }
 
 // ═══════════════════════════ Services health ═════════════════════════════════
+// Per-deployment instances — spread from SERVICE_TYPES and add testbed-specific ids.
 const SVC_DEF = [
-  {id:'prepub',    role:'Orchestrator/API',     path:'/api/v1/health'},
-  {id:'gateway',   role:'Lease manager',        path:'/api/v1/repos'},
-  {id:'stratum0',  role:'Content server',       path:'/'},
-  {id:'s1a',       role:'Stratum 1-A receiver', path:'/metrics'},
-  {id:'s1b',       role:'Stratum 1-B receiver', path:'/metrics'},
-  // mqttOnly=true: no HTTP endpoint — status derived from USE_MQTT flag
-  {id:'mosquitto', role:'MQTT broker',          path:'/', mqttOnly:true},
+  {id:'prepub',    ...SERVICE_TYPES.prepub},
+  {id:'gateway',   ...SERVICE_TYPES.gateway},
+  {id:'stratum0',  ...SERVICE_TYPES.stratum0},
+  {id:'s1a',       ...SERVICE_TYPES.stratum1, role:'Stratum 1-A receiver'},
+  {id:'s1b',       ...SERVICE_TYPES.stratum1, role:'Stratum 1-B receiver'},
+  {id:'mosquitto', ...SERVICE_TYPES.mosquitto},
 ];
 let _svcOk=0, _svcTotal=SVC_DEF.length;
+
+// ── Container definitions ─────────────────────────────────────────────────────
+// Per-deployment instances — spread from CONTAINER_TYPES, add Docker container_name.
+// containerName must match container_name in docker-compose.yml (used by docker exec).
+const CONTAINER_DEF = [
+  {id:'prepub',          containerName:'cvmfs-prepub',          ...CONTAINER_TYPES.prepub},
+  {id:'gateway',         containerName:'cvmfs-gateway',         ...CONTAINER_TYPES.gateway},
+  {id:'stratum0',        containerName:'cvmfs-stratum0',        ...CONTAINER_TYPES.stratum0},
+  {id:'s1a',             containerName:'cvmfs-stratum1-a',      ...CONTAINER_TYPES.stratum1, label:'stratum1-a', role:'Stratum 1-A receiver'},
+  {id:'s1b',             containerName:'cvmfs-stratum1-b',      ...CONTAINER_TYPES.stratum1, label:'stratum1-b', role:'Stratum 1-B receiver'},
+  {id:'publisher',       containerName:'cvmfs-publisher',       ...CONTAINER_TYPES.publisher},
+  {id:'nativePublisher', containerName:'cvmfs-native-publisher',...CONTAINER_TYPES.nativePublisher},
+  {id:'client',          containerName:'cvmfs-client',          ...CONTAINER_TYPES.client},
+  {id:'mosquitto',       containerName:'cvmfs-mosquitto',       ...CONTAINER_TYPES.mosquitto},
+  {id:'bootstrap',       containerName:'cvmfs-bootstrap',       ...CONTAINER_TYPES.bootstrap},
+  {id:'victoriametrics', containerName:'cvmfs-victoriametrics', ...CONTAINER_TYPES.victoriametrics},
+  {id:'vmagent',         containerName:'cvmfs-vmagent',         ...CONTAINER_TYPES.vmagent},
+  {id:'cadvisor',        containerName:'cvmfs-cadvisor',        ...CONTAINER_TYPES.cadvisor},
+  {id:'nodeExporter',    containerName:'cvmfs-node-exporter',   ...CONTAINER_TYPES.nodeExporter},
+];
 
 async function refreshServices(){
   const results = await Promise.all(SVC_DEF.map(async s=>{
@@ -1329,7 +1189,7 @@ async function refreshServices(){
     if(s.mqttOnly){
       return {...s, ok:USE_MQTT, status:USE_MQTT?200:0, ms:0, err:'', mqttOnly:true, inactive:!USE_MQTT};
     }
-    const r = SERVER_MODE ? await apiFetch(s.id,s.path) : await ping(s.id,s.path);
+    const r = SERVER_MODE ? await apiFetch(s.id,s.healthPath) : await ping(s.id,s.healthPath);
     return {...s, ok:r.ok, status:r.status, ms:r.ms, err:r.err||''};
   }));
   // mqttOnly entries don't count toward the normal up/total tally
@@ -1338,9 +1198,18 @@ async function refreshServices(){
   _svcTotal = httpResults.length;
   const errCnt = _svcTotal - _svcOk;
 
-  // Dashboard
+  // Dashboard — services card
   const cSvc=$('c-svc');
   if(cSvc){ cSvc.textContent=`${_svcOk}/${_svcTotal}`; cSvc.className='card-value '+(errCnt===0?'green':errCnt<=2?'orange':'red'); }
+
+  // Dashboard — S1 peers card (dynamic: count s1* services that responded OK)
+  const s1Results = results.filter(r=>!r.mqttOnly && /^s1[a-z]/.test(r.id));
+  const s1Up = s1Results.filter(r=>r.ok).length;
+  const cS1 = $('c-s1');
+  if(cS1){
+    cS1.textContent = s1Results.length ? `${s1Up}/${s1Results.length}` : '–';
+    cS1.className = 'card-value ' + (s1Up===s1Results.length && s1Results.length ? 'green' : s1Up ? 'orange' : 'red');
+  }
 
   // Header dot
   const dot=$('dot-main');
@@ -1354,43 +1223,15 @@ async function refreshServices(){
   $('hdr-ts').textContent=now;
   if($('dash-sub')) $('dash-sub').textContent=`Last checked at ${now}`;
 
-  const rowHtml = results.map(r=>{
-    if(r.mqttOnly){
-      // Mosquitto: no HTTP check — show active/inactive based on MQTT flag
-      const badge = USE_MQTT
-        ? `<span class="badge ok">✓ active</span>`
-        : `<span class="badge badge-unknown" style="background:#f0f0f0;color:#888">○ inactive</span>`;
-      const note = USE_MQTT ? '' : `<span class="muted" style="font-size:11px;margin-left:6px">not configured</span>`;
-      return `<tr style="${USE_MQTT?'':'opacity:.55'}">
-        <td><strong>${esc(r.id)}</strong></td>
-        <td>${esc(r.role)}</td>
-        <td class="mono" style="font-size:11px">${USE_MQTT?'/api/proxy/mosquitto/':'–'}</td>
-        <td>${badge}${note}</td>
-        <td class="muted">–</td>
-        <td></td>
-      </tr>`;
-    }
-    const statusTxt = r.status ? `HTTP ${r.status}` : (r.err ? 'conn error' : '–');
-    const detailTxt = !r.ok ? (r.err||statusTxt) : '';
-    const probeBtn  = SERVER_MODE&&!r.ok
-      ? `<button class="btn btn-outline btn-sm" onclick="probeService('${r.id}','${r.path}')">diagnose</button>`
-      : `<a href="${esc(svcUrl(r.id,'/'))}${''}" target="_blank">↗</a>`;
-    return `<tr>
-      <td><strong>${esc(r.id)}</strong></td>
-      <td>${esc(r.role)}</td>
-      <td class="mono" style="font-size:11px">/api/proxy/${r.id}/</td>
-      <td>
-        <span class="badge ${r.ok?'ok':'err'}">${r.ok?'✓ up':'✗ down'}</span>
-        ${!r.ok&&statusTxt?`<span class="muted" style="font-size:11px;margin-left:4px">${esc(statusTxt)}</span>`:''}
-      </td>
-      <td>${r.ms}ms</td>
-      <td>${probeBtn}</td>
-    </tr>`;
-  }).join('');
-
-  [$('dash-health-tbody'), $('svc-tbody')].forEach(tb=>{
-    if(tb) tb.innerHTML=rowHtml;
+  const rowHtml = renderServiceRows(results, {
+    useMqtt:    USE_MQTT,
+    serverMode: SERVER_MODE,
+    svcUrl:     (id, path) => svcUrl(id, path),
+    proxyPath:  id => `/api/proxy/${id}/`,
   });
+
+  const svcTb = $('svc-tbody');
+  if(svcTb) svcTb.innerHTML = rowHtml;
 }
 
 // ── Probe diagnostic ──────────────────────────────────────────────────────────
@@ -1422,7 +1263,7 @@ async function probeService(svcId, path){
 // ═══════════════════════════ Jobs ════════════════════════════════════════════
 let _jobs=[];        // merged, method-tagged, newest-first
 let _allJobs=[];     // unfiltered merged list
-const STAGES=['incoming','staging','uploading','distributing','leased','committing','published'];
+// STAGES imported from cvmfs-elements/js/widgets/jobs.js
 
 // Fetch bits and ingest jobs in parallel, merge newest-first, tag each with method.
 async function refreshJobs(){
@@ -1494,88 +1335,14 @@ function applyJobsFilter(fromId){
   if($('jobs-url-label')) $('jobs-url-label').textContent=svcUrl('prepub','/api/v1/jobs');
   if($('job-repo')&&!$('job-repo').value) $('job-repo').value=cfg.repo;
 
-  renderJobsTable('dash-jobs-tbody', _jobs.slice(0,8), false);
-  renderJobsTable('jobs-tbody', _jobs, true);
+  renderJobsTable('jobs-tbody', _jobs, true, {cfg, svcUrl});
 }
 
 function renderJobsEmpty(){
-  ['dash-jobs-tbody','jobs-tbody'].forEach(id=>{
-    const tb=$(id);
-    if(tb) tb.innerHTML=`<tr><td colspan="7" class="empty muted">Cannot reach prepub API.</td></tr>`;
-  });
+  const tb=$('jobs-tbody');
+  if(tb) tb.innerHTML=`<tr><td colspan="8" class="empty muted">Cannot reach prepub API.</td></tr>`;
 }
-
-function renderJobsTable(tbodyId, jobs, full){
-  const tb=$(tbodyId); if(!tb) return;
-  if(!jobs.length){ tb.innerHTML=`<tr><td colspan="7" class="empty muted">No jobs.</td></tr>`; return; }
-  const dur=j=>{
-    const end=j.published_at||j.updated_at, start=j.created_at;
-    if(!end||!start) return '–';
-    const v=(new Date(end)-new Date(start))/1000;
-    return v>0&&v<86400?fmtSec(v):'–';
-  };
-  // stageTip: hover-tooltip with per-phase breakdown for bits jobs with timestamps.
-  const stageTip=j=>{
-    const ts=(s,e)=>{
-      if(!j[s]||!j[e]) return null;
-      return (new Date(j[e])-new Date(j[s]))/1000;
-    };
-    const pipe=ts('pipeline_started_at','pipeline_ended_at');
-    const commit=ts('leased_at','published_at');
-    const dist=ts('distributing_started_at','distributing_ended_at');
-    const parts=[];
-    if(pipe!=null)   parts.push(`pipe:${pipe.toFixed(1)}s`);
-    if(commit!=null) parts.push(`commit:${commit.toFixed(1)}s`);
-    if(dist!=null)   parts.push(`dist:${dist.toFixed(1)}s`+(j.distribution_confirmed!=null?` (${j.distribution_confirmed}/${j.distribution_total} S1)`:' (S1 async)'));
-    return parts.length?parts.join(' | '):'';
-  };
-  tb.innerHTML=jobs.map(j=>{
-    const state=(j.state||'unknown').toLowerCase();
-    const badge=stateBadge(state);
-    const method=j.method||'bits';
-    const methodBadge=`<span class="badge" style="background:${method==='ingest'?'#6f42c1':'#0075ca'};color:#fff;font-size:10px">${method}</span>`;
-    const pipeline=full?`<td>${miniPipeline(state, j.failed_at_state)}</td>`:'';
-    const tip=stageTip(j);
-    const durCell=tip?`<td title="${esc(tip)}" style="cursor:default">${dur(j)} <span style="font-size:10px;color:var(--c-muted)">ⓘ</span></td>`
-                     :`<td>${dur(j)}</td>`;
-    return `<tr><td class="mono">${esc((j.id||j.job_id||'–').slice(0,8))}</td>
-      <td>${esc(j.repo||cfg.repo)}</td><td>${badge} ${methodBadge}</td>${pipeline}
-      ${durCell}<td class="mono" title="${esc(j.root_hash||'')}">${shortHash(j.root_hash||j.new_root_hash)}</td>
-      <td>${relTime(j.created_at)}</td></tr>`;
-  }).join('');
-}
-
-function stateBadge(s){
-  const m={
-    published:'ok',
-    failed:'err',
-    aborted:'err',
-    incoming:'warn',
-    staging:'info',
-    uploading:'info',
-    distributing:'info',
-    leased:'info',
-    committing:'warn',
-  };
-  return `<span class="badge ${m[s]||'badge-unknown'}">${s}</span>`;
-}
-function miniPipeline(state, failedAtState){
-  // For failed/aborted jobs, highlight up to the stage that failed.
-  // 'state' is "failed"/"aborted"; failedAtState holds the actual stage
-  // (e.g. "leased", "committing") from the failed_at_state manifest field.
-  const terminal = state==='failed'||state==='aborted';
-  const activeState = terminal ? (failedAtState||state) : state;
-  const ai=STAGES.indexOf(activeState);
-  return `<div class="pipeline">${STAGES.map((s,i)=>{
-    let c='';
-    if(terminal&&i===ai) c='failed';
-    else if(state==='published'||(!terminal&&i<ai)) c='done';
-    else if(!terminal&&i===ai) c='active';
-    // stages before the failure point show as done
-    else if(terminal&&ai>=0&&i<ai) c='done';
-    return `<div class="pipe-step ${c}" style="font-size:10px;padding:3px">${s.slice(0,4)}</div>`;
-  }).join('')}</div>`;
-}
+// renderJobsTable, stateBadge, miniPipeline — imported from cvmfs-elements/js/widgets/jobs.js
 
 async function submitJob(){
   const repo=$('job-repo').value.trim()||cfg.repo;
@@ -1608,9 +1375,11 @@ function resetMonStats(){
 }
 
 async function refreshMonitoring(){
-  await refreshJobs();
-  await refreshMetrics();
-  await refreshRuns();     // load _runs before chart build so volume series is populated
+  await Promise.all([
+    refreshJobs(),
+    refreshMetrics(),
+    refreshRuns(),
+  ]);
   buildMonitoringCharts();
   // Host metrics (server mode only)
   refreshHostMetrics();
@@ -1661,10 +1430,10 @@ function buildMonitoringCharts(){
     const allRuns = (_runs||[]).slice().reverse(); // oldest→newest
     const pkgs    = allRuns.filter(r=>r.test_type==='package');
     const batches = allRuns.filter(r=>r.test_type==='batch'||r.test_type==='upload');
-    const ctx  = $('chart-latency');
+    const ctx  = $('chart-volume');
     const note = $('chart-volume-note');
     if(ctx){
-      if(_charts['chart-latency']) _charts['chart-latency'].destroy();
+      if(_charts['chart-volume']) _charts['chart-volume'].destroy();
 
       const BATCH_COLORS=['#0075ca','#e36209','#8957e5','#d73a49','#2ea44f','#0550ae'];
 
@@ -1736,70 +1505,97 @@ function buildMonitoringCharts(){
         return datasets;
       };
 
-      // Legacy fallback when no per-package entries: one point per batch
+      // Legacy fallback when no per-package entries: one bar per batch.
+      // Uses a category axis (run date) rather than a linear x=duration_s axis,
+      // since scatter x=duration_s was labelled "Time from run start" which was wrong.
       const buildLegacyDatasets = () => {
-        if(!batches.length) return [];
-        const inputPts=[], casPts=[];
-        batches.forEach(r=>{
-          const x = r.duration_s||0;
-          inputPts.push({x, y: +(r.total_size_mb||0)});
-          casPts.push({x, y: +(r.cas_size_mb||0)});
-        });
-        const ds = [{
-          label:'Total input (MB)', data:inputPts,
-          borderColor:'#0075ca', backgroundColor:'#0075ca22',
-          fill:false, tension:.3, pointRadius:4, borderWidth:2, showLine:false,
-        }];
-        if(casPts.some(p=>p.y>0)) ds.push({
-          label:'CAS written (MB)', data:casPts,
-          borderColor:'#2ea44f', backgroundColor:'transparent',
-          borderDash:[5,3], fill:false, tension:.3, pointRadius:4, borderWidth:1.5, showLine:false,
-        });
-        return ds;
+        if(!batches.length) return null;  // null signals "use category chart"
+        return batches;
       };
-
-      const usePkgs = pkgs.length > 0;
-      const datasets = usePkgs ? buildDatasets(pkgs) : buildLegacyDatasets();
-      const hasVol = datasets.some(ds=>(ds.data||[]).some(p=>(p.y||0)>0));
-
-      if(!datasets.length){
-        _charts['chart-latency'] = new Chart(ctx,{type:'bar',
-          data:{labels:['No upload runs yet'],datasets:[{label:'–',data:[0],backgroundColor:'#eee'}]},
-          options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
-        if(note) note.style.display='none';
-      } else if(!hasVol){
-        const nFailed = (_runs||[]).filter(r=>r.n_failed>0).length;
-        _charts['chart-latency'] = new Chart(ctx,{type:'bar',
-          data:{labels:['0 MB — all runs had failures'],datasets:[{label:'–',data:[0],backgroundColor:'#eee'}]},
-          options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
-        if(note){
-          note.textContent = nFailed
-            ? `${nFailed} run${nFailed!==1?'s':''} recorded, but all packages failed — no bytes published. Fix failures and re-upload to see volume data.`
-            : `${(_runs||[]).length} run${(_runs||[]).length!==1?'s':''} found with 0 MB each. Volume data will appear once packages are successfully published.`;
-          note.style.display='';
-        }
-      } else {
-        if(note) note.style.display='none';
-        _charts['chart-latency'] = new Chart(ctx,{
-          type: 'scatter',
-          data: {datasets},
+      const _renderLegacyChart = (ctx, batchList) => {
+        const labels = batchList.map(r=>{
+          const d = r.start_time ? new Date(r.start_time) : null;
+          return d ? d.toLocaleDateString()+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : (r.run_id||'?').slice(0,12);
+        });
+        const inputData = batchList.map(r=>+(r.total_size_mb||0));
+        const casData   = batchList.map(r=>+(r.cas_size_mb||0));
+        const hasCas    = casData.some(v=>v>0);
+        _charts['chart-volume'] = new Chart(ctx,{
+          type:'bar',
+          data:{
+            labels,
+            datasets:[
+              {label:'Input (MB)', data:inputData, backgroundColor:'#0075ca88', borderColor:'#0075ca', borderWidth:1},
+              ...(hasCas?[{label:'CAS (MB)', data:casData, backgroundColor:'#2ea44f88', borderColor:'#2ea44f', borderWidth:1}]:[]),
+            ],
+          },
           options:{
             responsive:true, maintainAspectRatio:false,
-            plugins:{legend:{
-              display: datasets.length > 1,
-              labels:{boxWidth:20, font:{size:11}},
-            }},
+            plugins:{legend:{display:hasCas, labels:{boxWidth:14,font:{size:11}}}},
             scales:{
-              x:{
-                type:'linear',
-                title:{display:true, text:'Time from run start (s)'},
-                ticks:{maxTicksLimit:10, callback:v=>`${v}s`},
-                min:0,
-              },
-              y:{beginAtZero:true, title:{display:true, text:'Cumulative volume (MB)'}},
+              x:{ticks:{font:{size:10}, maxRotation:35, minRotation:0}},
+              y:{beginAtZero:true, title:{display:true, text:'MB per run'}},
             },
           },
         });
+      };
+
+      const usePkgs = pkgs.length > 0;
+      if(usePkgs){
+        // Primary path: per-package scatter/line with real time axis
+        const datasets = buildDatasets(pkgs);
+        const hasVol = datasets.some(ds=>(ds.data||[]).some(p=>(p.y||0)>0));
+        if(!datasets.length){
+          _charts['chart-volume'] = new Chart(ctx,{type:'bar',
+            data:{labels:['No upload runs yet'],datasets:[{label:'–',data:[0],backgroundColor:'#eee'}]},
+            options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+          if(note) note.style.display='none';
+        } else if(!hasVol){
+          const nFailed = (_runs||[]).filter(r=>r.n_failed>0).length;
+          _charts['chart-volume'] = new Chart(ctx,{type:'bar',
+            data:{labels:['0 MB — all runs had failures'],datasets:[{label:'–',data:[0],backgroundColor:'#eee'}]},
+            options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+          if(note){
+            note.textContent = nFailed
+              ? `${nFailed} run${nFailed!==1?'s':''} recorded, but all packages failed — no bytes published. Fix failures and re-upload to see volume data.`
+              : `${(_runs||[]).length} run${(_runs||[]).length!==1?'s':''} found with 0 MB each. Volume data will appear once packages are successfully published.`;
+            note.style.display='';
+          }
+        } else {
+          if(note) note.style.display='none';
+          _charts['chart-volume'] = new Chart(ctx,{
+            type:'scatter',
+            data:{datasets},
+            options:{
+              responsive:true, maintainAspectRatio:false,
+              plugins:{legend:{
+                display: datasets.length > 1,
+                labels:{boxWidth:20, font:{size:11}},
+              }},
+              scales:{
+                x:{
+                  type:'linear',
+                  title:{display:true, text:'Time from run start (s)'},
+                  ticks:{maxTicksLimit:10, callback:v=>`${v}s`},
+                  min:0,
+                },
+                y:{beginAtZero:true, title:{display:true, text:'Cumulative volume (MB)'}},
+              },
+            },
+          });
+        }
+      } else {
+        // Legacy path: no per-package records — show one bar per batch run
+        const legacyBatches = buildLegacyDatasets();
+        if(!legacyBatches || !legacyBatches.length){
+          _charts['chart-volume'] = new Chart(ctx,{type:'bar',
+            data:{labels:['No upload runs yet'],datasets:[{label:'–',data:[0],backgroundColor:'#eee'}]},
+            options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+          if(note) note.style.display='none';
+        } else {
+          if(note) note.style.display='none';
+          _renderLegacyChart(ctx, legacyBatches);
+        }
       }
     }
   }
@@ -1825,25 +1621,62 @@ function buildMonitoringCharts(){
   $('box-stages').style.display=bitsPublished.length?'':'none';
   if(bitsPublished.length){
     // stagePairs: [label, startField, endField]
-    // For each pair, compute average duration over all jobs that have both fields.
+    // Compute average and stddev per stage; show both in tooltip.
     const stagePairs=[
       ['Pipeline',       'pipeline_started_at',    'pipeline_ended_at'],
       ['Lease+Commit',   'leased_at',              'published_at'],
       ['S1 Distribution','distributing_started_at','distributing_ended_at'],
     ];
     const stagePairColors=['#0075ca','#2ea44f','#e36209'];
-    const avgs=stagePairs.map(([,s,e])=>{
+    const stageStats=stagePairs.map(([,s,e])=>{
       const vals=bitsPublished.map(j=>{
         const s_=j[s], e_=j[e];
         if(!s_||!e_) return null;
         const v=(new Date(e_)-new Date(s_))/1000;
         return v>0?v:null;
       }).filter(v=>v!==null);
-      return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:0;
+      if(!vals.length) return {avg:0,sd:0,n:0};
+      const avg=vals.reduce((a,b)=>a+b,0)/vals.length;
+      const sd=Math.sqrt(vals.reduce((a,b)=>a+(b-avg)*(b-avg),0)/vals.length);
+      return {avg,sd,n:vals.length};
     });
-    chartBar('chart-stages', stagePairs.map(p=>p[0]), avgs, stagePairColors);
+    // Build chart inline so we can attach stddev to tooltips
+    const stagesCanvas=$('chart-stages');
+    if(stagesCanvas){
+      if(_charts['chart-stages']) _charts['chart-stages'].destroy();
+      const bgColors=stagePairColors.map(c=>c+'88');
+      _charts['chart-stages']=new Chart(stagesCanvas,{
+        type:'bar',
+        data:{
+          labels:stagePairs.map(p=>p[0]),
+          datasets:[{
+            label:'avg seconds',
+            data:stageStats.map(s=>+s.avg.toFixed(2)),
+            backgroundColor:bgColors,
+            borderColor:stagePairColors,
+            borderWidth:1,
+          }],
+        },
+        options:{
+          responsive:true, maintainAspectRatio:false,
+          plugins:{
+            legend:{display:false},
+            tooltip:{callbacks:{
+              label:ctx=>{
+                const s=stageStats[ctx.dataIndex];
+                return ` ${ctx.parsed.y.toFixed(2)}s avg ± ${s.sd.toFixed(2)}s (n=${s.n})`;
+              },
+            }},
+          },
+          scales:{y:{beginAtZero:true, title:{display:true,text:'seconds'},
+            ticks:{callback:v=>`${v}s`}}},
+        },
+      });
+    }
   }
+
 }
+
 
 function chartLine(id, labels, data, label, color){
   const ctx=$( id);
@@ -1895,7 +1728,7 @@ function parsePrometheus(text){
   const out=[];
   for(const line of text.split('\n')){
     if(line.startsWith('#')||!line.trim()) continue;
-    const m=line.match(/^([^\s{]+)(\{[^}]*\})?\s+([\d.e+\-NaninfinityInf]+)(\s+\d+)?/);
+    const m=line.match(/^([^\s{]+)(\{[^}]*\})?\s+([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|NaN|[-+]?Inf(?:inity)?)(\s+\d+)?/);
     if(!m) continue;
     out.push({name:m[1], labels:m[2]||'', value:m[3]});
   }
@@ -2002,51 +1835,82 @@ async function refreshHostMetrics(){
 
 // ═══════════════════════════ Metric History Panel ════════════════════════════
 // showMetricHistory(key1, title, unit [, key2, label2])
-//   key1/key2 — field names in the flat history snapshot (e.g. 'net_rx_kbs')
+//   key1/key2 — logical metric key (see VM_QUERY map below)
 //   title     — panel heading
 //   unit      — y-axis label ('' for dimensionless, '%', 'KB/s', '°C', …)
 //   key2/label2 — optional second series (e.g. tx alongside rx)
+//
+// Data comes from VictoriaMetrics query_range using node-exporter metrics.
+// 2-hour window, 60-second step.
+const VM_QUERY = {
+  cpu_load1:     'node_load1',
+  mem_pct:       '(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100',
+  disk_pct:      '(1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100',
+  cpu_temp:      'node_hwmon_temp_celsius{sensor="temp1"}',
+  net_rx_kbs:    'sum(irate(node_network_receive_bytes_total{device!="lo"}[5m])) / 1024',
+  net_tx_kbs:    'sum(irate(node_network_transmit_bytes_total{device!="lo"}[5m])) / 1024',
+  disk_read_kbs: 'sum(irate(node_disk_read_bytes_total[5m])) / 1024',
+  disk_write_kbs:'sum(irate(node_disk_written_bytes_total[5m])) / 1024',
+};
+
+async function _vmQueryRange(key){
+  const q = VM_QUERY[key];
+  if(!q) return [];
+  const hdrs = {'X-Testbed-Token': SERVER_TOKEN||''};
+  const now  = Math.floor(Date.now()/1000);
+  const url  = `/api/proxy/victoriametrics/api/v1/query_range`
+    + `?query=${encodeURIComponent(q)}&start=${now-7200}&end=${now}&step=60`;
+  try{
+    const r = await fetch(url, {headers:hdrs, signal:AbortSignal.timeout(8000)});
+    if(!r.ok) return [];
+    const d = await r.json();
+    if(d.status!=='success') return [];
+    // For queries returning multiple series (e.g. per-device), sum them.
+    const results = d.data?.result || [];
+    if(!results.length) return [];
+    if(results.length===1) return results[0].values || [];
+    // Sum multiple series point-by-point (aligned by timestamp)
+    const tsMap = new Map();
+    for(const s of results){
+      for(const [ts, val] of s.values||[]){
+        tsMap.set(ts, (tsMap.get(ts)||0) + parseFloat(val||0));
+      }
+    }
+    return Array.from(tsMap.entries()).sort((a,b)=>a[0]-b[0]).map(([ts,v])=>[ts,String(v)]);
+  }catch(_){ return []; }
+}
+
 async function showMetricHistory(key1, title, unit, key2, label2){
   if(!SERVER_MODE) return;
   const panel = $('hm-history-panel');
   if(!panel) return;
 
-  // Fetch latest history
-  const hdrs = {'X-Testbed-Token': SERVER_TOKEN||''};
-  let history = [];
-  try{
-    const r = await fetch('/api/host-metrics/history',{headers:hdrs,signal:AbortSignal.timeout(5000)});
-    if(r.ok) history = await r.json();
-  }catch(_){}
-
-  // Filter to samples that have the requested key
-  const samples = history.filter(s => s[key1] !== undefined);
-
   $('hm-history-title').textContent = title + ' — history';
+  $('hm-history-sub').textContent   = 'Loading from VictoriaMetrics…';
+
+  // Fetch both series in parallel
+  const [vals1, vals2] = await Promise.all([
+    _vmQueryRange(key1),
+    key2 ? _vmQueryRange(key2) : Promise.resolve([]),
+  ]);
+
+  const samples = vals1;
   $('hm-history-sub').textContent = samples.length
-    ? `${samples.length} sample${samples.length!==1?'s':''}, last ${
-        Math.round((Date.now()/1000 - samples[0].ts)/60)} min`
-    : 'no data yet — refresh a few times first';
+    ? `${samples.length} sample${samples.length!==1?'s':''} · last 2 h · node-exporter via VM`
+    : 'No VM data — node-exporter may not be running or metrics not yet scraped';
 
-  // Format x-axis labels as HH:MM:SS
-  const labels = samples.map(s=>{
-    const d = new Date(s.ts * 1000);
-    return d.toLocaleTimeString();
-  });
-
+  const labels   = samples.map(([ts])=>new Date(ts*1000).toLocaleTimeString());
   const datasets = [{
     label: title,
-    data:  samples.map(s => s[key1]),
-    borderColor: '#0075ca',
-    backgroundColor: '#0075ca22',
+    data:  samples.map(([,v])=>parseFloat(v)),
+    borderColor: '#0075ca', backgroundColor: '#0075ca22',
     fill: true, tension: 0.3, pointRadius: 2, pointHoverRadius: 5,
   }];
-  if(key2){
+  if(key2 && vals2.length){
     datasets.push({
       label: label2 || key2,
-      data:  samples.map(s => s[key2] ?? null),
-      borderColor: '#2ea44f',
-      backgroundColor: '#2ea44f22',
+      data:  vals2.map(([,v])=>parseFloat(v)),
+      borderColor: '#2ea44f', backgroundColor: '#2ea44f22',
       fill: false, tension: 0.3, pointRadius: 2, pointHoverRadius: 5,
     });
   }
@@ -2062,8 +1926,7 @@ async function showMetricHistory(key1, title, unit, key2, label2){
         plugins: { legend: { display: !!key2, position: 'top' } },
         scales: {
           x: { ticks: { maxTicksLimit: 12, maxRotation: 0 } },
-          y: { beginAtZero: false,
-               title: { display: !!unit, text: unit } },
+          y: { beginAtZero: false, title: { display: !!unit, text: unit } },
         },
         animation: { duration: 200 },
       },
@@ -2379,23 +2242,31 @@ async function refreshStratum0(){
         if(iconEl) iconEl.innerHTML = same
           ? `<span style="color:var(--c-accent)">✓ in sync</span>`
           : `<span style="color:var(--c-warn);font-size:10px" title="${sHash||'?'}">⧗ ${sHash?sHash.slice(0,12)+'…':'no hash'}</span>`;
-        // Lag computation
+        // Lag computation + SVG arrow colouring
+        let arrowColor = '#586069'; // default grey
         if(lagEl){
           if(same){
             lagEl.textContent='0 s';
             lagEl.style.color='var(--c-accent)';
+            arrowColor = '#2ea44f'; // green — in sync
           } else if(sTs>0 && s0TsNum>0){
             const lagS=s0TsNum-sTs;
             lagEl.textContent=lagS>0?fmtSec(lagS):'<1 s';
-            lagEl.style.color=lagS>300?'var(--c-danger)':lagS>60?'var(--c-warn)':'var(--c-text)';
+            if(lagS>300){ lagEl.style.color='var(--c-danger)'; arrowColor='#d73a49'; }
+            else if(lagS>60){ lagEl.style.color='var(--c-warn)'; arrowColor='#e36209'; }
+            else { lagEl.style.color='var(--c-text)'; arrowColor='#e36209'; }
           } else if(sRev>0 && s0RevNum>0){
             const revsBehind=s0RevNum-sRev;
             lagEl.textContent=revsBehind>0?`${revsBehind} rev${revsBehind!==1?'s':''} behind`:'–';
             lagEl.style.color=revsBehind>0?'var(--c-warn)':'var(--c-text)';
+            arrowColor = revsBehind>0?'#e36209':'#586069';
           } else {
             lagEl.textContent='–'; lagEl.style.color='';
           }
         }
+        // Colour the replication arrow in the status diagram
+        const arrowEl = $(`sd-arrow-${node}`);
+        if(arrowEl) arrowEl.setAttribute('stroke', arrowColor);
       }catch(e){
         if(revEl) revEl.textContent='–';
         if(lagEl){ lagEl.textContent='N/A'; lagEl.style.color='var(--c-muted)'; }
@@ -2618,7 +2489,7 @@ function _doRetryUpload(filePaths){
       retryBtn.style.display = '';
     }
     // Final refresh to pick up the batch summary entry
-    setTimeout(async ()=>{ await refreshRuns(); await refreshJobs(); buildMonitoringCharts(); }, 1500);
+    setTimeout(async ()=>{ await Promise.all([refreshRuns(), refreshJobs()]); buildMonitoringCharts(); }, 1500);
   }
 
   let _aborted = false;
@@ -2740,7 +2611,7 @@ function runUploadFilelist(){
       retryBtn.style.display = '';
     }
     // Final refresh to pick up the batch summary entry
-    setTimeout(async ()=>{ await refreshRuns(); await refreshJobs(); buildMonitoringCharts(); }, 1500);
+    setTimeout(async ()=>{ await Promise.all([refreshRuns(), refreshJobs()]); buildMonitoringCharts(); }, 1500);
   }
 
   let _aborted = false;
@@ -2960,19 +2831,61 @@ async function refreshCASStats(){
     if($('cas-count-val')) $('cas-count-val').textContent = count>0?count.toLocaleString():'–';
     if($('cas-count-sub')) $('cas-count-sub').textContent = count>0&&bytes>0?`${avgKB} KB avg`:'';
     if($('cas-avg-val'))   $('cas-avg-val').textContent   = avgKB;
+    // Set note to container info; _fetchCASHistory() may overwrite with VM status
     if(noteEl) noteEl.textContent =
-      `Container: ${d.container||'?'} · path: ${d.data_path||'?'} · sampled every ~20 s`;
+      `Container: ${d.container||'?'} · path: ${d.data_path||'?'} · current snapshot cached ${d.cached?'yes':'no'}`;
 
-    // Fetch history for chart
-    const hr = await fetch('/api/cas-stats/history', {headers:hdrs, signal:AbortSignal.timeout(5000)});
-    if(hr.ok) _updateCASChart(await hr.json());
+    // Fetch CAS history from VictoriaMetrics (non-blocking)
+    _fetchCASHistory();
 
   } catch(e){
     if(errEl){ errEl.style.display=''; errEl.textContent=`CAS error: ${e.message}`; }
   }
 }
 
-function _updateCASChart(history){
+// Fetch CAS history from VictoriaMetrics and render the status-tab line chart.
+// Uses testbed_cas_objects_total and testbed_cas_bytes_total pushed by the
+// server's metrics push loop every ~60 s.
+async function _fetchCASHistory(){
+  if(!SERVER_MODE) return;
+  const hdrs  = {'X-Testbed-Token': SERVER_TOKEN||''};
+  const now   = Math.floor(Date.now()/1000);
+  const start = now - 3600;  // last hour
+  const step  = 60;
+  const base  = '/api/proxy/victoriametrics/api/v1/query_range';
+  const noteEl = $('cas-note');
+  try{
+    const [r1, r2] = await Promise.all([
+      fetch(`${base}?query=testbed_cas_objects_total&start=${start}&end=${now}&step=${step}`, {headers:hdrs, signal:AbortSignal.timeout(5000)}),
+      fetch(`${base}?query=testbed_cas_bytes_total&start=${start}&end=${now}&step=${step}`,   {headers:hdrs, signal:AbortSignal.timeout(5000)}),
+    ]);
+    if(!r1.ok || !r2.ok){
+      if(noteEl) noteEl.textContent = `CAS history unavailable — VictoriaMetrics not reachable (HTTP ${!r1.ok?r1.status:r2.status})`;
+      return;
+    }
+    const [d1, d2] = await Promise.all([r1.json(), r2.json()]);
+    const objVals   = d1.data?.result?.[0]?.values || [];
+    const bytesVals = d2.data?.result?.[0]?.values || [];
+    if(!objVals.length && !bytesVals.length){
+      if(noteEl) noteEl.textContent = 'CAS history: no data in VM yet — restart the testbed server so the push thread can populate metrics (sampled every ~60 s)';
+      return;
+    }
+    // Build unified timeline
+    const tsSet = new Set([...objVals.map(v=>v[0]), ...bytesVals.map(v=>v[0])]);
+    const objMap   = new Map(objVals.map(v=>[v[0],  parseFloat(v[1])]));
+    const bytesMap = new Map(bytesVals.map(v=>[v[0], parseFloat(v[1])]));
+    const history  = Array.from(tsSet).sort().map(ts=>({
+      ts:    ts,
+      count: objMap.get(ts)   || 0,
+      bytes: bytesMap.get(ts) || 0,
+    }));
+    _renderCASChart(history);
+  }catch(e){
+    if(noteEl) noteEl.textContent = `CAS history error: ${e.message}`;
+  }
+}
+
+function _renderCASChart(history){
   const canvas = $('cas-history-chart');
   if(!canvas||!history.length) return;
 
@@ -3171,9 +3084,9 @@ function buildFlags(opts={}){
 }
 
 function runCmd(cmd, opts={}){
-  if(!SERVER_MODE){ $('terminal').innerHTML=`<span class="err">Server mode required — run ./testbed.sh server on the testbed host.</span>`; showTab('commands'); return; }
+  if(!SERVER_MODE){ $('terminal').innerHTML=`<span class="err">Server mode required — run ./testbed.sh server on the testbed host.</span>`; showTab('testbed'); return; }
   if(opts.confirm&&!confirm(opts.confirm)) return;
-  showTab('commands');
+  showTab('testbed');
 
   if(_activeSSE){ _activeSSE.close(); _activeSSE=null; }
   const {flags,args}=buildFlags(opts);
@@ -3295,26 +3208,87 @@ function applyConfig(){
   $('sf-repo').textContent=cfg.repo;
   if($('s0-url-label')) $('s0-url-label').textContent=svcUrl('stratum0',`/cvmfs/${cfg.repo}/.cvmfspublished`);
   if($('jobs-url-label')) $('jobs-url-label').textContent=svcUrl('prepub','/api/v1/jobs');
+  // Environment identity badge
+  applyEnvBadge(cfg.consoleName);
 }
 
 // ═══════════════════════════ Auto-refresh ════════════════════════════════════
-let _refreshTimer=null;
+let _refreshTimer = null;
+const REFRESH_INTERVAL = 30; // seconds
+
 async function refreshAll(){
   clearTimeout(_refreshTimer);
+  clearRefreshCountdown();
+  const el=$('hdr-refresh-in'); if(el) el.textContent='';
   await refreshServices();
   await refreshJobs();
   await refreshStratum0();
+  await refreshStatusDiagram();
   // Scan default dir on first load to populate badge (fire-and-forget)
   if(!_ulScannedDir) refreshUploadFilelist();
-  _refreshTimer=setTimeout(refreshAll, 30_000);
+  startRefreshCountdown(REFRESH_INTERVAL);
+  _refreshTimer=setTimeout(refreshAll, REFRESH_INTERVAL * 1000);
 }
+
+// ═══════════════════════════ Directory picker ════════════════════════════════
+// openDirPicker, _dpNav, dpNavUp, dpSelectCurrent, closeDirPicker
+// are imported from cvmfs-elements/js/ui/dir-picker.js.
+// initDirPicker() is called in the boot block below.
 
 // ═══════════════════════════ Boot ════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', async ()=>{
   loadSettings();
   initToken();           // read ?token= from URL (or sessionStorage)
+  restoreCollapseStates(COLLAPSE_MAP);
+
+  // Populate the container console <select> from CONTAINER_DEF.
+  // Called here (before detectMode) with useMqtt=false, then again after
+  // detectMode() sets USE_MQTT so Mosquitto appears if MQTT is active.
+  populateContainerSelect('cc-container', CONTAINER_DEF, { selected: 'cvmfs-client' });
+
+  // Wire up dir-picker module: supply token getter and selection callback.
+  initDirPicker({
+    getServerToken: () => SERVER_TOKEN,
+    isServerMode:   () => SERVER_MODE,
+    onSelect: path => {
+      const inp = $('ul-dir-input');
+      if(inp) inp.value = path;
+      if(path) scanUploadDir();
+    },
+  });
+
+  // Expose module-scoped functions used by inline HTML onclick/onkeydown attributes.
+  // ES modules are scoped and don't bleed into window — this bridge is required for
+  // all functions referenced from HTML attribute event handlers.
+  Object.assign(window, {
+    // Navigation / UI
+    showTab, toggleCollapse,
+    // Dir picker
+    openDirPicker, _dpNav, dpNavUp, dpSelectCurrent, closeDirPicker,
+    // Services
+    probeService, refreshServices, refreshAll,
+    // Jobs / monitoring
+    submitJob, applyJobsFilter, cycleRange, resetMonStats,
+    refreshJobs, refreshMonitoring, refreshStatusDiagram, refreshRuns,
+    refreshS1Backlog, refreshCASStats, refreshHostMetrics,
+    showMetricHistory, closeMetricHistory, toggleRunSelection, clearRunComparison,
+    // Upload
+    scanUploadDir, runUploadFilelist, abortUpload, retryFailedUploads,
+    // Commands / terminal
+    runCmd, killCmd, clearTerm, copyTerm, execContainerCmd, clearContainerOutput, ccQuick,
+    // MQTT
+    toggleMQTT, clearMQTT,
+    // Settings / auth
+    saveSettings, resetSettings, applyDialogToken, showTokenDialog,
+  });
+
   await detectMode();
+  // Re-populate container select now that USE_MQTT is known — adds Mosquitto if active.
+  populateContainerSelect('cc-container', CONTAINER_DEF, { useMqtt: USE_MQTT, selected: 'cvmfs-client' });
   await refreshAll();
+  // Start ring refresh unconditionally — S1 replication happens in the
+  // background regardless of which tab is active, so we keep polling.
+  _ensureRingRefresh();
 });
 </script>
 </body>

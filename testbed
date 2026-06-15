@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# testbed — Top-level entry point for the CVMFS testbed.
+#
+# Dispatches to the appropriate script in scripts/:
+#
+#   install          Build and install CVMFS binaries into software/.
+#   upload-filelist  Bulk-upload .tar.gz files via the bits REST API.
+#   <everything else> → scripts/testbed.sh (start, stop, test, server, …)
+#
+# Usage:
+#   ./testbed [command] [options]
+#   ./testbed help
+#
+# This script may live anywhere — it resolves SCRIPTS_DIR relative to itself.
+
+set -euo pipefail
+
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/scripts" && pwd)"
+
+cmd="${1:-help}"
+
+case "$cmd" in
+  install)
+    shift
+    exec bash "$SCRIPTS_DIR/install.sh" "$@"
+    ;;
+  upload-filelist)
+    shift
+    exec bash "$SCRIPTS_DIR/upload-filelist.sh" "$@"
+    ;;
+  *)
+    exec bash "$SCRIPTS_DIR/testbed.sh" "$@"
+    ;;
+esac

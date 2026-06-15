@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 CERN (European Organization for Nuclear Research)
+# SPDX-License-Identifier: Apache-2.0
+
 # docker-compose.bits.yml — Overlay that adds Gitea (git hosting + bits-console Pages)
 # and the one-shot seeder to the CVMFS testbed.
 #
@@ -104,10 +107,9 @@ services:
       start_period: 30s
 
   seeder:
-    image: cvmfs-seeder:latest
-    container_name: cvmfs-seeder
-    build:
-      context: ./seeder
+    extends:
+      file: ./cvmfs-elements/compose/bits.yml
+      service: seeder
     environment:
       GITEA_URL:            http://gitea:3000
       GITEA_ADMIN_USER:     ${GITEA_ADMIN_USER}

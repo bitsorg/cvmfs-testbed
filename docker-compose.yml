@@ -1,9 +1,27 @@
+# SPDX-FileCopyrightText: 2026 CERN (European Organization for Nuclear Research)
+# SPDX-License-Identifier: Apache-2.0
+
+# docker-compose.yml — CVMFS testbed service deployment.
+#
+# Each service extends a canonical base definition from cvmfs-elements/compose/.
+# The base files supply: image name, build context (in cvmfs-elements/), fixed
+# command, intrinsic capabilities, and public-image volumes (monitoring).
+#
+# This file supplies only what is testbed-specific:
+#   - environment: secrets and per-instance variables
+#   - volumes: with ${TESTBED_ROOT} and ${SOFTWARE_ROOT} paths
+#   - ports: (testbed exposes services directly; production goes through Nginx)
+#   - depends_on: (testbed-specific startup ordering)
+#
+# Requires Docker Compose v2 (docker compose plugin).
+
 services:
+
+  # ── Gateway — cvmfs_gateway + cvmfs_receiver lease manager ──────────────
   gateway:
-    image: cvmfs-gateway:latest
-    container_name: cvmfs-gateway
-    build:
-      context: ./gateway
+    extends:
+      file: ./cvmfs-elements/compose/core.yml
+      service: gateway
     environment:
       CVMFS_GATEWAY_KEY_ID: ${CVMFS_GATEWAY_KEY_ID}
       CVMFS_GATEWAY_SECRET: ${CVMFS_GATEWAY_SECRET}
@@ -42,36 +60,26 @@ services:
       # host after a receiver crash.  Read it with:
       #   cat ${TESTBED_ROOT}/data/receiver-logs/debug.log
       - ${TESTBED_ROOT}/data/receiver-logs:/var/log/cvmfs_receiver
-    cap_add:
-      # cvmfs_receiver spawns a watchdog child that uses ptrace to collect
-      # stack traces on crashes. Without SYS_PTRACE the watchdog fails to
-      # initialise and the receiver exits immediately (seen as EOF by gateway).
-      - SYS_PTRACE
     ports:
       - "4929:4929"
-    networks:
-      - cvmfs-net
-    command: /usr/local/bin/cvmfs_gateway
 
+  # ── Stratum 0 — Apache httpd serving the CAS over HTTP ──────────────────
   stratum0:
-    image: cvmfs-stratum0:latest
-    container_name: cvmfs-stratum0
-    build:
-      context: ./stratum0
+    extends:
+      file: ./cvmfs-elements/compose/core.yml
+      service: stratum0
     volumes:
       - ${TESTBED_ROOT}/repos:/usr/local/apache2/htdocs/cvmfs:ro
     ports:
       - "8090:80"
-    networks:
-      - cvmfs-net
     depends_on:
       - gateway
 
+  # ── cvmfs-prepub — REST API front-end and job orchestrator ───────────────
   cvmfs-prepub:
-    image: cvmfs-prepub:latest
-    container_name: cvmfs-prepub
-    build:
-      context: ./cvmfs-prepub
+    extends:
+      file: ./cvmfs-elements/compose/core.yml
+      service: cvmfs-prepub
     environment:
       PREPUB_API_TOKEN: ${PREPUB_API_TOKEN}
       CVMFS_GATEWAY_SECRET: ${CVMFS_GATEWAY_SECRET}
@@ -84,18 +92,16 @@ services:
       - ${TESTBED_ROOT}/config/cvmfs-prepub/config.yaml:/etc/cvmfs-prepub/config.yaml:ro
     ports:
       - "8080:8080"
-    networks:
-      - cvmfs-net
     depends_on:
       - gateway
       - stratum0
-    command: /usr/local/bin/cvmfs-prepub --config /etc/cvmfs-prepub/config.yaml
 
+  # ── Stratum 1 receivers — cvmfs-prepub in receiver mode ─────────────────
   stratum1-a:
-    image: cvmfs-stratum1:latest
+    extends:
+      file: ./cvmfs-elements/compose/receivers.yml
+      service: stratum1
     container_name: cvmfs-stratum1-a
-    build:
-      context: ./stratum1
     environment:
       PREPUB_HMAC_SECRET: ${PREPUB_HMAC_SECRET}
       NODE_ID: stratum1-a
@@ -106,15 +112,12 @@ services:
     ports:
       - "9101:9100"
       - "9111:9101"
-    networks:
-      - cvmfs-net
-    command: /usr/local/bin/cvmfs-prepub --config /etc/cvmfs-prepub/config.yaml
 
   stratum1-b:
-    image: cvmfs-stratum1:latest
+    extends:
+      file: ./cvmfs-elements/compose/receivers.yml
+      service: stratum1
     container_name: cvmfs-stratum1-b
-    build:
-      context: ./stratum1
     environment:
       PREPUB_HMAC_SECRET: ${PREPUB_HMAC_SECRET}
       NODE_ID: stratum1-b
@@ -125,15 +128,12 @@ services:
     ports:
       - "9102:9100"
       - "9112:9101"
-    networks:
-      - cvmfs-net
-    command: /usr/local/bin/cvmfs-prepub --config /etc/cvmfs-prepub/config.yaml
 
+  # ── publisher — bits publish jobs via cvmfs-prepub REST API ─────────────
   publisher:
-    image: cvmfs-publisher:latest
-    container_name: cvmfs-publisher
-    build:
-      context: ./publisher
+    extends:
+      file: ./cvmfs-elements/compose/publishers.yml
+      service: publisher
     environment:
       PREPUB_API_TOKEN: ${PREPUB_API_TOKEN}
       PREPUB_URL: http://cvmfs-prepub:8080
@@ -141,22 +141,17 @@ services:
       RUN_LOG_FILE: /data/runs.ndjson
     volumes:
       - ${TESTBED_ROOT}/data/runs.ndjson:/data/runs.ndjson
-    networks:
-      - cvmfs-net
     depends_on:
       - cvmfs-prepub
-    command: ["sleep", "infinity"]
 
   # ── Bootstrap — one-shot privileged container that seeds the repository ────
   # Creates the nested-catalog structure that cvmfs_server ingest requires.
   # Run once after init, or restore from the snapshot it produces.
   # Invoked by: ./testbed.sh bootstrap  (or: make bootstrap)
   cvmfs-bootstrap:
-    image: cvmfs-bootstrap:latest
-    container_name: cvmfs-bootstrap
-    build:
-      context: ./cvmfs-bootstrap
-    privileged: true
+    extends:
+      file: ./cvmfs-elements/compose/publishers.yml
+      service: cvmfs-bootstrap
     environment:
       REPO_NAME: ${REPO_NAME}
     volumes:
@@ -174,8 +169,6 @@ services:
       # Dedicated publisher spool for bootstrap.  Separate from data/native-ingest
       # used by cvmfs-native-publisher to avoid lock-file conflicts.
       - ${TESTBED_ROOT}/data/bootstrap-spool:/var/spool/cvmfs
-    networks:
-      - cvmfs-net
     depends_on:
       - gateway
       - stratum0
@@ -185,10 +178,9 @@ services:
   # native CVMFS server workflow (cvmfs_swissknife → gateway API → cvmfs_receiver).
   # Use ./testbed.sh test --method native or stresstest <n> --method native.
   cvmfs-native-publisher:
-    image: cvmfs-native-publisher:latest
-    container_name: cvmfs-native-publisher
-    build:
-      context: ./cvmfs-native-publisher
+    extends:
+      file: ./cvmfs-elements/compose/publishers.yml
+      service: cvmfs-native-publisher
     environment:
       REPO_NAME: ${REPO_NAME}
       # cvmfs_swissknife and cvmfs_publish are C++ binaries that dlopen shared
@@ -217,27 +209,19 @@ services:
       # Read-only access to the repo filesystem so cvmfs_server can read the
       # current .cvmfspublished without going through HTTP (optional but faster).
       - ${TESTBED_ROOT}/repos/${REPO_NAME}:/srv/cvmfs/${REPO_NAME}:ro
-    networks:
-      - cvmfs-net
     depends_on:
       - gateway
       - stratum0
-    command: ["sleep", "infinity"]
 
   # ── CVMFS client ─────────────────────────────────────────────────────────
   # Mounts the CVMFS repository via FUSE so that verify-publish.sh can check
   # that published files are actually visible after a job completes.
-  #
-  # Requires SYS_ADMIN capability and /dev/fuse access for the FUSE mount;
-  # apparmor must be unconfined to allow the cvmfs2 mount syscalls.
-  #
-  # The cvmfs2 and cvmfs_talk binaries are injected from SOFTWARE_ROOT rather
-  # than baked into the image so they can be swapped without rebuilding.
+  # Intrinsic requirements (SYS_ADMIN, /dev/fuse, apparmor:unconfined) are
+  # inherited from the base definition in cvmfs-elements/compose/client.yml.
   cvmfs-client:
-    image: cvmfs-client:latest
-    container_name: cvmfs-client
-    build:
-      context: ./cvmfs-client
+    extends:
+      file: ./cvmfs-elements/compose/client.yml
+      service: cvmfs-client
     environment:
       REPO_NAME: ${REPO_NAME}
       STRATUM0_URL: http://stratum0
@@ -257,81 +241,42 @@ services:
       - ${TESTBED_ROOT}/config/keys/${REPO_NAME}.crt:/etc/cvmfs/keys/${REPO_NAME}.crt:ro
       # Client-side disk cache backed by the testbed data directory
       - ${TESTBED_ROOT}/data/cvmfs-client:/var/cache/cvmfs
-    cap_add:
-      - SYS_ADMIN
-    devices:
-      - /dev/fuse
-    security_opt:
-      - apparmor:unconfined
-    networks:
-      - cvmfs-net
     depends_on:
       - cvmfs-prepub
       - stratum0
 
+  # ── Monitoring stack ──────────────────────────────────────────────────────
+  # Base definitions (images, commands, host-path volumes for cadvisor and
+  # node-exporter) are fully specified in cvmfs-elements/compose/monitoring.yml.
+  # Only deployment-specific data directories are added here.
+
   victoriametrics:
-    image: victoriametrics/victoria-metrics:v1.99.0
-    container_name: cvmfs-victoriametrics
+    extends:
+      file: ./cvmfs-elements/compose/monitoring.yml
+      service: victoriametrics
     volumes:
       - ${TESTBED_ROOT}/data/monitoring/vm:/victoria-metrics-data
-    networks:
-      - cvmfs-net
-    command:
-      - "-storageDataPath=/victoria-metrics-data"
-      - "-retentionPeriod=1"
-      - "-selfScrapeInterval=10s"
+    ports:
+      - "8428:8428"
 
   vmagent:
-    image: victoriametrics/vmagent:v1.99.0
-    container_name: cvmfs-vmagent
+    extends:
+      file: ./cvmfs-elements/compose/monitoring.yml
+      service: vmagent
     volumes:
-      - ./monitoring/scrape.yml:/etc/vmagent/scrape.yml:ro
       - ${TESTBED_ROOT}/data/monitoring/vmagent:/vmagentdata
-    networks:
-      - cvmfs-net
     depends_on:
       - victoriametrics
-    command:
-      - "-promscrape.config=/etc/vmagent/scrape.yml"
-      - "-remoteWrite.url=http://victoriametrics:8428/api/v1/write"
-      - "-promscrape.maxScrapeSize=64MiB"
 
-  # ── cAdvisor — per-container CPU / memory / network / disk metrics ──────────
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
-    container_name: cvmfs-cadvisor
-    privileged: true
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker:/var/lib/docker:ro
-      - /dev/disk:/dev/disk:ro
-    devices:
-      - /dev/kmsg
-    networks:
-      - cvmfs-net
-    command:
-      - "--housekeeping_interval=10s"
-      - "--max_housekeeping_interval=15s"
-      - "--disable_metrics=hugetlb,referenced_memory,cpu_topology,resctrl,udp,advtcp,sched"
+    extends:
+      file: ./cvmfs-elements/compose/monitoring.yml
+      service: cadvisor
 
-  # ── node-exporter — host CPU / memory / temperature / filesystem ─────────
   node-exporter:
-    image: prom/node-exporter:v1.8.0
-    container_name: cvmfs-node-exporter
-    pid: host
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    command:
-      - "--path.procfs=/host/proc"
-      - "--path.rootfs=/rootfs"
-      - "--path.sysfs=/host/sys"
-      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
-    networks:
-      - cvmfs-net
+    extends:
+      file: ./cvmfs-elements/compose/monitoring.yml
+      service: node-exporter
 
 networks:
   cvmfs-net:

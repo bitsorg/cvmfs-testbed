@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 CERN (European Organization for Nuclear Research)
+# SPDX-License-Identifier: Apache-2.0
+
 # act_runner configuration for the cvmfs-bits testbed
 #
 # Copy this file to the location where act_runner is installed, e.g.:
@@ -35,6 +38,17 @@ runner:
 
   # Maximum number of concurrent jobs.
   capacity: 4
+
+  # Per-runner environment variables injected into every job.
+  # Use this to point a runner at a specific cvmfs-prepub instance so that
+  # different runner pools can publish to different prepub servers, all driven
+  # by the same bits-console project.  No project-level CI variables needed.
+  #
+  # In the testbed these values are filled in by init.sh from .env.
+  # On a real runner host set them here (or pass via systemd EnvironmentFile).
+  envs:
+    PREPUB_URL:       "http://cvmfs-prepub:8080"
+    PREPUB_API_TOKEN: ""   # filled by init.sh / set manually on real runners
 
   # Polling interval when there are no pending jobs.
   fetch_interval: 2s

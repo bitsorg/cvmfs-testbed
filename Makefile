@@ -25,7 +25,8 @@
 #   make snapshot      Save repo state to repo-seed.tar.gz (called by bootstrap)
 #   make restore       Restore repo state from repo-seed.tar.gz
 #   make redeploy      install + full reset + bootstrap
-#   make clean         Stop containers and wipe all testbed state (keeps snapshot)
+#   make clean         Stop containers and wipe all testbed state (keeps snapshot and .env)
+#   make cleanall      Like clean, but also deletes .env (full credential reset)
 #   make test          Smoke test — bits method (default)
 #   make test-ingest   Smoke test — cvmfs_server ingest path (needs bootstrap)
 #   make test-bits     Smoke test — cvmfs-prepub REST API path
@@ -59,8 +60,8 @@ SHELL := /bin/bash
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 MAKEFILE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
-TESTBED      := $(MAKEFILE_DIR)/testbed.sh
-INSTALL_SH   := $(MAKEFILE_DIR)/install.sh
+TESTBED      := $(MAKEFILE_DIR)/testbed
+INSTALL_SH   := $(MAKEFILE_DIR)/scripts/install.sh
 MAKE_DIR     := $(MAKEFILE_DIR)/.make
 
 # cvmfs-bits source directory — override if your clone lives elsewhere.
@@ -87,7 +88,7 @@ _MQTT := $(if $(filter 1 yes true,$(MQTT)),--mqtt,)
 # ── Default goal ──────────────────────────────────────────────────────────────
 .DEFAULT_GOAL := all
 
-.PHONY: all build install init start start-mqtt bootstrap snapshot restore redeploy clean \
+.PHONY: all build install init start start-mqtt bootstrap snapshot restore redeploy clean cleanall \
         test test-ingest test-bits test-mqtt \
         stresstest stresstest-ingest stresstest-mqtt \
         catdump-ingest catdump-bits catdiff \
@@ -98,11 +99,15 @@ $(MAKE_DIR):
 	mkdir -p $(MAKE_DIR)
 
 # ── all ───────────────────────────────────────────────────────────────────────
-# Full pipeline: build → install → init → start → bootstrap.
-all: $(MAKE_DIR)/bootstrap
+# Full pipeline: always rebuild bits + refresh software, then init → start →
+# bootstrap only when their sentinels are absent.
+all: install $(MAKE_DIR)/bootstrap
 
 # ── build ─────────────────────────────────────────────────────────────────────
-$(MAKE_DIR)/build: $(MAKE_DIR)
+# Always runs: git pull + incremental make build inside cvmfs-bits.
+# No sentinel — the cvmfs-bits build system handles incrementality itself
+# (unchanged source compiles in seconds).
+build:
 	@if [[ ! -d "$(BITS_DIR)" ]]; then \
 	    echo "ERROR: BITS_DIR not found: $(BITS_DIR)"; \
 	    echo "  Clone cvmfs-bits there, or override: make BITS_DIR=/path/to/cvmfs-bits"; \
@@ -112,20 +117,20 @@ $(MAKE_DIR)/build: $(MAKE_DIR)
 	cd "$(BITS_DIR)" && git pull
 	@echo "── Building cvmfs-bits ───────────────────────────────────────────────"
 	cd "$(BITS_DIR)" && $(MAKE) build
-	@touch $@
-
-build: $(MAKE_DIR)/build
 
 # ── install ───────────────────────────────────────────────────────────────────
-$(MAKE_DIR)/install: $(MAKE_DIR)/build
+# Always runs: copies fresh binaries from both build trees into software/.
+# Depends on build so bits is up to date before the copy.
+install: build
 	@echo "── Installing binaries into software/ ────────────────────────────────"
 	BITS_DIR="$(BITS_DIR)" bash "$(INSTALL_SH)"
-	@touch $@
-
-install: $(MAKE_DIR)/install
 
 # ── init ──────────────────────────────────────────────────────────────────────
-$(MAKE_DIR)/init: $(MAKE_DIR)/install
+# Sentinel-protected: runs only once (or after make clean).
+# Order-only dependency on $(MAKE_DIR) — the phony install target is NOT listed
+# here so that the sentinel is not invalidated on every make all.  The all
+# target sequences install before $(MAKE_DIR)/bootstrap which depends on this.
+$(MAKE_DIR)/init: | $(MAKE_DIR)
 	@echo "── Initialising testbed ──────────────────────────────────────────────"
 	bash "$(TESTBED)" init
 	@touch $@
@@ -187,7 +192,8 @@ redeploy: install
 	bash "$(TESTBED)" bootstrap && touch $(MAKE_DIR)/bootstrap
 
 # ── clean ─────────────────────────────────────────────────────────────────────
-# Stop containers and remove runtime state.  Snapshot is PRESERVED.
+# Stop containers and remove runtime state.  Snapshot and .env are PRESERVED so
+# services can restart with the same credentials on the next 'make start'.
 # Wipe .make/init and .make/bootstrap so make knows to re-run them next time.
 #
 # Guard: refuse to run if the testbed has never been initialised.  Without this
@@ -205,6 +211,24 @@ clean:
 	    bash "$(TESTBED)" stop || true; \
 	    echo "── Cleaning testbed state ────────────────────────────────────────────"; \
 	    bash "$(TESTBED)" clean --yes; \
+	    rm -f $(MAKE_DIR)/init $(MAKE_DIR)/bootstrap; \
+	fi
+
+# ── cleanall ──────────────────────────────────────────────────────────────────
+# Like clean, but also deletes .env — full credential reset.
+# Use this when you want to regenerate secrets (gateway key, API token, etc.).
+# The next 'make' will run init from scratch and create a fresh .env.
+cleanall:
+	@if [[ ! -f "$(MAKE_DIR)/init" ]]; then \
+	    printf '\n'; \
+	    printf '[WARN] testbed is not initialised — $(MAKE_DIR)/init not found.\n'; \
+	    printf '       Nothing to clean.  Run '"'"'make'"'"' first to set up the testbed.\n'; \
+	    printf '\n'; \
+	else \
+	    echo "── Stopping testbed ──────────────────────────────────────────────────"; \
+	    bash "$(TESTBED)" stop || true; \
+	    echo "── Cleaning testbed state (including .env) ───────────────────────────"; \
+	    bash "$(TESTBED)" clean --yes --purge-snapshot --purge-env; \
 	    rm -f $(MAKE_DIR)/init $(MAKE_DIR)/bootstrap; \
 	fi
 
@@ -256,7 +280,8 @@ help:
 	@echo "  make snapshot             Save repo state to repo-seed.tar.gz"
 	@echo "  make restore              Restore repo state from repo-seed.tar.gz"
 	@echo "  make redeploy             Full rebuild from scratch"
-	@echo "  make clean                Stop + wipe state (keeps snapshot)"
+	@echo "  make clean                Stop + wipe state (keeps snapshot and .env)"
+	@echo "  make cleanall             Stop + wipe state + delete .env (fresh credentials)"
 	@echo ""
 	@echo "  make test                 Smoke test (bits method)"
 	@echo "  make test-ingest          Smoke test (cvmfs_server ingest, needs bootstrap)"

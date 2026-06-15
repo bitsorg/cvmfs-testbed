@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 CERN (European Organization for Nuclear Research)
+# SPDX-License-Identifier: Apache-2.0
+
 # testbed.sh — Top-level bootstrap and management script for the cvmfs-prepub testbed.
 #
 # Directory convention:
@@ -150,6 +153,7 @@ section() { echo -e "\n${BOLD}── $* ──${NC}"; }
 
 # ── Script location ───────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TESTBED_DIR="$(dirname "$SCRIPT_DIR")"   # root of cvmfs-testbed checkout
 
 # ── Default flags ─────────────────────────────────────────────────────────────
 USE_BITS=false
@@ -173,12 +177,12 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --bits)                USE_BITS=true;                    shift ;;
         --mqtt)                USE_MQTT=true;                    shift ;;
-        # --bits-src is no longer needed: bits-console lives at $SCRIPT_DIR/bits-console.
+        # --bits-src is no longer needed: bits-console lives at $TESTBED_DIR/bits-console.
         # Accept it silently for backward compatibility.
         --bits-src)
-            warn "--bits-src is no longer needed; bits-console/ is expected at $SCRIPT_DIR/bits-console"
+            warn "--bits-src is no longer needed; bits-console/ is expected at $TESTBED_DIR/bits-console"
             [[ $# -ge 2 ]] && shift 2 || shift ;;
-        --bits-src=*)          warn "--bits-src is no longer needed; bits-console/ is expected at $SCRIPT_DIR/bits-console"; shift ;;
+        --bits-src=*)          warn "--bits-src is no longer needed; bits-console/ is expected at $TESTBED_DIR/bits-console"; shift ;;
         --software-root)
             [[ $# -ge 2 ]] || { error "--software-root requires a value"; exit 1; }
             SOFTWARE_ROOT_OVERRIDE="$2"; shift 2 ;;
@@ -246,11 +250,11 @@ load_env() {
     [[ -n "$SOFTWARE_ROOT_OVERRIDE" ]] && SOFTWARE_ROOT="$SOFTWARE_ROOT_OVERRIDE"
 
     # 4. Derive BITS_CONSOLE_SRC from the conventional location (no .env entry needed).
-    BITS_CONSOLE_SRC="$SCRIPT_DIR/bits-console"
+    BITS_CONSOLE_SRC="$TESTBED_DIR/bits-console"
 
     # 5. Prepend SOFTWARE_ROOT to PATH so locally built binaries take precedence
     #    over any system-wide CVMFS installation in a potentially read-only area.
-    local sw="${SOFTWARE_ROOT:-$SCRIPT_DIR/software}"
+    local sw="${SOFTWARE_ROOT:-$TESTBED_DIR/software}"
     if [[ -d "$sw" ]] && [[ ":$PATH:" != *":$sw:"* ]]; then
         export PATH="$sw:$PATH"
     fi
@@ -262,9 +266,9 @@ compose_files() {
     # Using a global array avoids word-splitting issues with paths containing spaces.
     # NOTE: use 'if' rather than '$BOOL && ...' — under set -e the latter exits
     # when the bool variable expands to the 'false' command (exit code 1).
-    _COMPOSE_FILES=("-f" "$SCRIPT_DIR/docker-compose.yml")
-    if $USE_MQTT; then _COMPOSE_FILES+=("-f" "$SCRIPT_DIR/docker-compose.mqtt.yml"); fi
-    if $USE_BITS; then  _COMPOSE_FILES+=("-f" "$SCRIPT_DIR/docker-compose.bits.yml"); fi
+    _COMPOSE_FILES=("-f" "$TESTBED_DIR/docker-compose.yml")
+    if $USE_MQTT; then _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.mqtt.yml"); fi
+    if $USE_BITS; then  _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.bits.yml"); fi
 }
 
 run_compose() {
@@ -308,7 +312,7 @@ cmd_start() {
     fi
 
     # All required binaries must be regular executable files (not directories).
-    local sw="${SOFTWARE_ROOT:-$SCRIPT_DIR/software}"
+    local sw="${SOFTWARE_ROOT:-$TESTBED_DIR/software}"
     local missing=()
     for bin in cvmfs_gateway cvmfs-prepub cvmfs2 cvmfs_talk; do
         local bp="$sw/$bin"
@@ -354,10 +358,10 @@ cmd_start() {
         exit 1
     fi
 
-    if $USE_BITS && [[ ! -d "$SCRIPT_DIR/bits-console" ]]; then
-        error "--bits requires bits-console/ to be present at $SCRIPT_DIR/bits-console"
+    if $USE_BITS && [[ ! -d "$TESTBED_DIR/bits-console" ]]; then
+        error "--bits requires bits-console/ to be present at $TESTBED_DIR/bits-console"
         error "Clone or symlink it there:"
-        error "  git clone https://github.com/your-org/bits-console $SCRIPT_DIR/bits-console"
+        error "  git clone https://github.com/your-org/bits-console $TESTBED_DIR/bits-console"
         exit 1
     fi
 
@@ -412,7 +416,6 @@ cmd_start() {
         warn "Some services did not respond within 60 s — check logs: ./testbed.sh logs"
     fi
     _cmd_status_inner  # status without re-running load_env
-    cmd_info           # print endpoint summary
 }
 
 cmd_stop() {
@@ -835,7 +838,7 @@ cmd_catdump() {
     info "Output dir: $out_dir"
 
     mkdir -p "$out_dir"
-    bash "$SCRIPT_DIR/tools/dump-catalogs.sh" "$cas_root" "$out_dir"
+    bash "$SCRIPT_DIR/dump-catalogs.sh" "$cas_root" "$out_dir"
     ok "Catalog dumps written to $out_dir"
 }
 
@@ -941,12 +944,16 @@ cmd_clean() {
     warn "This will remove ALL container state and testbed data."
     warn "The repository snapshot (repo-seed.tar.gz) is PRESERVED."
     warn "Run 'clean --purge-snapshot' to also delete it."
+    warn ".env is PRESERVED so services can restart with the same credentials."
+    warn "Run 'clean --purge-env' (or 'make cleanall') to also delete .env."
     local _purge_snapshot=false
+    local _purge_env=false
     # Check POSITIONAL_ARGS (set by top-level arg parsing) AND function arguments
     # so that both  ./testbed.sh clean --purge-snapshot  and the internal call
-    # from cmd_reset (cmd_clean --purge-snapshot) are handled correctly.
+    # from cmd_reset (cmd_clean --purge-snapshot --purge-env) are handled correctly.
     for _arg in "${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}" "$@"; do
         [[ "$_arg" == "--purge-snapshot" ]] && _purge_snapshot=true
+        [[ "$_arg" == "--purge-env" ]]      && _purge_env=true
     done
     if $AUTO_YES; then
         warn "Auto-confirmed (--yes flag set)."
@@ -976,8 +983,13 @@ cmd_clean() {
                 sudo rm -rf "${TESTBED_ROOT:?}/$subdir"
             fi
         done
-        info "Removing $env_file ..."
-        rm -f "$env_file"
+
+        if $_purge_env; then
+            info "Removing $env_file ..."
+            rm -f "$env_file"
+        else
+            info "Preserving $env_file (use --purge-env to remove)"
+        fi
 
         # Restore the snapshot after wiping the data directories.
         if [[ -n "$_snap_bak" ]]; then
@@ -995,7 +1007,7 @@ cmd_reset() {
     # Full teardown: wipe everything (including snapshot), re-init from scratch,
     # start containers, and run bootstrap to create a fresh snapshot.
     # Use this when keys change, configs change, or you want a clean slate.
-    cmd_clean --purge-snapshot
+    cmd_clean --purge-snapshot --purge-env
     _env_loaded=false  # force fresh load after clean wipes .env
     cmd_init
     _env_loaded=false  # force fresh load after init writes new .env
@@ -1323,8 +1335,8 @@ cmd_mqtttest() {
 # the PublishedMessage handler that were added for the MQTT notification flow.
 #
 # Discovery order for the Go source tree:
-#   1. $SCRIPT_DIR/../cvmfs-bits  (sibling to cvmfs-testbed — the typical layout)
-#   2. $SCRIPT_DIR/../../cvmfs-bits  (one level up from a nested checkout)
+#   1. $TESTBED_DIR/../cvmfs-bits  (sibling to cvmfs-testbed — the typical layout)
+#   2. $TESTBED_DIR/../../cvmfs-bits  (one level up from a nested checkout)
 #   3. $BITS_SRC env var, if set
 #
 # Fallback: if no on-host source is found, the tests are executed inside the
@@ -1339,11 +1351,11 @@ cmd_unittest() {
     #   3. BITS_DIR env var (same variable used by the Makefile build target).
     #   4. One and two levels above SCRIPT_DIR (legacy layout).
     local candidates=(
-        "${SCRIPT_DIR}/cvmfs-bits"
+        "${TESTBED_DIR}/cvmfs-bits"
         "${BITS_SRC:-__unset__}"
         "${BITS_DIR:-__unset__}"
-        "${SCRIPT_DIR}/../cvmfs-bits"
-        "${SCRIPT_DIR}/../../cvmfs-bits"
+        "${TESTBED_DIR}/../cvmfs-bits"
+        "${TESTBED_DIR}/../../cvmfs-bits"
     )
     local bits_dir=""
     for d in "${candidates[@]}"; do

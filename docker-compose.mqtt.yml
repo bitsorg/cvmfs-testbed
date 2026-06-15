@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 CERN (European Organization for Nuclear Research)
+# SPDX-License-Identifier: Apache-2.0
+
 # docker-compose.mqtt.yml — Override file that enables the MQTT control-plane
 # path for the cvmfs-prepub testbed.
 #
@@ -5,8 +8,8 @@
 #   docker compose -f docker-compose.yml -f docker-compose.mqtt.yml up -d
 #
 # What this changes vs the base compose file:
-#   - Adds the Mosquitto broker as a dependency for cvmfs-prepub, both
-#     Stratum 1 receivers, and the native publisher.
+#   - Adds Mosquitto from the canonical base in cvmfs-elements/compose/mqtt.yml,
+#     with testbed-specific data and log volumes (mosquitto.conf is in the base).
 #   - Passes --broker-url to cvmfs-prepub so it uses MQTT for the announce/
 #     ready exchange AND for post-commit PublishedMessage notifications.
 #   - Passes --broker-url, --node-id, --repos, and --receiver-stratum0-url to
@@ -19,18 +22,18 @@
 # is unchanged; MQTT replaces only the control-plane signalling.
 
 services:
+
   # ── Mosquitto MQTT broker ─────────────────────────────────────────────────
   # Only activated when this overlay file is included (--mqtt flag).
   # Not exposed on any host port — only reachable by containers on cvmfs-net.
+  # mosquitto.conf is inherited from cvmfs-elements/compose/mqtt.yml.
   mosquitto:
-    image: eclipse-mosquitto:2
-    container_name: cvmfs-mosquitto
+    extends:
+      file: ./cvmfs-elements/compose/mqtt.yml
+      service: mosquitto
     volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ${TESTBED_ROOT}/data/mosquitto:/mosquitto/data
       - ${TESTBED_ROOT}/data/mosquitto-log:/mosquitto/log
-    networks:
-      - cvmfs-net
 
   cvmfs-prepub:
     depends_on:

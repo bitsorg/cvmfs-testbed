@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 CERN (European Organization for Nuclear Research)
+# SPDX-License-Identifier: Apache-2.0
+
 # upload-filelist.sh — Bulk-upload .tar.gz files to CVMFS via the bits REST API.
 #
 # Reads a filelist (one path per line), extracts each .tar.gz to a temp
@@ -40,6 +43,7 @@ NC='\033[0m'
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TESTBED_DIR="$(dirname "$SCRIPT_DIR")"   # root of the cvmfs-testbed checkout
 DEFAULT_SCAN_DIR="/home/pbuncic/Software/Bits/sw-lhcb/TARS"
 SCAN_DIR=""       # set by --dir; takes precedence over --filelist
 FILELIST=""       # set by --filelist (fallback when no --dir)
@@ -113,7 +117,7 @@ fi
 PREPUB_URL="${PREPUB_URL:-http://localhost:8080}"
 RUN_LOG_FILE="${RUN_LOG_FILE:-${TESTBED_ROOT:-$HOME/cvmfs-testbed}/data/runs.ndjson}"
 JOB_LOG_FILE="${JOB_LOG_FILE:-${TESTBED_ROOT:-$HOME/cvmfs-testbed}/data/ingest-jobs.ndjson}"
-COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
+COMPOSE_FILE="${TESTBED_DIR}/docker-compose.yml"
 
 # ── Scratch directory ─────────────────────────────────────────────────────────
 # Use a subdirectory of $TESTBED_ROOT so temp files land on the same filesystem
@@ -167,7 +171,7 @@ else
         TESTBED_ROOT_GUESS="${TESTBED_ROOT:-$HOME/cvmfs-testbed}"
         for candidate in \
             "${TESTBED_ROOT_GUESS}/data/filelist.txt" \
-            "${SCRIPT_DIR}/filelist.txt"; do
+            "${TESTBED_DIR}/filelist.txt"; do
             if [[ -f "$candidate" ]]; then
                 FILELIST="$candidate"
                 break

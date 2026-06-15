@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 CERN (European Organization for Nuclear Research)
+# SPDX-License-Identifier: Apache-2.0
+
 # init.sh — One-time host setup for the cvmfs-prepub testbed.
 #
 # Directory convention (enforced here):
@@ -74,7 +77,7 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { error "--testbed-root requires a value"; exit 1; }
             TESTBED_ROOT_ARG="$2"; shift 2 ;;
         --testbed-root=*)  TESTBED_ROOT_ARG="${1#*=}"; shift ;;
-        # --bits-src is no longer needed: bits-console lives at $SCRIPT_DIR/bits-console
+        # --bits-src is no longer needed: bits-console lives at $TESTBED_DIR/bits-console
         # Accept it silently for backward compatibility with any existing scripts.
         --bits-src|--bits-src=*) shift; [[ "$1" == --bits-src ]] && shift || true ;;
         *)                 shift ;;   # silently skip unknown flags from testbed.sh
@@ -83,6 +86,7 @@ done
 
 # ── Script location ───────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TESTBED_DIR="$(dirname "$SCRIPT_DIR")"   # root of cvmfs-testbed checkout
 
 # ── Determine TESTBED_ROOT ────────────────────────────────────────────────────
 # Priority: command-line arg > environment variable > $HOME default.
@@ -111,21 +115,21 @@ fi
 # Default: software/ lives next to this script (within the cvmfs-testbed repo),
 # not inside TESTBED_ROOT.  This keeps source/binaries together and eliminates
 # the need to set SOFTWARE_ROOT in .env.
-SOFTWARE_ROOT="${SOFTWARE_ROOT:-$SCRIPT_DIR/software}"
+SOFTWARE_ROOT="${SOFTWARE_ROOT:-$TESTBED_DIR/software}"
 
 # ── Check conventional subdirectories ────────────────────────────────────────
 # cvmfs/ must exist (contains source and build tree used by install.sh).
-if [[ ! -d "$SCRIPT_DIR/cvmfs" ]]; then
-    warn "CVMFS source not found at $SCRIPT_DIR/cvmfs"
+if [[ ! -d "$TESTBED_DIR/cvmfs" ]]; then
+    warn "CVMFS source not found at $TESTBED_DIR/cvmfs"
     warn "Clone or symlink it before running install.sh:"
-    warn "  git clone https://github.com/cvmfs/cvmfs $SCRIPT_DIR/cvmfs"
-    warn "  cmake -S $SCRIPT_DIR/cvmfs -B $SCRIPT_DIR/cvmfs/build"
-    warn "  make -C $SCRIPT_DIR/cvmfs/build -j\$(nproc)"
+    warn "  git clone https://github.com/cvmfs/cvmfs $TESTBED_DIR/cvmfs"
+    warn "  cmake -S $TESTBED_DIR/cvmfs -B $TESTBED_DIR/cvmfs/build"
+    warn "  make -C $TESTBED_DIR/cvmfs/build -j\$(nproc)"
     warn "  $SCRIPT_DIR/install.sh"
 fi
 
 # bits-console/ is optional (needed for the --bits overlay only).
-BITS_CONSOLE_SRC="$SCRIPT_DIR/bits-console"
+BITS_CONSOLE_SRC="$TESTBED_DIR/bits-console"
 if [[ ! -d "$BITS_CONSOLE_SRC" ]]; then
     warn "bits-console source not found at $BITS_CONSOLE_SRC"
     warn "Clone or symlink it if you need the bits/Gitea overlay:"
@@ -182,12 +186,14 @@ if [[ -z "$CVMFS_SERVER_BIN" ]]; then
 fi
 success "Prerequisites OK  (cvmfs_server: $CVMFS_SERVER_BIN)"
 
-# Check optional act_runner for the bits overlay.
-if command -v act_runner &>/dev/null; then
-    success "act_runner found — bits overlay fully supported."
-else
-    warn "act_runner not found — bits-console overlay will not run CI jobs."
-    warn "Install from: https://gitea.com/gitea/act_runner/releases"
+# Check optional act_runner — only relevant when bits-console is present.
+if [[ -d "$BITS_CONSOLE_SRC" ]]; then
+    if command -v act_runner &>/dev/null; then
+        success "act_runner found — bits overlay fully supported."
+    else
+        warn "act_runner not found — bits-console overlay will not run CI jobs."
+        warn "Install from: https://gitea.com/gitea/act_runner/releases"
+    fi
 fi
 
 # ── Create directory tree ─────────────────────────────────────────────────────
@@ -244,7 +250,7 @@ done
 unset _log
 success "Directory structure created."
 
-# (BITS_CONSOLE_SRC is derived from the conventional path $SCRIPT_DIR/bits-console
+# (BITS_CONSOLE_SRC is derived from the conventional path $TESTBED_DIR/bits-console
 # and has already been checked above — no further action needed here.)
 
 # ── Generate secrets and write .env ──────────────────────────────────────────
@@ -291,7 +297,7 @@ if [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
          /^GITEA_SECRET_KEY=$/        { $2=GITEA_SECRET_KEY;         print; next }
          /^GITEA_INTERNAL_TOKEN=$/    { $2=GITEA_INTERNAL_TOKEN;     print; next }
          { print }' \
-        "$SCRIPT_DIR/.env.example" > "$ENV_FILE"
+        "$TESTBED_DIR/.env.example" > "$ENV_FILE"
     success "Generated secrets and wrote $ENV_FILE"
 else
     warn "Reusing existing secrets from $ENV_FILE"
@@ -401,6 +407,7 @@ distribution:
   initial_backoff: 5s         # backoff after first failure
   max_backoff: 5m             # cap on exponential backoff
   worker_max_attempts: 0      # 0 = retry indefinitely until success
+  batch_size: 100             # objects per multipart PUT (0 = per-object PUTs)
 # Per-job wall-clock timeout.  Cancels any job that is stuck in pipeline,
 # catalog merge, SubmitPayload, or commit for longer than this duration.
 # Prevents jobs from hanging indefinitely when a remote endpoint stalls.
@@ -442,6 +449,50 @@ data_host: stratum1-b
 node_id: "stratum1-b"
 EOFCONFIG
 success "stratum1-b config written."
+
+# ── act_runner config (populated with secrets from .env) ─────────────────────
+# Written to $TESTBED_ROOT/config/act_runner/config.yaml so that the operator
+# can copy (or symlink) it to /etc/act_runner/config.yaml.  The PREPUB_URL and
+# PREPUB_API_TOKEN values are injected here so the runner can reach the prepub
+# service without needing project-level CI/CD variables.
+if [[ -d "$BITS_CONSOLE_SRC" ]]; then
+    mkdir -p "$TESTBED_ROOT/config/act_runner"
+    cat > "$TESTBED_ROOT/config/act_runner/config.yaml" <<EOF
+# act_runner configuration — generated by init.sh
+# Copy to /etc/act_runner/config.yaml before registering the runner.
+
+log:
+  level: info
+
+runner:
+  name: bits-host-runner
+  labels:
+    - self-hosted
+    - bits
+    - ubuntu-latest
+  work_dir: /tmp/act_runner_work
+  capacity: 4
+  fetch_interval: 2s
+  job_timeout: 3h
+
+  # Per-runner environment variables injected into every job.
+  # Set here (not as project CI/CD variables) so different runner instances
+  # can publish to different prepub servers, all from the same bits-console.
+  envs:
+    PREPUB_URL:       "http://cvmfs-prepub:8080"
+    PREPUB_API_TOKEN: "${PREPUB_API_TOKEN}"
+
+cache:
+  dir: /tmp/act_runner_cache
+  host: ""
+  port: 0
+
+container:
+  docker_host: ""
+  force_pull: true
+EOF
+    success "act_runner config written → config/act_runner/config.yaml"
+fi
 
 # ── Patch server.conf CVMFS_UPSTREAM_STORAGE (unconditional) ─────────────────
 # This section runs every time init.sh is invoked so that existing installations
@@ -836,7 +887,7 @@ fi
 
 # ── Print next-steps summary ──────────────────────────────────────────────────
 _BITS_AVAILABLE=false
-[[ -d "$SCRIPT_DIR/bits-console" ]] && _BITS_AVAILABLE=true
+[[ -d "$TESTBED_DIR/bits-console" ]] && _BITS_AVAILABLE=true
 
 echo ""
 echo "========================================================"
