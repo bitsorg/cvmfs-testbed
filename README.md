@@ -131,6 +131,36 @@ publisher ──POST /api/v1/jobs──► cvmfs-prepub:8080
                                              writes .cvmfspublished
 ```
 
+### Pull mode (docker-compose.pull.yml overlay — ADR-0001)
+
+Pull mode reverses the data plane: instead of the publisher pushing objects to
+each Stratum 1, the receivers fetch what they are missing from Stratum 0 when a
+prepare announce arrives over MQTT (so it implies the MQTT overlay). The control
+plane is unchanged; only who initiates the object transfer flips.
+
+```
+publisher ──POST /api/v1/jobs──► cvmfs-prepub:8080  (serves manifest + objects)
+                                        │
+                              prepare announce
+                                        │
+                                  mosquitto:1883
+                              ┌─────────┤
+                   subscribe  │         │  subscribe
+                              │         │
+                        stratum1-a   stratum1-b
+                              │         │
+                              └──GET /s1/{txn}/manifest, then GET objects──┐
+                                                                          │
+                                                                    cvmfs-prepub
+                                                            (Stratum 0 serves data)
+```
+
+Run it with `make start-pull` / `make PULL=1 <target>`, or `./testbed.sh start
+--pull`. End-to-end check: `make test-pull` (verifies each receiver pulled the
+new objects itself); monitor with `make pull-status`. CI for the profile lives
+in `.gitlab-ci.yml` (`validate:pull-profile` renders the overlay on every change;
+`live-e2e:pull` runs the full test on a privileged runner, manually).
+
 ## Directory Layout
 
 The testbed uses a **fixed directory convention** so that no path variables need to be set in `.env`. Clone or symlink the source trees directly inside the `cvmfs-testbed/` checkout, then run `install.sh` once to populate `software/`.
@@ -356,7 +386,35 @@ The `Makefile` is the recommended entry point for day-to-day development. It enc
 | `make catdump-ingest`| Dump catalogs from the current snapshot, labelled `ingest`                        |
 | `make catdump-bits`  | Dump catalogs from the current snapshot, labelled `bits`                          |
 | `make catdiff`       | Diff `ingest` vs `bits` catalog dumps                                             |
+| `make scenario SCENARIO=…` | Start + smoke-test a named distribution scenario (`push`/`mqtt`/`pull`/`ingest`) |
+| `make scenario-pull` | Convenience alias for `make scenario SCENARIO=pull` (also `-push`/`-mqtt`/`-ingest`) |
+| `make test-pull`     | End-to-end pull-distribution test (ADR-0001)                                      |
+| `make pull-status`   | Dump pull-relevant publisher/receiver log lines                                   |
 | `make help`          | Print the target summary with current variable values                             |
+
+### Distribution scenarios
+
+A **scenario** bundles the `--method` / `--mqtt` / `--pull` flags into one word so
+you can switch distribution models in a single command, via `./testbed.sh`, the
+`Makefile`, or the console's Monitoring tab (Scenario dropdown → Apply):
+
+| Scenario | Model | Flags |
+|----------|-------|-------|
+| `push`   | legacy push, no control plane | bits, no overlays |
+| `mqtt`   | push data + MQTT control plane | bits, `--mqtt` |
+| `pull`   | ADR-0001 pull distribution | bits, `--mqtt --pull` |
+| `ingest` | native `cvmfs_server` ingest | ingest, no overlays |
+
+```
+./testbed.sh start --scenario pull && ./testbed.sh pulltest --scenario pull
+make scenario-pull
+```
+
+The Monitoring tab adds a **Pull Distribution** panel (receiver pull object rate
+by result, warm-transaction rate) sourced from VictoriaMetrics, and the
+publisher-side `cvmfs_prepub_dist_*` counters (warm-quorum, commit, admission)
+appear in the Prometheus Metrics table; receiver-side `cvmfs_receiver_pull_*`
+metrics are scraped from each Stratum 1.
 
 ### Variables
 

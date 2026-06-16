@@ -83,6 +83,7 @@ ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mKHABCDGJ]')
 # Commands allowed via /api/run (security whitelist — no shell metacharacters).
 ALLOWED_COMMANDS = frozenset({
     'status', 'info', 'logs', 'test', 'stresstest', 'mqtttest', 'unittest',
+    'pulltest', 'pullstatus',
     'start', 'stop', 'restart', 'bootstrap', 'snapshot', 'restore',
     'catdump', 'catdiff', 'verify', 'clean', 'reset', 'help',
     'upload-filelist',

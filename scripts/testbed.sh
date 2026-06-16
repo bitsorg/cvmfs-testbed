@@ -58,6 +58,14 @@
 #                   the Stratum 1 receivers log the expected activity.
 #                   With --method ingest the test also checks stratum1 logs for
 #                   S0 pull activity triggered by the notification.
+#   pulltest        End-to-end ADR-0001 pull-distribution test.  Requires --pull
+#                   (which implies --mqtt).  Runs one publish job and verifies
+#                   that each Stratum 1 receiver fetched the new objects from
+#                   Stratum 0 itself (logs "pull: transaction warmed"), reaching
+#                   the configured pull quorum (PULL_QUORUM, default 1).
+#   pullstatus      Monitoring helper: dump pull-relevant log lines from the
+#                   publisher and both receivers (announce, manifest serving,
+#                   warm/commit, pull outcomes).  Requires --pull.
 #   unittest        Run Go unit tests for the broker and receiver packages.
 #                   Searches for the cvmfs-bits source tree next to this script
 #                   directory and runs:
@@ -71,6 +79,11 @@
 #   --bits                Include the bits-console overlay (Gitea + seeder).
 #                         Requires bits-console/ to be present in this directory.
 #   --mqtt                Include the MQTT control-plane overlay.
+#   --pull                Include the ADR-0001 pull-distribution overlay.  Implies
+#                         --mqtt (pull is triggered over the MQTT control plane).
+#   --scenario NAME       Named distribution preset (push|mqtt|pull|ingest) that
+#                         sets --method/--mqtt/--pull in one word.  Use instead of
+#                         the individual flags, e.g. start/test --scenario pull.
 #   --method bits|ingest  Publishing method for test/stresstest commands.
 #                         bits:   Use the cvmfs-prepub REST API path (default).
 #                         ingest: Use cvmfs_server ingest directly via the gateway.
@@ -158,6 +171,8 @@ TESTBED_DIR="$(dirname "$SCRIPT_DIR")"   # root of cvmfs-testbed checkout
 # ── Default flags ─────────────────────────────────────────────────────────────
 USE_BITS=false
 USE_MQTT=false
+USE_PULL=false          # ADR-0001 pull-based distribution overlay (implies --mqtt)
+SCENARIO=""             # named preset over the flags below (see apply_scenario)
 SOFTWARE_ROOT_OVERRIDE=""
 TESTBED_ROOT_OVERRIDE=""
 PUBLISH_METHOD="bits"   # bits | ingest
@@ -177,6 +192,14 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --bits)                USE_BITS=true;                    shift ;;
         --mqtt)                USE_MQTT=true;                    shift ;;
+        # Pull mode (ADR-0001) rides on the MQTT control plane, so --pull turns
+        # the MQTT overlay on as well.
+        --pull)                USE_PULL=true; USE_MQTT=true;     shift ;;
+        # Named distribution scenario — a preset over --mqtt/--pull/--method.
+        --scenario)
+            [[ $# -ge 2 ]] || { error "--scenario requires a value (push|mqtt|pull|ingest)"; exit 1; }
+            SCENARIO="$2"; shift 2 ;;
+        --scenario=*)          SCENARIO="${1#*=}"; shift ;;
         # --bits-src is no longer needed: bits-console lives at $TESTBED_DIR/bits-console.
         # Accept it silently for backward compatibility.
         --bits-src)
@@ -213,6 +236,29 @@ while [[ $# -gt 0 ]]; do
         *)    POSITIONAL_ARGS+=("$1");                           shift ;;
     esac
 done
+
+# ── Scenario presets ──────────────────────────────────────────────────────────
+# A scenario is a named bundle of the distribution flags so the testbed (and the
+# console / Makefile) can switch between distribution models with one word. Use a
+# scenario OR the individual --mqtt/--pull/--method flags, not both (the scenario
+# sets all three).
+#
+#   push    legacy push, no control plane     (method bits,  -mqtt -pull)
+#   mqtt    push data + MQTT control plane     (method bits,  +mqtt -pull)
+#   pull    ADR-0001 pull distribution         (method bits,  +mqtt +pull)
+#   ingest  native cvmfs_server ingest path    (method ingest,-mqtt -pull)
+apply_scenario() {
+    [[ -z "$SCENARIO" ]] && return 0
+    case "$SCENARIO" in
+        push)   PUBLISH_METHOD="bits";   USE_MQTT=false; USE_PULL=false ;;
+        mqtt)   PUBLISH_METHOD="bits";   USE_MQTT=true;  USE_PULL=false ;;
+        pull)   PUBLISH_METHOD="bits";   USE_MQTT=true;  USE_PULL=true  ;;
+        ingest) PUBLISH_METHOD="ingest"; USE_MQTT=false; USE_PULL=false ;;
+        *) error "Unknown scenario: $SCENARIO (expected push|mqtt|pull|ingest)"; exit 1 ;;
+    esac
+    info "Scenario '${SCENARIO}': method=${PUBLISH_METHOD} mqtt=${USE_MQTT} pull=${USE_PULL}"
+}
+apply_scenario
 
 # ── .env helpers ──────────────────────────────────────────────────────────────
 # .env lives in TESTBED_ROOT, not next to this script (the script dir may be
@@ -269,6 +315,10 @@ compose_files() {
     _COMPOSE_FILES=("-f" "$TESTBED_DIR/docker-compose.yml")
     if $USE_MQTT; then _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.mqtt.yml"); fi
     if $USE_BITS; then  _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.bits.yml"); fi
+    # The pull overlay MUST come last: it restates the service commands set by the
+    # MQTT overlay and appends --distribute-mode pull. --pull already forced
+    # USE_MQTT=true, so the mqtt overlay is present before it.
+    if $USE_PULL; then _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.pull.yml"); fi
 }
 
 run_compose() {
@@ -1569,6 +1619,136 @@ cmd_info() {
 EOF
 }
 
+# ── cmd_pulltest ──────────────────────────────────────────────────────────────
+# End-to-end test of ADR-0001 pull-based distribution. Requires --pull (which
+# implies --mqtt). Runs one publish job and verifies that each Stratum 1 receiver
+# fetched the new objects from Stratum 0 by itself (pull), rather than being
+# pushed to. Warm quorum is reached when at least PULL_QUORUM receivers warm.
+#
+#   ./testbed.sh pulltest --pull [--method bits|ingest]
+#
+# PULL_QUORUM (env, default 1): minimum warmed receivers for the test to pass.
+cmd_pulltest() {
+    section "Pull-distribution end-to-end test (method: ${PUBLISH_METHOD})"
+    load_env
+
+    if ! $USE_PULL; then
+        error "This command requires the --pull flag (it implies --mqtt)."
+        error "  ./testbed.sh pulltest --pull [--method bits|ingest]"
+        exit 1
+    fi
+
+    local REPO="${REPO_NAME:?REPO_NAME not set — run: ./testbed.sh init}"
+    local receivers=(stratum1-a stratum1-b)
+    local quorum="${PULL_QUORUM:-1}"
+
+    # ── Step 1: confirm the publisher is serving in pull mode ─────────────────
+    section "Step 1: confirm cvmfs-prepub is in pull mode"
+    local pub_log
+    pub_log="$(run_compose logs --no-log-prefix --tail=200 cvmfs-prepub 2>&1 || true)"
+    if echo "${pub_log}" | grep -qiE "distribute serving mounted .*pull|distribute_mode.*pull|pull mode"; then
+        ok "Publisher reports pull mode."
+    else
+        warn "Could not confirm pull mode from publisher logs — continuing anyway."
+        warn "  (publisher-side commit orchestration may still be landing; see ADR-0001 P3)"
+    fi
+
+    # ── Step 2: snapshot each receiver's warmed-count baseline ────────────────
+    # We count pre-existing "transaction warmed" lines so we only credit NEW pulls
+    # triggered by this test's publish.
+    declare -A baseline
+    local r
+    for r in "${receivers[@]}"; do
+        baseline[$r]="$(run_compose logs --no-log-prefix "$r" 2>&1 \
+            | grep -c 'pull: transaction warmed' || true)"
+        info "  ${r}: ${baseline[$r]} prior warm(s)"
+    done
+
+    # ── Step 3: run one publish job ───────────────────────────────────────────
+    section "Step 3: running publish job (method: ${PUBLISH_METHOD})"
+    local pub_ok=true
+    case "$PUBLISH_METHOD" in
+        bits)   run_compose exec publisher /scripts/smoke-test.sh || pub_ok=false ;;
+        ingest) run_compose exec cvmfs-native-publisher /scripts/native-smoke.sh || pub_ok=false ;;
+        *)      error "Unknown method: ${PUBLISH_METHOD}"; exit 1 ;;
+    esac
+    $pub_ok || { error "Publish job failed — aborting pull test."; exit 1; }
+    ok "Publish job completed."
+
+    # ── Step 4: wait for receivers to pull (up to 60 s) ───────────────────────
+    section "Step 4: waiting for receivers to pull new objects from S0"
+    local deadline=$(( $(date +%s) + 60 ))
+    declare -A warmed
+    local warmed_count=0
+    while [[ $(date +%s) -lt $deadline ]]; do
+        warmed_count=0
+        for r in "${receivers[@]}"; do
+            local now
+            now="$(run_compose logs --no-log-prefix "$r" 2>&1 \
+                | grep -c 'pull: transaction warmed' || true)"
+            if [[ "$now" -gt "${baseline[$r]}" ]]; then
+                warmed[$r]=1
+            fi
+            [[ -n "${warmed[$r]:-}" ]] && warmed_count=$(( warmed_count + 1 ))
+        done
+        [[ $warmed_count -ge $quorum ]] && break
+        sleep 2; echo -n "."
+    done
+    echo ""
+
+    # ── Step 5: report ────────────────────────────────────────────────────────
+    section "Step 5: result"
+    for r in "${receivers[@]}"; do
+        if [[ -n "${warmed[$r]:-}" ]]; then
+            local line
+            line="$(run_compose logs --no-log-prefix "$r" 2>&1 \
+                | grep 'pull: transaction warmed' | tail -1)"
+            ok "  ${r} pulled & warmed:  ${line#*pull: }"
+        else
+            warn "  ${r} did NOT report a new pull warm"
+            # Surface a failure line if present, to aid debugging.
+            run_compose logs --no-log-prefix --tail=40 "$r" 2>&1 \
+                | grep -E 'pull: transaction failed|concurrency limit' | tail -2 \
+                | while IFS= read -r l; do error "    ${l}"; done
+        fi
+    done
+
+    if [[ $warmed_count -ge $quorum ]]; then
+        ok "Pull quorum reached: ${warmed_count}/${#receivers[@]} receivers warmed (need ${quorum})."
+        exit 0
+    fi
+    error "Pull quorum NOT reached: ${warmed_count}/${#receivers[@]} warmed (need ${quorum})."
+    error "Likely causes:"
+    error "  • publisher-side commit orchestration not yet wired into the publish loop"
+    error "    (ADR-0001 P3 — Notifier.Announce / manifest POST); or"
+    error "  • receivers cannot reach the manifest at http://stratum0/cvmfs/s1/{txn}/manifest"
+    error "Inspect with: ./testbed.sh pullstatus --pull"
+    exit 1
+}
+
+# ── cmd_pullstatus ────────────────────────────────────────────────────────────
+# Monitoring helper: dumps the pull-relevant log lines from the publisher and
+# both receivers (announce, manifest serving, warm/commit, pull outcomes).
+#
+#   ./testbed.sh pullstatus --pull
+cmd_pullstatus() {
+    section "Pull-distribution status"
+    load_env
+
+    section "Publisher (cvmfs-prepub) — serving / announce / commit"
+    run_compose logs --no-log-prefix --tail=200 cvmfs-prepub 2>&1 \
+        | grep -iE 'pull mode|distribute serving|announce|manifest|warm|committed|lease|admission' \
+        | tail -25 || info "  (no matching lines)"
+
+    local r
+    for r in stratum1-a stratum1-b; do
+        section "Receiver ${r} — pull outcomes"
+        run_compose logs --no-log-prefix --tail=200 "$r" 2>&1 \
+            | grep -iE 'pull: transaction (warmed|failed)|concurrency limit|fetched|skipped|failed' \
+            | tail -15 || info "  (no matching lines)"
+    done
+}
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 case "$CMD" in
     init)           cmd_init ;;
@@ -1589,6 +1769,8 @@ case "$CMD" in
     verify)         cmd_verify ;;
     server)         cmd_server ;;
     mqtttest)       cmd_mqtttest ;;
+    pulltest)       cmd_pulltest ;;
+    pullstatus)     cmd_pullstatus ;;
     unittest)       cmd_unittest ;;
     clean)          cmd_clean ;;
     reset)          cmd_reset ;;

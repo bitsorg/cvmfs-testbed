@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: 2026 CERN
+# SPDX-License-Identifier: Apache-2.0
+
+# GitLab CI for the cvmfs-testbed — ADR-0001 pull-distribution profile.
+#
+# `validate` runs on every push / merge request that touches the compose stack
+# or the driver script: it checks the shell syntax, lints the compose YAML, and
+# renders the base + mqtt + pull overlay with `docker compose config` (no
+# containers started — no privileged runner or CVMFS kernel module needed).
+#
+# `live-e2e` is the full end-to-end (`make test-pull`) and is heavy: it needs a
+# privileged runner with FUSE/cvmfs. It is therefore manual (run from the
+# pipeline UI) and tagged so it lands on a capable runner.
+
+stages:
+  - validate
+  - e2e
+
+validate:pull-profile:
+  stage: validate
+  image: docker:27-cli
+  services:
+    - docker:27-dind
+  variables:
+    # Dummy values so `compose config` can interpolate; nothing is launched.
+    TESTBED_ROOT: /tmp/testbed
+    SOFTWARE_ROOT: /tmp/software
+    REPO_NAME: test.cern.ch
+    PREPUB_API_TOKEN: ci-token
+    CVMFS_GATEWAY_SECRET: ci-secret
+    CVMFS_GATEWAY_KEY_ID: ci-key
+    PREPUB_HMAC_SECRET: ci-hmac
+    GIT_SUBMODULE_STRATEGY: recursive
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+      changes:
+        - docker-compose.yml
+        - docker-compose.mqtt.yml
+        - docker-compose.pull.yml
+        - scripts/testbed.sh
+        - .gitlab-ci.yml
+  before_script:
+    - apk add --no-cache bash python3 py3-yaml >/dev/null
+  script:
+    - echo "── shell syntax ──"
+    - bash -n scripts/testbed.sh
+    - echo "── compose YAML lint ──"
+    - |
+      python3 - <<'PY'
+      import glob, sys, yaml
+      ok = True
+      for f in sorted(glob.glob("docker-compose*.yml")):
+          try:
+              list(yaml.safe_load_all(open(f))); print("  ok  ", f)
+          except Exception as e:
+              print("  FAIL", f, e); ok = False
+      sys.exit(0 if ok else 1)
+      PY
+    - echo "── render base + mqtt + pull overlay ──"
+    - docker compose -f docker-compose.yml -f docker-compose.mqtt.yml -f docker-compose.pull.yml config -q
+    - echo "── assert --distribute-mode pull on prepub + both receivers ──"
+    - |
+      n="$(docker compose -f docker-compose.yml -f docker-compose.mqtt.yml -f docker-compose.pull.yml config \
+            | grep -c -- '--distribute-mode')"
+      echo "found --distribute-mode $n time(s) (expect >= 3)"
+      test "$n" -ge 3
+
+live-e2e:pull:
+  stage: e2e
+  when: manual
+  tags:
+    - privileged        # needs FUSE + cvmfs; assign to a capable runner
+  variables:
+    GIT_SUBMODULE_STRATEGY: recursive
+  script:
+    - make install
+    - make start-pull
+    - make test-pull
+  after_script:
+    - make pull-status || true
+    - make clean || true

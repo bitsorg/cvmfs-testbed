@@ -85,12 +85,30 @@ _CONCURRENCY := $(if $(C),--concurrency $(C),)
 MQTT ?= 0
 _MQTT := $(if $(filter 1 yes true,$(MQTT)),--mqtt,)
 
+# Set PULL=1 to enable the ADR-0001 pull-based distribution overlay (implies
+# MQTT — receivers pull objects from Stratum 0 when notified instead of being
+# pushed to).  Example:
+#   make PULL=1 start          # start testbed with pull + MQTT overlays
+#   make start-pull            # convenience alias (same as PULL=1 start)
+#   make test-pull             # end-to-end pull test
+PULL ?= 0
+_PULL := $(if $(filter 1 yes true,$(PULL)),--pull,)
+
+# SCENARIO selects a named distribution preset (push|mqtt|pull|ingest) in one
+# word, instead of setting MQTT=/PULL=/method individually.  Examples:
+#   make scenario SCENARIO=pull     # start + smoke test the pull scenario
+#   make scenario-pull              # convenience alias
+#   make start SCENARIO=mqtt        # just start in the mqtt scenario
+SCENARIO ?=
+_SCENARIO := $(if $(SCENARIO),--scenario $(SCENARIO),)
+
 # ── Default goal ──────────────────────────────────────────────────────────────
 .DEFAULT_GOAL := all
 
-.PHONY: all build install init start start-mqtt bootstrap snapshot restore redeploy clean cleanall \
-        test test-ingest test-bits test-mqtt \
-        stresstest stresstest-ingest stresstest-mqtt \
+.PHONY: all build install init start start-mqtt start-pull bootstrap snapshot restore redeploy clean cleanall \
+        test test-ingest test-bits test-mqtt test-pull pull-status \
+        scenario scenario-push scenario-mqtt scenario-pull scenario-ingest \
+        stresstest stresstest-ingest stresstest-mqtt stresstest-pull \
         catdump-ingest catdump-bits catdiff \
         help
 
@@ -142,11 +160,15 @@ init: $(MAKE_DIR)/init
 # Depends on init having run.  auto-restores snapshot if repo is absent.
 start: $(MAKE_DIR)/init
 	@echo "── Starting testbed ──────────────────────────────────────────────────"
-	bash "$(TESTBED)" start $(_MQTT)
+	bash "$(TESTBED)" start $(_MQTT) $(_PULL) $(_SCENARIO)
 
 start-mqtt: $(MAKE_DIR)/init
 	@echo "── Starting testbed with MQTT overlay ────────────────────────────────"
 	bash "$(TESTBED)" start --mqtt
+
+start-pull: $(MAKE_DIR)/init
+	@echo "── Starting testbed with pull + MQTT overlays ────────────────────────"
+	bash "$(TESTBED)" start --pull
 
 # ── bootstrap ─────────────────────────────────────────────────────────────────
 # Run once: seeds the nested-catalog structure required by cvmfs_server ingest,
@@ -246,6 +268,32 @@ test-bits:
 test-mqtt:
 	bash "$(TESTBED)" mqtttest --mqtt
 
+# End-to-end pull test: publish one job and verify both Stratum 1 receivers
+# pulled the new objects from Stratum 0 themselves (ADR-0001).
+test-pull:
+	bash "$(TESTBED)" pulltest --pull --method bits
+
+# Monitoring: dump pull-relevant log lines from publisher + receivers.
+pull-status:
+	bash "$(TESTBED)" pullstatus --pull
+
+# ── scenarios ─────────────────────────────────────────────────────────────────
+# Start the testbed in SCENARIO and run its smoke test. `pull` uses the dedicated
+# pull end-to-end check; the others use the standard smoke test.
+scenario:
+	@if [ -z "$(SCENARIO)" ]; then echo "set SCENARIO=push|mqtt|pull|ingest"; exit 1; fi
+	bash "$(TESTBED)" start --scenario $(SCENARIO)
+	@if [ "$(SCENARIO)" = "pull" ]; then \
+	    bash "$(TESTBED)" pulltest --scenario pull; \
+	else \
+	    bash "$(TESTBED)" test --scenario $(SCENARIO); \
+	fi
+
+scenario-push:   ; @$(MAKE) scenario SCENARIO=push
+scenario-mqtt:   ; @$(MAKE) scenario SCENARIO=mqtt
+scenario-pull:   ; @$(MAKE) scenario SCENARIO=pull
+scenario-ingest: ; @$(MAKE) scenario SCENARIO=ingest
+
 # ── stresstest targets ────────────────────────────────────────────────────────
 stresstest:
 	bash "$(TESTBED)" stresstest $(N) $(_CONCURRENCY) --method bits $(_MQTT)
@@ -255,6 +303,9 @@ stresstest-ingest: $(MAKE_DIR)/bootstrap
 
 stresstest-mqtt:
 	bash "$(TESTBED)" stresstest $(N) $(_CONCURRENCY) --mqtt --method bits
+
+stresstest-pull:
+	bash "$(TESTBED)" stresstest $(N) $(_CONCURRENCY) --pull --method bits
 
 # ── catalog comparison ────────────────────────────────────────────────────────
 catdump-ingest:
@@ -287,13 +338,17 @@ help:
 	@echo "  make test-ingest          Smoke test (cvmfs_server ingest, needs bootstrap)"
 	@echo "  make test-bits            Smoke test (cvmfs-prepub REST API)"
 	@echo "  make test-mqtt            End-to-end MQTT notification test"
+	@echo "  make test-pull            End-to-end pull-distribution test (ADR-0001)"
+	@echo "  make pull-status          Dump pull-relevant publisher/receiver logs"
 	@echo ""
 	@echo "  make stresstest [N=10]    Stress test, N jobs (bits)"
 	@echo "  make stresstest-ingest    Stress test (ingest path)"
 	@echo "  make stresstest-mqtt [N=10]  Stress test via MQTT path"
 	@echo ""
 	@echo "  make start-mqtt           Start testbed with Mosquitto MQTT broker"
+	@echo "  make start-pull           Start testbed with pull + MQTT overlays (ADR-0001)"
 	@echo "  make MQTT=1 <target>      Enable MQTT overlay for any target"
+	@echo "  make PULL=1 <target>      Enable pull overlay (implies MQTT) for any target"
 	@echo ""
 	@echo "  make catdump-ingest       Dump catalogs after ingest test"
 	@echo "  make catdump-bits         Dump catalogs after bits test"

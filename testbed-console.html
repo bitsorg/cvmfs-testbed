@@ -192,6 +192,14 @@
     <button class="btn btn-outline btn-sm" id="mon-range-btn" onclick="cycleRange()">Last 20 jobs</button>
     <button class="btn btn-sm" style="background:#d73a49;color:#fff;border:none" onclick="resetMonStats()" title="Zero the baseline — only jobs submitted after this moment will appear in the charts and summary cards">⊘ Reset stats</button>
     <span id="mon-since-label" style="font-size:11px;color:var(--c-muted);display:none"></span>
+    <span style="margin-left:auto;font-size:12px;color:var(--c-muted)">Scenario:</span>
+    <select id="mon-scenario" style="font-size:12px;padding:3px 6px;border:1px solid var(--c-border);border-radius:var(--radius);background:var(--c-bg)" title="Distribution model to (re)start the testbed in">
+      <option value="push">push (legacy)</option>
+      <option value="mqtt">mqtt (push + control plane)</option>
+      <option value="pull">pull (ADR-0001)</option>
+      <option value="ingest">ingest (native)</option>
+    </select>
+    <button class="btn btn-sm" style="background:#0075ca;color:#fff;border:none" onclick="applyScenario()" title="Restart the testbed in the selected scenario (server mode)">▶ Apply</button>
   </div>
 
   <!-- Timing cards -->
@@ -344,6 +352,28 @@
       <button class="btn btn-outline btn-sm" onclick="closeMetricHistory()">✕ Close</button>
     </div>
     <div class="box-pad"><div style="position:relative;height:220px"><canvas id="chart-hm-history"></canvas></div></div>
+  </div>
+
+  <!-- Pull distribution (ADR-0001) -->
+  <div class="box">
+    <div class="box-header">
+      <span class="box-title">Pull Distribution <span class="muted" style="font-size:11px">(ADR-0001 · from VictoriaMetrics)</span></span>
+      <button class="btn btn-outline btn-sm" onclick="buildPullCharts()">↻</button>
+    </div>
+    <div class="box-pad">
+      <div id="pull-mon-note" style="font-size:11px;color:var(--c-muted);margin-bottom:8px"></div>
+      <div class="metrics-grid">
+        <div class="box" style="box-shadow:none;border:1px solid var(--c-border)">
+          <div class="box-header"><span class="box-title" style="font-size:13px">Receiver pull objects /s <span class="muted" style="font-size:10px">(by result)</span></span></div>
+          <div class="box-pad"><div class="chart-wrap" style="height:200px"><canvas id="pull-chart-objects"></canvas></div></div>
+        </div>
+        <div class="box" style="box-shadow:none;border:1px solid var(--c-border)">
+          <div class="box-header"><span class="box-title" style="font-size:13px">Warm transactions /s <span class="muted" style="font-size:10px">(warmed vs failed)</span></span></div>
+          <div class="box-pad"><div class="chart-wrap" style="height:200px"><canvas id="pull-chart-warm"></canvas></div></div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--c-muted);margin-top:6px">Requires server mode + the <code>pull</code> scenario. Each publish announces a transaction; receivers pull missing objects and warm. Publisher-side warm-quorum / commit counters appear in the Prometheus Metrics table below (<code>cvmfs_prepub_dist_*</code>).</div>
+    </div>
   </div>
 
   <!-- Prometheus metrics -->
@@ -1381,6 +1411,7 @@ async function refreshMonitoring(){
     refreshRuns(),
   ]);
   buildMonitoringCharts();
+  buildPullCharts();
   // Host metrics (server mode only)
   refreshHostMetrics();
   // Schedule host-metrics auto-refresh every 30 s while on this tab
@@ -3065,6 +3096,9 @@ let _activeSSE=null, _activePid=null;
 
 function buildFlags(opts={}){
   const flags=[], args=[];
+  // A scenario is a one-word preset for --method/--mqtt/--pull; it overrides the
+  // individual flag checkboxes, so return early with just the scenario arg.
+  if(opts.scenario){ return {flags:[], args:['--scenario', opts.scenario]}; }
   if($('flag-mqtt')?.checked) flags.push('--mqtt');
   if($('flag-bits')?.checked) flags.push('--bits');
   if(opts.method!==false){
@@ -3081,6 +3115,86 @@ function buildFlags(opts={}){
   if(opts.svc){ const s=$('flag-svc')?.value?.trim(); if(s) args.push(s); }
   if(opts.mqtt && !$('flag-mqtt')?.checked) flags.push('--mqtt');
   return {flags,args};
+}
+
+// ── Scenario selection ────────────────────────────────────────────────────────
+// Restart the testbed in the scenario chosen in the Monitoring header dropdown.
+function applyScenario(){
+  const sel = document.getElementById('mon-scenario');
+  const s = sel ? sel.value : '';
+  if(!s) return;
+  runCmd('start', {scenario:s, confirm:`Restart the testbed in the '${s}' distribution scenario?`});
+}
+
+// ── Pull-distribution charts (VictoriaMetrics) ────────────────────────────────
+const PULL_SERIES_COLORS = {
+  fetched:'#28a745', skipped:'#6a737d', failed:'#d73a49',
+  warmed:'#28a745', timeout:'#e36209', reached:'#0075ca',
+};
+let _pullChartObjects=null, _pullChartWarm=null;
+
+// _vmSeries runs a range query and returns one {label,values} per result series.
+async function _vmSeries(promql, windowSec=1800, step=30){
+  if(!SERVER_MODE) return [];
+  const hdrs = {'X-Testbed-Token': SERVER_TOKEN||''};
+  const now  = Math.floor(Date.now()/1000);
+  const url  = `/api/proxy/victoriametrics/api/v1/query_range`
+    + `?query=${encodeURIComponent(promql)}&start=${now-windowSec}&end=${now}&step=${step}`;
+  try{
+    const r = await fetch(url, {headers:hdrs, signal:AbortSignal.timeout(8000)});
+    if(!r.ok) return [];
+    const d = await r.json();
+    if(d.status!=='success') return [];
+    return (d.data?.result||[]).map(s=>({
+      label: (s.metric && (s.metric.result || s.metric.instance)) || 'series',
+      values: s.values || [],
+    }));
+  }catch(_){ return []; }
+}
+
+function _renderSeriesChart(canvasId, series, prev, unit){
+  const canvas = document.getElementById(canvasId);
+  if(!canvas) return prev;
+  if(prev){ try{ prev.destroy(); }catch(_){ } }
+  const tsSet = new Set();
+  series.forEach(s=>s.values.forEach(([ts])=>tsSet.add(ts)));
+  const ts = Array.from(tsSet).sort((a,b)=>a-b);
+  const labels = ts.map(t=>new Date(t*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}));
+  const datasets = series.map(s=>{
+    const m = new Map(s.values.map(([t,v])=>[t, parseFloat(v)]));
+    const c = PULL_SERIES_COLORS[s.label] || '#0075ca';
+    return {
+      label: s.label,
+      data: ts.map(t=> m.has(t) ? m.get(t) : null),
+      borderColor: c, backgroundColor: c+'22',
+      fill:false, tension:0.3, pointRadius:0, spanGaps:true,
+    };
+  });
+  return new Chart(canvas.getContext('2d'), {
+    type:'line',
+    data:{labels, datasets},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:true, position:'bottom', labels:{boxWidth:10,font:{size:10}}}},
+      scales:{y:{beginAtZero:true, title:{display:true, text:unit}}},
+    },
+  });
+}
+
+async function buildPullCharts(){
+  const note = document.getElementById('pull-mon-note');
+  if(!SERVER_MODE){ if(note) note.textContent='Server mode required for live pull charts.'; return; }
+  const [objs, warm] = await Promise.all([
+    _vmSeries('sum(rate(cvmfs_receiver_pull_objects_total[5m])) by (result)'),
+    _vmSeries('sum(rate(cvmfs_receiver_pull_transactions_total[5m])) by (result)'),
+  ]);
+  if(note){
+    note.textContent = (objs.length || warm.length)
+      ? ''
+      : 'No pull metrics in VictoriaMetrics yet — start the pull scenario and run a publish (a publish announces a transaction that receivers pull).';
+  }
+  _pullChartObjects = _renderSeriesChart('pull-chart-objects', objs, _pullChartObjects, 'objects/s');
+  _pullChartWarm    = _renderSeriesChart('pull-chart-warm',    warm, _pullChartWarm,    'txn/s');
 }
 
 function runCmd(cmd, opts={}){
