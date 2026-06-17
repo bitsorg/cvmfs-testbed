@@ -172,6 +172,7 @@ TESTBED_DIR="$(dirname "$SCRIPT_DIR")"   # root of cvmfs-testbed checkout
 USE_BITS=false
 USE_MQTT=false
 USE_PULL=false          # ADR-0001 pull-based distribution overlay (implies --mqtt)
+USE_WSS=false           # ADR-0001 pull distribution over an embedded MQTT-over-WSS broker (no mosquitto)
 SCENARIO=""             # named preset over the flags below (see apply_scenario)
 SOFTWARE_ROOT_OVERRIDE=""
 TESTBED_ROOT_OVERRIDE=""
@@ -195,6 +196,7 @@ while [[ $# -gt 0 ]]; do
         # Pull mode (ADR-0001) rides on the MQTT control plane, so --pull turns
         # the MQTT overlay on as well.
         --pull)                USE_PULL=true; USE_MQTT=true;     shift ;;
+        --wss)                 USE_WSS=true;                     shift ;;
         # Named distribution scenario — a preset over --mqtt/--pull/--method.
         --scenario)
             [[ $# -ge 2 ]] || { error "--scenario requires a value (push|mqtt|pull|ingest)"; exit 1; }
@@ -319,6 +321,7 @@ compose_files() {
     # MQTT overlay and appends --distribute-mode pull. --pull already forced
     # USE_MQTT=true, so the mqtt overlay is present before it.
     if $USE_PULL; then _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.pull.yml"); fi
+    if $USE_WSS; then _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.pull-wss.yml"); fi
 }
 
 run_compose() {
@@ -1632,9 +1635,10 @@ cmd_pulltest() {
     section "Pull-distribution end-to-end test (method: ${PUBLISH_METHOD})"
     load_env
 
-    if ! $USE_PULL; then
-        error "This command requires the --pull flag (it implies --mqtt)."
+    if ! $USE_PULL && ! $USE_WSS; then
+        error "This command requires --pull (mosquitto) or --wss (embedded broker)."
         error "  ./testbed.sh pulltest --pull [--method bits|ingest]"
+        error "  ./testbed.sh pulltest --wss  [--method bits|ingest]"
         exit 1
     fi
 

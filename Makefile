@@ -106,7 +106,7 @@ _SCENARIO := $(if $(SCENARIO),--scenario $(SCENARIO),)
 .DEFAULT_GOAL := all
 
 .PHONY: all build install init start start-mqtt start-pull bootstrap snapshot restore redeploy clean cleanall \
-        test test-ingest test-bits test-mqtt test-pull pull-status \
+        test test-ingest test-bits test-mqtt test-pull test-pull-wss pull-status \
         scenario scenario-push scenario-mqtt scenario-pull scenario-ingest \
         stresstest stresstest-ingest stresstest-mqtt stresstest-pull \
         catdump-ingest catdump-bits catdiff \
@@ -272,6 +272,10 @@ test-mqtt:
 # pulled the new objects from Stratum 0 themselves (ADR-0001).
 test-pull:
 	bash "$(TESTBED)" pulltest --pull --method bits
+
+# End-to-end pull test over the embedded MQTT-over-WSS control plane (no mosquitto).
+test-pull-wss:
+	bash "$(TESTBED)" pulltest --wss --method bits
 
 # Monitoring: dump pull-relevant log lines from publisher + receivers.
 pull-status:

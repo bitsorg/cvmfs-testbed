@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 CERN
+# SPDX-License-Identifier: Apache-2.0
+
+# docker-compose.pull-wss.yml — ADR-0001 pull distribution with the control
+# plane running as an in-process MQTT broker on Stratum 0, exposed over
+# WebSocket (no separate mosquitto). Layered on the BASE compose only:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.pull-wss.yml up -d
+#
+# The testbed.sh `--wss` flag wires this up. vs the mosquitto pull overlay:
+#   - cvmfs-prepub embeds the broker (--embedded-broker-ws-addr :1882) and
+#     advertises it via the discovery doc (GET /cvmfs/{repo}/.cvmfsbits on :8080).
+#   - Each Stratum 1 receiver learns its broker URL from that fixed S0 endpoint
+#     (--discovery-url) instead of a hard-coded --broker-url; it then connects
+#     over ws://cvmfs-prepub:1882 and pulls on the published notification.
+
+services:
+
+  cvmfs-prepub:
+    depends_on:
+      - gateway
+      - stratum0
+    command: >
+      /usr/local/bin/cvmfs-prepub
+      --config /etc/cvmfs-prepub/config.yaml
+      --distribute-mode pull
+      --embedded-broker-ws-addr :1882
+      --control-plane-url ws://cvmfs-prepub:1882
+      --pull-object-base-url http://cvmfs-prepub:8080
+
+  stratum1-a:
+    depends_on:
+      - cvmfs-prepub
+      - stratum0
+    command: >
+      /usr/local/bin/cvmfs-prepub
+      --config /etc/cvmfs-prepub/config.yaml
+      --node-id stratum1-a
+      --repos ${REPO_NAME}
+      --receiver-stratum0-url http://cvmfs-prepub:8080
+      --discovery-url http://cvmfs-prepub:8080
+      --distribute-mode pull
+
+  stratum1-b:
+    depends_on:
+      - cvmfs-prepub
+      - stratum0
+    command: >
+      /usr/local/bin/cvmfs-prepub
+      --config /etc/cvmfs-prepub/config.yaml
+      --node-id stratum1-b
+      --repos ${REPO_NAME}
+      --receiver-stratum0-url http://cvmfs-prepub:8080
+      --discovery-url http://cvmfs-prepub:8080
+      --distribute-mode pull

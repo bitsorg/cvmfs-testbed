@@ -39,6 +39,7 @@ services:
       --config /etc/cvmfs-prepub/config.yaml
       --broker-url tcp://mosquitto:1883
       --distribute-mode pull
+      --pull-object-base-url http://cvmfs-prepub:8080
 
   stratum1-a:
     depends_on:
@@ -49,7 +50,7 @@ services:
       --broker-url tcp://mosquitto:1883
       --node-id stratum1-a
       --repos ${REPO_NAME}
-      --receiver-stratum0-url http://stratum0/cvmfs
+      --receiver-stratum0-url http://cvmfs-prepub:8080
       --distribute-mode pull
 
   stratum1-b:
@@ -61,5 +62,5 @@ services:
       --broker-url tcp://mosquitto:1883
       --node-id stratum1-b
       --repos ${REPO_NAME}
-      --receiver-stratum0-url http://stratum0/cvmfs
+      --receiver-stratum0-url http://cvmfs-prepub:8080
       --distribute-mode pull
