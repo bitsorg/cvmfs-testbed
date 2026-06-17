@@ -1,0 +1,27 @@
+# bits.yml — Canonical base definition for the bits-console seeder container.
+#
+# The seeder is a one-shot Python container that provisions a Gitea instance:
+# creates the organisation and repository, pushes bits-console source, builds
+# the Pages static tree, and creates CI variables and secrets.
+#
+# Deployment-specific configuration (GITEA_URL, credentials, BITS_CONSOLE_SRC
+# volume) is supplied by the extending compose file.
+#
+# Note: Gitea itself uses the public gitea/gitea image and has no Dockerfile
+# in cvmfs-elements; it is fully specified in docker-compose.bits.yml.
+
+services:
+
+  # ── seeder — one-shot Gitea provisioner ──────────────────────────────────
+  seeder:
+    image: cvmfs-seeder:latest
+    container_name: cvmfs-seeder
+    build:
+      context: ../containers/seeder
+    networks:
+      - cvmfs-net
+    restart: "no"    # run once; exit 0 means done, any other code means failure
+
+networks:
+  cvmfs-net:
+    driver: bridge

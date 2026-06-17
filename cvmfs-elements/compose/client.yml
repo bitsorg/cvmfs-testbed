@@ -1,0 +1,32 @@
+# client.yml — Canonical base definition for the CVMFS FUSE client container.
+#
+# The client mounts a CVMFS repository via FUSE for post-publish verification.
+# Three intrinsic requirements are captured here so they never have to be
+# repeated in per-deployment files:
+#   - SYS_ADMIN capability for the FUSE mount syscalls
+#   - /dev/fuse device access
+#   - apparmor:unconfined to allow cvmfs2 mount operations
+#
+# Per-deployment files extend this and supply build context, volumes, and
+# the REPO_NAME / STRATUM0_URL / PREPUB_URL environment variables.
+
+services:
+
+  # ── cvmfs-client — FUSE-mounted CVMFS client ────────────────────────────
+  cvmfs-client:
+    image: cvmfs-client:latest
+    container_name: cvmfs-client
+    build:
+      context: ../containers/cvmfs-client
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    security_opt:
+      - apparmor:unconfined
+    networks:
+      - cvmfs-net
+
+networks:
+  cvmfs-net:
+    driver: bridge

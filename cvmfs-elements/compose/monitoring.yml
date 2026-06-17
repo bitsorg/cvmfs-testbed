@@ -1,0 +1,85 @@
+# monitoring.yml — Canonical base definitions for the CVMFS monitoring stack.
+#
+# Covers: VictoriaMetrics, vmagent, cAdvisor, and Prometheus node-exporter.
+#
+# The scrape configuration (scrape.yml) lives at cvmfs-elements/monitoring/scrape.yml
+# and uses canonical Docker service names — it is invariant across deployments.
+# vmagent mounts it from a path relative to THIS file's location (resolved by
+# Docker Compose before merging into the extending service).
+#
+# Per-deployment files extend these services and supply only the mutable data
+# volume paths (e.g. ${TESTBED_ROOT}/data/monitoring/vm for VictoriaMetrics).
+# cAdvisor and node-exporter bind-mount fixed host paths and need no overrides.
+#
+# Note: top-level keys (networks:, volumes:) are NOT inherited by extends.
+# Declare networks: cvmfs-net in each consuming compose file.
+
+services:
+
+  # ── VictoriaMetrics — Prometheus-compatible time-series database ─────────
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.99.0
+    container_name: cvmfs-victoriametrics
+    networks:
+      - cvmfs-net
+    command:
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-retentionPeriod=1"
+      - "-selfScrapeInterval=10s"
+
+  # ── vmagent — scrapes /metrics endpoints, remote-writes to VictoriaMetrics
+  vmagent:
+    image: victoriametrics/vmagent:v1.99.0
+    container_name: cvmfs-vmagent
+    volumes:
+      # scrape.yml lives at cvmfs-elements/containers/monitoring/scrape.yml.
+      # Docker Compose resolves this relative path from THIS base file's location
+      # before merging into the extending service.
+      - ../containers/monitoring/scrape.yml:/etc/vmagent/scrape.yml:ro
+    networks:
+      - cvmfs-net
+    command:
+      - "-promscrape.config=/etc/vmagent/scrape.yml"
+      - "-remoteWrite.url=http://victoriametrics:8428/api/v1/write"
+      - "-promscrape.maxScrapeSize=64MiB"
+
+  # ── cAdvisor — per-container CPU / memory / network / disk metrics ───────
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cvmfs-cadvisor
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    networks:
+      - cvmfs-net
+    command:
+      - "--housekeeping_interval=10s"
+      - "--max_housekeeping_interval=15s"
+      - "--disable_metrics=hugetlb,referenced_memory,cpu_topology,resctrl,udp,advtcp,sched"
+
+  # ── node-exporter — host CPU / memory / temperature / filesystem ─────────
+  node-exporter:
+    image: prom/node-exporter:v1.8.0
+    container_name: cvmfs-node-exporter
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.rootfs=/rootfs"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    networks:
+      - cvmfs-net
+
+networks:
+  cvmfs-net:
+    driver: bridge

@@ -1,0 +1,68 @@
+# core.yml — Canonical base definitions for the CVMFS core publish pipeline.
+#
+# Per-deployment compose files extend these via:
+#
+#   services:
+#     gateway:
+#       extends:
+#         file: ./cvmfs-elements/compose/core.yml
+#         service: gateway
+#       volumes: [...]          # ${TESTBED_ROOT} / ${SOFTWARE_ROOT} mounts
+#       ports: [...]
+#       depends_on: [...]
+#
+# What is defined here:
+#   - image name
+#   - container_name (stable Docker name for exec / networking)
+#   - networks: [cvmfs-net]
+#   - cap_add / intrinsic capabilities
+#   - fixed command (can be overridden in overlays)
+#
+# What belongs in the per-deployment file:
+#   - build: context
+#   - volumes: with environment-variable paths
+#   - environment: (secrets, repo names)
+#   - ports: (testbed exposes directly; production behind a reverse proxy)
+#   - depends_on: (topology differs between testbed and production)
+#
+# Note: top-level keys (networks:, volumes:, secrets:) are NOT inherited
+# by Docker Compose extends — declare them in each consuming file.
+
+services:
+
+  # ── Gateway — cvmfs_gateway + cvmfs_receiver lease manager ──────────────
+  gateway:
+    image: cvmfs-gateway:latest
+    container_name: cvmfs-gateway
+    build:
+      context: ../containers/gateway
+    cap_add:
+      # cvmfs_receiver watchdog child uses ptrace to collect stack traces on
+      # crashes; without SYS_PTRACE it exits immediately (EOF seen by gateway).
+      - SYS_PTRACE
+    networks:
+      - cvmfs-net
+    command: /usr/local/bin/cvmfs_gateway
+
+  # ── Stratum 0 — Apache httpd serving the CAS over HTTP ──────────────────
+  stratum0:
+    image: cvmfs-stratum0:latest
+    container_name: cvmfs-stratum0
+    build:
+      context: ../containers/stratum0
+    networks:
+      - cvmfs-net
+
+  # ── cvmfs-prepub — REST API front-end and job orchestrator ───────────────
+  cvmfs-prepub:
+    image: cvmfs-prepub:latest
+    container_name: cvmfs-prepub
+    build:
+      context: ../containers/cvmfs-prepub
+    networks:
+      - cvmfs-net
+    command: /usr/local/bin/cvmfs-prepub --config /etc/cvmfs-prepub/config.yaml
+
+networks:
+  cvmfs-net:
+    driver: bridge

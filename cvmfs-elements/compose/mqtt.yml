@@ -1,0 +1,36 @@
+# mqtt.yml — Canonical base definition for the Mosquitto MQTT broker.
+#
+# The broker configuration (mosquitto.conf) lives at
+# cvmfs-elements/mosquitto/mosquitto.conf and is mounted here.  It is a
+# minimal dev/test configuration with no authentication or TLS; production
+# deployments should replace or extend it with password files, TLS listeners,
+# and ACL rules.
+#
+# Deployment-specific data and log directories are NOT set here and must be
+# added by the extending compose file:
+#
+#   services:
+#     mosquitto:
+#       extends:
+#         file: ./cvmfs-elements/compose/mqtt.yml
+#         service: mosquitto
+#       volumes:
+#         - ${TESTBED_ROOT}/data/mosquitto:/mosquitto/data
+#         - ${TESTBED_ROOT}/data/mosquitto-log:/mosquitto/log
+
+services:
+
+  # ── mosquitto — Eclipse Mosquitto MQTT broker ────────────────────────────
+  # Not exposed on any host port — only reachable by containers on cvmfs-net.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: cvmfs-mosquitto
+    volumes:
+      # mosquitto.conf path resolves relative to THIS file's location.
+      - ../containers/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    networks:
+      - cvmfs-net
+
+networks:
+  cvmfs-net:
+    driver: bridge

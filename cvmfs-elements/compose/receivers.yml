@@ -1,0 +1,40 @@
+# receivers.yml — Canonical base definition for Stratum 1 receiver instances.
+#
+# Deployments with multiple receivers create separate named services that all
+# extend the single 'stratum1' base, adding container_name, NODE_ID, and
+# per-instance volumes.  Example:
+#
+#   services:
+#     stratum1-a:
+#       extends:
+#         file: ./cvmfs-elements/compose/receivers.yml
+#         service: stratum1
+#       container_name: cvmfs-stratum1-a
+#       environment:
+#         PREPUB_HMAC_SECRET: ${PREPUB_HMAC_SECRET}
+#         NODE_ID: stratum1-a
+#       volumes:
+#         - ${SOFTWARE_ROOT}/cvmfs-prepub:/usr/local/bin/cvmfs-prepub:ro
+#         - ${TESTBED_ROOT}/data/s1a:/data/cas
+#         - ${TESTBED_ROOT}/config/stratum1-a/config.yaml:/etc/cvmfs-prepub/config.yaml:ro
+#       ports:
+#         - "9101:9100"
+#         - "9111:9101"
+#
+# Note: container_name is intentionally absent from the base — it must be
+# set per instance so multiple receivers can coexist on the same host.
+
+services:
+
+  # ── stratum1 — cvmfs-prepub in receiver mode ─────────────────────────────
+  stratum1:
+    image: cvmfs-stratum1:latest
+    build:
+      context: ../containers/stratum1
+    networks:
+      - cvmfs-net
+    command: /usr/local/bin/cvmfs-prepub --config /etc/cvmfs-prepub/config.yaml
+
+networks:
+  cvmfs-net:
+    driver: bridge

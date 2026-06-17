@@ -1,0 +1,47 @@
+# publishers.yml — Canonical base definitions for CVMFS publisher containers.
+#
+# Covers three publisher roles:
+#   publisher            — bits REST API client (submits jobs to cvmfs-prepub)
+#   cvmfs-native-publisher — cvmfs_server ingest path via gateway API
+#   cvmfs-bootstrap      — one-shot privileged container that seeds the repo
+#
+# Per-deployment files extend these and supply build contexts, volumes with
+# ${TESTBED_ROOT}/${SOFTWARE_ROOT} paths, environment variables, and depends_on.
+
+services:
+
+  # ── publisher — bits publish jobs via cvmfs-prepub REST API ─────────────
+  publisher:
+    image: cvmfs-publisher:latest
+    container_name: cvmfs-publisher
+    build:
+      context: ../containers/publisher
+    networks:
+      - cvmfs-net
+    command: ["sleep", "infinity"]
+
+  # ── cvmfs-native-publisher — cvmfs_server ingest path ───────────────────
+  cvmfs-native-publisher:
+    image: cvmfs-native-publisher:latest
+    container_name: cvmfs-native-publisher
+    build:
+      context: ../containers/cvmfs-native-publisher
+    networks:
+      - cvmfs-net
+    command: ["sleep", "infinity"]
+
+  # ── cvmfs-bootstrap — one-shot privileged repo seeder ────────────────────
+  # Seeds the nested-catalog structure before the first publish.
+  # Run once after init, or to restore from the snapshot it produces.
+  cvmfs-bootstrap:
+    image: cvmfs-bootstrap:latest
+    container_name: cvmfs-bootstrap
+    build:
+      context: ../containers/cvmfs-bootstrap
+    privileged: true
+    networks:
+      - cvmfs-net
+
+networks:
+  cvmfs-net:
+    driver: bridge
