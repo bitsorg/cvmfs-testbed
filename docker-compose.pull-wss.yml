@@ -26,6 +26,7 @@ services:
       --distribute-mode pull
       --embedded-broker-ws-addr :1882
       --control-plane-url ws://cvmfs-prepub:1882
+      --embedded-broker-auth
       --pull-object-base-url http://cvmfs-prepub:8080
 
   stratum1-a:
@@ -39,6 +40,7 @@ services:
       --repos ${REPO_NAME}
       --receiver-stratum0-url http://cvmfs-prepub:8080
       --discovery-url http://cvmfs-prepub:8080
+      --broker-auth
       --distribute-mode pull
 
   stratum1-b:
@@ -52,4 +54,5 @@ services:
       --repos ${REPO_NAME}
       --receiver-stratum0-url http://cvmfs-prepub:8080
       --discovery-url http://cvmfs-prepub:8080
+      --broker-auth
       --distribute-mode pull
