@@ -20,12 +20,17 @@ services:
     depends_on:
       - gateway
       - stratum0
+    volumes:
+      - ${TESTBED_ROOT}/config/broker-tls:/etc/cvmfs-prepub/tls:ro
     command: >
       /usr/local/bin/cvmfs-prepub
       --config /etc/cvmfs-prepub/config.yaml
       --distribute-mode pull
       --embedded-broker-ws-addr :1882
-      --control-plane-url ws://cvmfs-prepub:1882
+      --control-plane-url wss://cvmfs-prepub:1882
+      --embedded-broker-tls-cert /etc/cvmfs-prepub/tls/server.crt
+      --embedded-broker-tls-key /etc/cvmfs-prepub/tls/server.key
+      --broker-ca-cert /etc/cvmfs-prepub/tls/ca.crt
       --embedded-broker-auth
       --pull-object-base-url http://cvmfs-prepub:8080
 
@@ -33,6 +38,8 @@ services:
     depends_on:
       - cvmfs-prepub
       - stratum0
+    volumes:
+      - ${TESTBED_ROOT}/config/broker-tls:/etc/cvmfs-prepub/tls:ro
     command: >
       /usr/local/bin/cvmfs-prepub
       --config /etc/cvmfs-prepub/config.yaml
@@ -40,6 +47,7 @@ services:
       --repos ${REPO_NAME}
       --receiver-stratum0-url http://cvmfs-prepub:8080
       --discovery-url http://cvmfs-prepub:8080
+      --broker-ca-cert /etc/cvmfs-prepub/tls/ca.crt
       --broker-auth
       --distribute-mode pull
 
@@ -47,6 +55,8 @@ services:
     depends_on:
       - cvmfs-prepub
       - stratum0
+    volumes:
+      - ${TESTBED_ROOT}/config/broker-tls:/etc/cvmfs-prepub/tls:ro
     command: >
       /usr/local/bin/cvmfs-prepub
       --config /etc/cvmfs-prepub/config.yaml
@@ -54,5 +64,6 @@ services:
       --repos ${REPO_NAME}
       --receiver-stratum0-url http://cvmfs-prepub:8080
       --discovery-url http://cvmfs-prepub:8080
+      --broker-ca-cert /etc/cvmfs-prepub/tls/ca.crt
       --broker-auth
       --distribute-mode pull

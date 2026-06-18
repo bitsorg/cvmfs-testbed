@@ -218,6 +218,7 @@ mkdir -p \
     "$TESTBED_ROOT/config/gateway" \
     "$TESTBED_ROOT/config/keys" \
     "$TESTBED_ROOT/config/cvmfs-prepub" \
+    "$TESTBED_ROOT/config/broker-tls" \
     "$TESTBED_ROOT/config/stratum1-a" \
     "$TESTBED_ROOT/config/stratum1-b" \
     "$TESTBED_ROOT/config/repo-config" \
@@ -306,6 +307,36 @@ fi
 # Re-source .env so any newly written values are available for config templates.
 # shellcheck source=/dev/null
 source "$ENV_FILE"
+
+# ── Mint embedded-broker TLS material (wss://) ────────────────────────────────
+# Self-signed CA + server certificate for the in-process MQTT broker on
+# Stratum 0. SANs cover the publisher's own localhost client and the receivers'
+# DNS name (cvmfs-prepub). Idempotent: minted only when missing.
+BROKER_TLS_DIR="$TESTBED_ROOT/config/broker-tls"
+mkdir -p "$BROKER_TLS_DIR"
+if [[ ! -s "$BROKER_TLS_DIR/server.crt" || ! -s "$BROKER_TLS_DIR/server.key" || ! -s "$BROKER_TLS_DIR/ca.crt" ]]; then
+    info "Minting embedded-broker TLS CA + server certificate..."
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+        -keyout "$BROKER_TLS_DIR/ca.key" -out "$BROKER_TLS_DIR/ca.crt" \
+        -subj "/CN=cvmfs-prepub broker CA" >/dev/null 2>&1
+    openssl req -newkey rsa:2048 -nodes \
+        -keyout "$BROKER_TLS_DIR/server.key" -out "$BROKER_TLS_DIR/server.csr" \
+        -subj "/CN=cvmfs-prepub" >/dev/null 2>&1
+    openssl x509 -req -in "$BROKER_TLS_DIR/server.csr" -days 3650 \
+        -CA "$BROKER_TLS_DIR/ca.crt" -CAkey "$BROKER_TLS_DIR/ca.key" -CAcreateserial \
+        -extfile <(printf 'subjectAltName=DNS:cvmfs-prepub,DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n') \
+        -out "$BROKER_TLS_DIR/server.crt" >/dev/null 2>&1
+    rm -f "$BROKER_TLS_DIR/server.csr"
+    chmod 644 "$BROKER_TLS_DIR"/*.crt
+    chmod 600 "$BROKER_TLS_DIR/ca.key"
+    # server.key is mounted into the non-root prepub container, so it must be
+    # world-readable (the config files are 644 for the same reason). The CA key
+    # never leaves the host and stays 600.
+    chmod 644 "$BROKER_TLS_DIR/server.key"
+    success "Embedded-broker TLS material written to $BROKER_TLS_DIR"
+else
+    warn "Reusing existing embedded-broker TLS material in $BROKER_TLS_DIR"
+fi
 
 # ── Write service config files ────────────────────────────────────────────────
 # Done unconditionally — always re-written from templates so they stay in sync
