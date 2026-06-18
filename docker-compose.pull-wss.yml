@@ -57,6 +57,8 @@ services:
       --discovery-url http://cvmfs-prepub:8080
       --broker-ca-cert /etc/cvmfs-prepub/tls/ca.crt
       --discovery-verify-key /etc/cvmfs-prepub/discovery.pub
+      --pull-concurrency 8
+      --pull-files-per-request 16
       --broker-auth
       --distribute-mode pull
 
@@ -79,5 +81,6 @@ services:
       --discovery-url http://cvmfs-prepub:8080
       --broker-ca-cert /etc/cvmfs-prepub/tls/ca.crt
       --discovery-verify-key /etc/cvmfs-prepub/discovery.pub
+      --pull-auto
       --broker-auth
       --distribute-mode pull
