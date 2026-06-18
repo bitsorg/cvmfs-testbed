@@ -451,25 +451,11 @@ server:
   listen: ":8080"
 gateway:
   url: http://gateway:4929
-distribution:
-  stratum1_endpoints:
-    - http://stratum1-a:9100
-    - http://stratum1-b:9100
-  # quorum: 0 — publish completes as soon as gateway/receiver commits.
-  # Stratum1 distribution continues asynchronously; the Status page
-  # tracks each stratum1's revision and lag vs stratum0 in real time.
-  quorum: 0
-  timeout: 2m
-  commit_anyway: true
-  # Queue-driven distribution worker settings.
-  # Each Stratum 1 endpoint gets its own persistent queue and worker pool.
-  worker_concurrency: 2       # goroutines per endpoint
-  queue_depth: 256            # in-memory queue slots per endpoint
-  attempt_timeout: 90s        # max time per single delivery attempt
-  initial_backoff: 5s         # backoff after first failure
-  max_backoff: 5m             # cap on exponential backoff
-  worker_max_attempts: 0      # 0 = retry indefinitely until success
-  batch_size: 100             # objects per multipart PUT (0 = per-object PUTs)
+# Stratum 1 distribution is now driven by the embedded MQTT-over-WSS pull
+# broker: receivers learn of new commits over the control plane and pull the
+# objects from Stratum 0 themselves. The cvmfs-prepub binary no longer reads
+# any push-era distribution.* keys (stratum1_endpoints, quorum, worker/queue/
+# backoff settings) — they are intentionally omitted here.
 # Per-job wall-clock timeout.  Cancels any job that is stuck in pipeline,
 # catalog merge, SubmitPayload, or commit for longer than this duration.
 # Prevents jobs from hanging indefinitely when a remote endpoint stalls.
