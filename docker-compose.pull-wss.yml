@@ -32,6 +32,8 @@ services:
       --embedded-broker-tls-key /etc/cvmfs-prepub/tls/server.key
       --broker-ca-cert /etc/cvmfs-prepub/tls/ca.crt
       --embedded-broker-auth
+      --enroll-tls-addr :8443
+      --enroll-url https://cvmfs-prepub:8443
       --pull-object-base-url http://cvmfs-prepub:8080
 
   stratum1-a:
