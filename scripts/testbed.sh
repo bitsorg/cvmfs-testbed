@@ -51,21 +51,14 @@
 #                   solving the "localhost:3000 unreachable from remote host"
 #                   problem.  Run testbed.sh commands directly from the browser.
 #                   Requires Python 3.8+.
-#   mqtttest        End-to-end MQTT notification test.  Requires --mqtt.
-#                   Subscribes to cvmfs/repos/{repo}/published, runs one publish
-#                   job (default: --method bits), and verifies that a
-#                   PublishedMessage arrives, the JSON payload is valid, and that
-#                   the Stratum 1 receivers log the expected activity.
-#                   With --method ingest the test also checks stratum1 logs for
-#                   S0 pull activity triggered by the notification.
-#   pulltest        End-to-end ADR-0001 pull-distribution test.  Requires --pull
-#                   (which implies --mqtt).  Runs one publish job and verifies
-#                   that each Stratum 1 receiver fetched the new objects from
-#                   Stratum 0 itself (logs "pull: transaction warmed"), reaching
-#                   the configured pull quorum (PULL_QUORUM, default 1).
+#   pulltest        End-to-end ADR-0001 pull-distribution test.  Requires --wss
+#                   (the embedded MQTT-over-WSS broker).  Runs one publish job and
+#                   verifies that each Stratum 1 receiver fetched the new objects
+#                   from Stratum 0 itself (logs "pull: transaction warmed"),
+#                   reaching the configured pull quorum (PULL_QUORUM, default 1).
 #   pullstatus      Monitoring helper: dump pull-relevant log lines from the
 #                   publisher and both receivers (announce, manifest serving,
-#                   warm/commit, pull outcomes).  Requires --pull.
+#                   warm/commit, pull outcomes).  Requires --wss.
 #   unittest        Run Go unit tests for the broker and receiver packages.
 #                   Searches for the cvmfs-bits source tree next to this script
 #                   directory and runs:
@@ -78,12 +71,8 @@
 # Options (accepted by all commands):
 #   --bits                Include the bits-console overlay (Gitea + seeder).
 #                         Requires bits-console/ to be present in this directory.
-#   --mqtt                Include the MQTT control-plane overlay.
-#   --pull                Include the ADR-0001 pull-distribution overlay.  Implies
-#                         --mqtt (pull is triggered over the MQTT control plane).
-#   --scenario NAME       Named distribution preset (push|mqtt|pull|ingest) that
-#                         sets --method/--mqtt/--pull in one word.  Use instead of
-#                         the individual flags, e.g. start/test --scenario pull.
+#   --wss                 Include the ADR-0001 pull-distribution overlay over the
+#                         embedded MQTT-over-WSS broker (no external mosquitto).
 #   --method bits|ingest  Publishing method for test/stresstest commands.
 #                         bits:   Use the cvmfs-prepub REST API path (default).
 #                         ingest: Use cvmfs_server ingest directly via the gateway.
@@ -127,14 +116,12 @@
 #
 #   # Start the console server (accessible from any host):
 #   ./testbed.sh server          # plain testbed (port 8888)
-#   ./testbed.sh server --mqtt   # with MQTT overlay flags forwarded to server
-#   ./testbed.sh server --bits --mqtt 9090  # custom port
+#   ./testbed.sh server --bits 9090  # custom port
 #   # Then open: http://<hostname>:8888/
 #
-#   # MQTT end-to-end notification test:
-#   ./testbed.sh start --mqtt
-#   ./testbed.sh mqtttest --mqtt                    # bits path (default)
-#   ./testbed.sh mqtttest --mqtt --method ingest    # native ingest path
+#   # Pull-distribution end-to-end test (embedded wss broker):
+#   ./testbed.sh start --wss
+#   ./testbed.sh pulltest --wss                     # bits path (default)
 #
 #   # Go unit tests (broker + receiver packages):
 #   ./testbed.sh unittest
@@ -170,10 +157,7 @@ TESTBED_DIR="$(dirname "$SCRIPT_DIR")"   # root of cvmfs-testbed checkout
 
 # ── Default flags ─────────────────────────────────────────────────────────────
 USE_BITS=false
-USE_MQTT=false
-USE_PULL=false          # ADR-0001 pull-based distribution overlay (implies --mqtt)
 USE_WSS=false           # ADR-0001 pull distribution over an embedded MQTT-over-WSS broker (no mosquitto)
-SCENARIO=""             # named preset over the flags below (see apply_scenario)
 SOFTWARE_ROOT_OVERRIDE=""
 TESTBED_ROOT_OVERRIDE=""
 PUBLISH_METHOD="bits"   # bits | ingest
@@ -192,16 +176,7 @@ POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --bits)                USE_BITS=true;                    shift ;;
-        --mqtt)                USE_MQTT=true;                    shift ;;
-        # Pull mode (ADR-0001) rides on the MQTT control plane, so --pull turns
-        # the MQTT overlay on as well.
-        --pull)                USE_PULL=true; USE_MQTT=true;     shift ;;
         --wss)                 USE_WSS=true;                     shift ;;
-        # Named distribution scenario — a preset over --mqtt/--pull/--method.
-        --scenario)
-            [[ $# -ge 2 ]] || { error "--scenario requires a value (push|mqtt|pull|ingest)"; exit 1; }
-            SCENARIO="$2"; shift 2 ;;
-        --scenario=*)          SCENARIO="${1#*=}"; shift ;;
         # --bits-src is no longer needed: bits-console lives at $TESTBED_DIR/bits-console.
         # Accept it silently for backward compatibility.
         --bits-src)
@@ -239,28 +214,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ── Scenario presets ──────────────────────────────────────────────────────────
-# A scenario is a named bundle of the distribution flags so the testbed (and the
-# console / Makefile) can switch between distribution models with one word. Use a
-# scenario OR the individual --mqtt/--pull/--method flags, not both (the scenario
-# sets all three).
-#
-#   push    legacy push, no control plane     (method bits,  -mqtt -pull)
-#   mqtt    push data + MQTT control plane     (method bits,  +mqtt -pull)
-#   pull    ADR-0001 pull distribution         (method bits,  +mqtt +pull)
-#   ingest  native cvmfs_server ingest path    (method ingest,-mqtt -pull)
-apply_scenario() {
-    [[ -z "$SCENARIO" ]] && return 0
-    case "$SCENARIO" in
-        push)   PUBLISH_METHOD="bits";   USE_MQTT=false; USE_PULL=false ;;
-        mqtt)   PUBLISH_METHOD="bits";   USE_MQTT=true;  USE_PULL=false ;;
-        pull)   PUBLISH_METHOD="bits";   USE_MQTT=true;  USE_PULL=true  ;;
-        ingest) PUBLISH_METHOD="ingest"; USE_MQTT=false; USE_PULL=false ;;
-        *) error "Unknown scenario: $SCENARIO (expected push|mqtt|pull|ingest)"; exit 1 ;;
-    esac
-    info "Scenario '${SCENARIO}': method=${PUBLISH_METHOD} mqtt=${USE_MQTT} pull=${USE_PULL}"
-}
-apply_scenario
 
 # ── .env helpers ──────────────────────────────────────────────────────────────
 # .env lives in TESTBED_ROOT, not next to this script (the script dir may be
@@ -315,12 +268,7 @@ compose_files() {
     # NOTE: use 'if' rather than '$BOOL && ...' — under set -e the latter exits
     # when the bool variable expands to the 'false' command (exit code 1).
     _COMPOSE_FILES=("-f" "$TESTBED_DIR/docker-compose.yml")
-    if $USE_MQTT; then _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.mqtt.yml"); fi
     if $USE_BITS; then  _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.bits.yml"); fi
-    # The pull overlay MUST come last: it restates the service commands set by the
-    # MQTT overlay and appends --distribute-mode pull. --pull already forced
-    # USE_MQTT=true, so the mqtt overlay is present before it.
-    if $USE_PULL; then _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.pull.yml"); fi
     if $USE_WSS; then _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.pull-wss.yml"); fi
 }
 
@@ -1090,7 +1038,7 @@ cmd_reset() {
 # Examples:
 #   ./testbed.sh server             # HTTPS on port 8888
 #   ./testbed.sh server 9090        # HTTPS on port 9090
-#   ./testbed.sh --mqtt server      # HTTPS on 8888, MQTT overlay
+#   ./testbed.sh --wss server       # HTTPS on 8888, embedded-broker overlay
 #   ./testbed.sh server --no-tls    # plain HTTP
 cmd_server() {
     section "Starting testbed console server"
@@ -1121,7 +1069,7 @@ cmd_server() {
     )
     [[ -n "${TESTBED_ROOT:-}" ]] && server_args+=(--testbed-root "$TESTBED_ROOT")
     if $USE_BITS; then server_args+=(--bits); fi
-    if $USE_MQTT; then server_args+=(--mqtt); fi
+    if $USE_WSS; then server_args+=(--wss); fi
     # Pass through --no-tls / --no-auth if given as extra positional args
     for arg in "${POSITIONAL_ARGS[@]:1}"; do
         case "$arg" in
@@ -1131,255 +1079,6 @@ cmd_server() {
 
     # testbed-server.py prints the token and access URL at startup.
     python3 "$server_script" "${server_args[@]}"
-}
-
-# ── cmd_mqtttest ───────────────────────────────────────────────────────────────
-# End-to-end test that verifies the MQTT published-notification flow:
-#
-#  1. Subscribe to cvmfs/repos/{repo}/published inside the mosquitto container.
-#  2. Run one publish job (bits or native ingest, controlled by --method).
-#  3. Verify a PublishedMessage arrives within 30 s and the JSON is valid.
-#  4. Inspect stratum1-a logs for the activity expected on each path:
-#       bits path   → "received published notification" (object pre-warmed)
-#       ingest path → S0 pull activity (root catalog fetched from stratum0)
-#  5. Optionally test debounce by sending a duplicate notification and
-#     confirming only one pull goroutine fires.
-#
-# Requires: --mqtt flag, containers started with: ./testbed.sh start --mqtt
-cmd_mqtttest() {
-    section "MQTT notification end-to-end test (method: ${PUBLISH_METHOD})"
-    load_env
-
-    # ── Guard: MQTT overlay must be active ────────────────────────────────────
-    if ! $USE_MQTT; then
-        error "This command requires the --mqtt flag."
-        error "  ./testbed.sh mqtttest --mqtt [--method bits|ingest]"
-        exit 1
-    fi
-
-    # ── Confirm broker is reachable ───────────────────────────────────────────
-    info "Checking Mosquitto broker ..."
-    if ! run_compose exec -T mosquitto mosquitto_sub --help >/dev/null 2>&1; then
-        error "mosquitto container not running or mosquitto_sub not found."
-        error "Start the testbed with: ./testbed.sh start --mqtt"
-        exit 1
-    fi
-    ok "Broker reachable."
-
-    local REPO="${REPO_NAME:?REPO_NAME not set — run: ./testbed.sh init}"
-    local TOPIC="cvmfs/repos/${REPO}/published"
-
-    # ── Step 1: subscribe in background, capture up to 10 messages / 90 s ────
-    section "Step 1: subscribing to ${TOPIC}"
-    local capture_file
-    capture_file="$(mktemp)"
-    trap 'rm -f "${capture_file}"' EXIT
-
-    # -C 10  → exit after 10 messages (prevent hanging indefinitely)
-    # -W 90  → wait up to 90 s for first message (mosquitto_sub ≥ 2.0)
-    # --quiet → suppress connection banners to keep output clean
-    run_compose exec -T mosquitto \
-        mosquitto_sub \
-            -h localhost -p 1883 \
-            -t "${TOPIC}" \
-            -q 1 \
-            -C 10 \
-            --quiet \
-        2>/dev/null \
-        > "${capture_file}" &
-    local sub_pid=$!
-    sleep 1  # give subscriber time to connect before triggering publish
-
-    ok "Subscriber running (PID ${sub_pid}), waiting for notification ..."
-
-    # ── Step 2: run one publish job ───────────────────────────────────────────
-    section "Step 2: running publish job (method: ${PUBLISH_METHOD})"
-    local test_ok=true
-    case "$PUBLISH_METHOD" in
-        bits)
-            run_compose exec publisher /scripts/smoke-test.sh || test_ok=false
-            ;;
-        ingest)
-            run_compose exec cvmfs-native-publisher /scripts/native-smoke.sh || test_ok=false
-            ;;
-        *)
-            error "Unknown method: ${PUBLISH_METHOD}"
-            kill "$sub_pid" 2>/dev/null || true; exit 1
-            ;;
-    esac
-
-    if ! $test_ok; then
-        error "Publish job failed — aborting MQTT test."
-        kill "$sub_pid" 2>/dev/null || true; exit 1
-    fi
-    ok "Publish job completed."
-
-    # ── Step 3: wait for notification (up to 30 s beyond job completion) ──────
-    section "Step 3: waiting for MQTT notification (up to 30 s) ..."
-    local deadline=$(( $(date +%s) + 30 ))
-    local got_notif=false
-    while [[ $(date +%s) -lt $deadline ]]; do
-        if [[ -s "${capture_file}" ]]; then
-            got_notif=true
-            break
-        fi
-        sleep 1
-        echo -n "."
-    done
-    echo ""
-
-    # Stop the background subscriber
-    kill "$sub_pid" 2>/dev/null || true
-    wait "$sub_pid" 2>/dev/null || true
-
-    if ! $got_notif; then
-        error "No MQTT notification received within 30 s after publish."
-        error "Check broker logs: ./testbed.sh logs mosquitto"
-        error "Check prepub logs: ./testbed.sh logs cvmfs-prepub"
-        exit 1
-    fi
-
-    ok "Notification received (${capture_file} is non-empty)."
-    info "Raw payload(s):"
-    while IFS= read -r msg; do
-        info "  ${msg}"
-    done < "${capture_file}"
-
-    # ── Step 4: validate the JSON payload ─────────────────────────────────────
-    section "Step 4: validating payload"
-    local first_msg
-    first_msg="$(head -1 "${capture_file}")"
-    local payload_ok=true
-
-    # Required fields
-    for field in '"repo"' '"new_root_hash"' '"published_at"'; do
-        if echo "${first_msg}" | grep -q "${field}"; then
-            ok "  field ${field} present"
-        else
-            error "  field ${field} MISSING"
-            payload_ok=false
-        fi
-    done
-
-    # repo value must match REPO_NAME
-    if echo "${first_msg}" | grep -q "\"${REPO}\""; then
-        ok "  repo value matches: ${REPO}"
-    else
-        error "  repo value does not match '${REPO}'"
-        payload_ok=false
-    fi
-
-    # new_root_hash must be a non-empty hex-looking string (≥32 chars)
-    local hash_val
-    hash_val="$(echo "${first_msg}" | grep -oP '(?<="new_root_hash":")[^"]+' || true)"
-    if [[ ${#hash_val} -ge 32 ]]; then
-        ok "  new_root_hash looks valid: ${hash_val:0:16}..."
-    else
-        error "  new_root_hash is absent or too short: '${hash_val}'"
-        payload_ok=false
-    fi
-
-    # published_at must look like an ISO-8601 timestamp
-    if echo "${first_msg}" | grep -qP '"published_at"\s*:\s*"\d{4}-\d{2}-\d{2}'; then
-        ok "  published_at is ISO-8601 formatted"
-    else
-        error "  published_at does not look like an ISO-8601 timestamp"
-        payload_ok=false
-    fi
-
-    if ! $payload_ok; then
-        error "Payload validation failed."
-        exit 1
-    fi
-    ok "Payload is valid."
-
-    # ── Step 5: check Stratum 1 receiver logs ─────────────────────────────────
-    section "Step 5: checking stratum1-a receiver logs"
-
-    # Allow up to 10 s for log lines to appear after the notification.
-    local log_deadline=$(( $(date +%s) + 10 ))
-    local s1_log=""
-    while [[ $(date +%s) -lt $log_deadline ]]; do
-        s1_log="$(run_compose logs --no-log-prefix --tail=80 stratum1-a 2>&1 || true)"
-        local found=false
-        case "$PUBLISH_METHOD" in
-            bits)
-                # bits path: S1 already holds objects from the data-plane push;
-                # receiver logs the incoming notification.
-                if echo "${s1_log}" | grep -qi \
-                    "published\|PublishedMessage\|mqtt.*notif\|notif.*received"; then
-                    found=true
-                fi
-                ;;
-            ingest)
-                # ingest path: receiver fetches the root catalog from S0.
-                if echo "${s1_log}" | grep -qi \
-                    "pull.*S0\|pullFromS0\|fetched.*stratum0\|S0.*pull\|pulling catalog"; then
-                    found=true
-                fi
-                ;;
-        esac
-        if $found; then break; fi
-        sleep 2
-    done
-
-    case "$PUBLISH_METHOD" in
-        bits)
-            if echo "${s1_log}" | grep -qi \
-                "published\|PublishedMessage\|mqtt.*notif\|notif.*received"; then
-                ok "stratum1-a: published notification logged."
-            else
-                warn "stratum1-a: expected log line not visible in last 80 lines."
-                warn "Check manually: ./testbed.sh logs stratum1-a"
-            fi
-            ;;
-        ingest)
-            if echo "${s1_log}" | grep -qi \
-                "pull.*S0\|pullFromS0\|fetched.*stratum0\|S0.*pull\|pulling catalog"; then
-                ok "stratum1-a: S0 pull activity logged."
-            else
-                warn "stratum1-a: S0 pull activity not visible in last 80 lines."
-                warn "Check manually: ./testbed.sh logs stratum1-a"
-                warn "(S0 pull may still be in progress or receiver-stratum0-url not set)"
-            fi
-            ;;
-    esac
-
-    # ── Step 6: debounce check — rapid duplicate notification ─────────────────
-    if [[ "$PUBLISH_METHOD" == "ingest" ]]; then
-        section "Step 6: debounce — sending a duplicate notification"
-        info "Publishing the same hash twice in quick succession ..."
-
-        # Re-use the hash from the received notification.
-        local dup_hash="${hash_val}"
-        local dup_payload
-        dup_payload="$(printf '{"repo":"%s","new_root_hash":"%s","published_at":"%s"}' \
-            "${REPO}" "${dup_hash}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
-
-        # Send two identical notifications back-to-back.
-        for _n in 1 2; do
-            run_compose exec -T mosquitto \
-                mosquitto_pub -h localhost -p 1883 \
-                    -t "${TOPIC}" -m "${dup_payload}" -q 1 2>/dev/null || true
-        done
-
-        # Check that only ONE pull goroutine fires (TryLock debounce).
-        sleep 5
-        local dup_log
-        dup_log="$(run_compose logs --no-log-prefix --tail=30 stratum1-a 2>&1 || true)"
-        local pull_count
-        pull_count="$(echo "${dup_log}" | grep -c "pullFromS0\|S0.*pull\|pulling catalog" || true)"
-        if [[ "${pull_count}" -le 1 ]]; then
-            ok "Debounce working: at most 1 pull goroutine observed for duplicate notifications."
-        else
-            warn "Debounce: ${pull_count} pull log lines — may or may not indicate concurrent goroutines."
-            warn "Check: ./testbed.sh logs stratum1-a"
-        fi
-    fi
-
-    # ── Summary ───────────────────────────────────────────────────────────────
-    echo ""
-    ok "══ MQTT notification end-to-end test PASSED ══"
 }
 
 # ── cmd_unittest ───────────────────────────────────────────────────────────────
@@ -1558,13 +1257,6 @@ cmd_info() {
         _iline "  Password:" "${GITEA_ADMIN_PASSWORD:-(see .env)}"
     fi
 
-    if $USE_MQTT; then
-        _isep
-        echo "║  ── MQTT (control plane) ──────────────────────────────────────────────║"
-        _iline "  Broker:"   "mqtt://localhost:1883"
-        _iline "  Credentials:" "none (testbed mode)"
-    fi
-
     echo "╠══════════════════════════════════════════════════════════════════════╣"
     echo "║  Full secrets: ${TESTBED_ROOT:-\$TESTBED_ROOT}/.env"
     echo "╚══════════════════════════════════════════════════════════════════════╝"
@@ -1623,46 +1315,33 @@ EOF
 }
 
 # ── cmd_pulltest ──────────────────────────────────────────────────────────────
-# End-to-end test of ADR-0001 pull-based distribution. Requires --pull (which
-# implies --mqtt). Runs one publish job and verifies that each Stratum 1 receiver
-# fetched the new objects from Stratum 0 by itself (pull), rather than being
-# pushed to. Warm quorum is reached when at least PULL_QUORUM receivers warm.
+# End-to-end test of ADR-0001 pull-based distribution. Requires --wss (the
+# embedded MQTT-over-WSS broker). Runs one publish job and verifies that each
+# Stratum 1 receiver fetched the new objects from Stratum 0 by itself (pull),
+# rather than being pushed to. Warm quorum is reached when at least PULL_QUORUM
+# receivers warm.
 #
-#   ./testbed.sh pulltest --pull [--method bits|ingest]
+#   ./testbed.sh pulltest --wss [--method bits|ingest]
 #
 # PULL_QUORUM (env, default 1): minimum warmed receivers for the test to pass.
 cmd_pulltest() {
     section "Pull-distribution end-to-end test (method: ${PUBLISH_METHOD})"
     load_env
 
-    if ! $USE_PULL && ! $USE_WSS; then
-        error "This command requires --pull (mosquitto) or --wss (embedded broker)."
-        error "  ./testbed.sh pulltest --pull [--method bits|ingest]"
-        error "  ./testbed.sh pulltest --wss  [--method bits|ingest]"
+    if ! $USE_WSS; then
+        error "This command requires the --wss flag (embedded MQTT-over-WSS broker)."
+        error "  ./testbed.sh pulltest --wss [--method bits|ingest]"
         exit 1
     fi
 
     # Guard: the RUNNING stack must match the requested overlay. pulltest does not
-    # start containers; it runs against whatever is up. Without this check an
-    # overlay mismatch (e.g. the base push stack while --pull was requested) fails
-    # silently at Step 5 ("did NOT report a new pull warm"). Fail fast instead.
-    local _mosq_up=false
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'mosquitto'; then _mosq_up=true; fi
-    if $USE_PULL && ! $_mosq_up; then
-        error "The running stack is NOT the --pull overlay (mosquitto is not up)."
-        error "Pull distribution needs the MQTT control plane. Start it first:"
-        error "  ./testbed.sh start --pull   (or: make start-pull)"
+    # start containers; it runs against whatever is up. Inspect the publisher's
+    # actual command (set at container creation) rather than a startup log line,
+    # so the check is deterministic and not racy with broker readiness.
+    if ! docker inspect cvmfs-prepub --format '{{json .Args}}' 2>/dev/null | grep -q 'embedded-broker-ws-addr'; then
+        error "The running stack is NOT the --wss overlay (embedded broker not configured)."
+        error "Start it first:  ./testbed.sh start --wss   (or: make start-wss)"
         exit 1
-    fi
-    if $USE_WSS; then
-        # Inspect the publisher's actual command (set at container creation) rather
-        # than a startup log line, so the check is deterministic and not racy with
-        # broker readiness when switching overlays.
-        if ! docker inspect cvmfs-prepub --format '{{json .Args}}' 2>/dev/null | grep -q 'embedded-broker-ws-addr'; then
-            error "The running stack is NOT the --wss overlay (embedded broker not configured)."
-            error "Start it first:  ./testbed.sh start --wss   (or: make start-wss)"
-            exit 1
-        fi
     fi
 
     local REPO="${REPO_NAME:?REPO_NAME not set — run: ./testbed.sh init}"
@@ -1749,7 +1428,7 @@ cmd_pulltest() {
     error "  • publisher-side commit orchestration not yet wired into the publish loop"
     error "    (ADR-0001 P3 — Notifier.Announce / manifest POST); or"
     error "  • receivers cannot reach the manifest at http://stratum0/cvmfs/s1/{txn}/manifest"
-    error "Inspect with: ./testbed.sh pullstatus --pull"
+    error "Inspect with: ./testbed.sh pullstatus --wss"
     exit 1
 }
 
@@ -1757,7 +1436,7 @@ cmd_pulltest() {
 # Monitoring helper: dumps the pull-relevant log lines from the publisher and
 # both receivers (announce, manifest serving, warm/commit, pull outcomes).
 #
-#   ./testbed.sh pullstatus --pull
+#   ./testbed.sh pullstatus --wss
 cmd_pullstatus() {
     section "Pull-distribution status"
     load_env
@@ -1795,7 +1474,6 @@ case "$CMD" in
     catdiff)        cmd_catdiff ;;
     verify)         cmd_verify ;;
     server)         cmd_server ;;
-    mqtttest)       cmd_mqtttest ;;
     pulltest)       cmd_pulltest ;;
     pullstatus)     cmd_pullstatus ;;
     unittest)       cmd_unittest ;;
