@@ -139,6 +139,13 @@ if [[ -f "$SENTINEL" ]]; then
     exit 0
 fi
 
+if [[ -n "${SKIP_BOOTSTRAP_INGEST:-}" ]]; then
+    info "SKIP_BOOTSTRAP_INGEST set: skipping native-ingest seeding (not needed for the pull path); no gateway lease taken."
+    touch "$SENTINEL"
+    success "Bootstrap skipped via SKIP_BOOTSTRAP_INGEST; sentinel written."
+    exit 0
+fi
+
 info "No bootstrap sentinel found — running bootstrap ingest."
 
 # ── 4. Compute lease base and tar sub-path ────────────────────────────────────

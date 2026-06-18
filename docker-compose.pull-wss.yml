@@ -16,6 +16,13 @@
 
 services:
 
+  # The native-ingest bootstrap seeds test/native/smoke, which the pull path
+  # does not use. Skip its cvmfs_server ingest so it cannot strand the gateway
+  # lease (its ingest fails at local transaction start and cannot self-abort).
+  cvmfs-bootstrap:
+    environment:
+      SKIP_BOOTSTRAP_INGEST: "1"
+
   cvmfs-prepub:
     depends_on:
       - gateway
