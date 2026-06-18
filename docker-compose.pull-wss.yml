@@ -33,7 +33,6 @@ services:
     command: >
       /usr/local/bin/cvmfs-prepub
       --config /etc/cvmfs-prepub/config.yaml
-      --distribute-mode pull
       --embedded-broker-ws-addr :1882
       --control-plane-url wss://cvmfs-prepub:1882
       --embedded-broker-tls-cert /etc/cvmfs-prepub/tls/server.crt
@@ -67,7 +66,6 @@ services:
       --pull-concurrency 8
       --pull-files-per-request 16
       --broker-auth
-      --distribute-mode pull
 
   stratum1-b:
     depends_on:
@@ -90,4 +88,3 @@ services:
       --discovery-verify-key /etc/cvmfs-prepub/discovery.pub
       --pull-auto
       --broker-auth
-      --distribute-mode pull
