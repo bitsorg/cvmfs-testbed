@@ -1655,9 +1655,12 @@ cmd_pulltest() {
         exit 1
     fi
     if $USE_WSS; then
-        if ! run_compose logs --no-log-prefix --tail=400 cvmfs-prepub 2>&1 | grep -q "embedded MQTT broker started"; then
-            error "The running stack is NOT the --wss overlay (embedded broker not detected)."
-            error "Start it first:  ./testbed.sh start --wss"
+        # Inspect the publisher's actual command (set at container creation) rather
+        # than a startup log line, so the check is deterministic and not racy with
+        # broker readiness when switching overlays.
+        if ! docker inspect cvmfs-prepub --format '{{json .Args}}' 2>/dev/null | grep -q 'embedded-broker-ws-addr'; then
+            error "The running stack is NOT the --wss overlay (embedded broker not configured)."
+            error "Start it first:  ./testbed.sh start --wss   (or: make start-wss)"
             exit 1
         fi
     fi

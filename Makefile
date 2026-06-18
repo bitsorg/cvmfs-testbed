@@ -94,6 +94,14 @@ _MQTT := $(if $(filter 1 yes true,$(MQTT)),--mqtt,)
 PULL ?= 0
 _PULL := $(if $(filter 1 yes true,$(PULL)),--pull,)
 
+# Set WSS=1 to enable the ADR-0001 pull distribution over the embedded
+# MQTT-over-WSS broker (no mosquitto).  Mirrors MQTT=/PULL=.  Example:
+#   make WSS=1 start           # start testbed with the embedded-broker overlay
+#   make start-wss             # convenience alias (same as WSS=1 start)
+#   make test-pull-wss         # end-to-end pull test over wss
+WSS ?= 0
+_WSS := $(if $(filter 1 yes true,$(WSS)),--wss,)
+
 # SCENARIO selects a named distribution preset (push|mqtt|pull|ingest) in one
 # word, instead of setting MQTT=/PULL=/method individually.  Examples:
 #   make scenario SCENARIO=pull     # start + smoke test the pull scenario
@@ -105,7 +113,7 @@ _SCENARIO := $(if $(SCENARIO),--scenario $(SCENARIO),)
 # ── Default goal ──────────────────────────────────────────────────────────────
 .DEFAULT_GOAL := all
 
-.PHONY: all build install init start start-mqtt start-pull bootstrap snapshot restore redeploy clean cleanall \
+.PHONY: all build install init start start-mqtt start-pull start-wss bootstrap snapshot restore redeploy clean cleanall \
         test test-ingest test-bits test-mqtt test-pull test-pull-wss pull-status \
         scenario scenario-push scenario-mqtt scenario-pull scenario-ingest \
         stresstest stresstest-ingest stresstest-mqtt stresstest-pull \
@@ -160,7 +168,7 @@ init: $(MAKE_DIR)/init
 # Depends on init having run.  auto-restores snapshot if repo is absent.
 start: $(MAKE_DIR)/init
 	@echo "── Starting testbed ──────────────────────────────────────────────────"
-	bash "$(TESTBED)" start $(_MQTT) $(_PULL) $(_SCENARIO)
+	bash "$(TESTBED)" start $(_MQTT) $(_PULL) $(_WSS) $(_SCENARIO)
 
 start-mqtt: $(MAKE_DIR)/init
 	@echo "── Starting testbed with MQTT overlay ────────────────────────────────"
@@ -169,6 +177,10 @@ start-mqtt: $(MAKE_DIR)/init
 start-pull: $(MAKE_DIR)/init
 	@echo "── Starting testbed with pull + MQTT overlays ────────────────────────"
 	bash "$(TESTBED)" start --pull
+
+start-wss: $(MAKE_DIR)/init
+	@echo "── Starting testbed with the embedded MQTT-over-WSS broker overlay ────"
+	bash "$(TESTBED)" start --wss
 
 # ── bootstrap ─────────────────────────────────────────────────────────────────
 # Run once: seeds the nested-catalog structure required by cvmfs_server ingest,
@@ -265,15 +277,18 @@ test-ingest: $(MAKE_DIR)/bootstrap
 test-bits:
 	bash "$(TESTBED)" test --method bits $(_MQTT)
 
+# Requires the MQTT stack: run `make start-mqtt` (or `make MQTT=1 start`) first.
 test-mqtt:
 	bash "$(TESTBED)" mqtttest --mqtt
 
 # End-to-end pull test: publish one job and verify both Stratum 1 receivers
 # pulled the new objects from Stratum 0 themselves (ADR-0001).
+# Requires the pull stack: run `make start-pull` (or `make PULL=1 start`) first.
 test-pull:
 	bash "$(TESTBED)" pulltest --pull --method bits
 
 # End-to-end pull test over the embedded MQTT-over-WSS control plane (no mosquitto).
+# Requires the wss stack: run `make start-wss` (or `make WSS=1 start`) first.
 test-pull-wss:
 	bash "$(TESTBED)" pulltest --wss --method bits
 
@@ -342,7 +357,8 @@ help:
 	@echo "  make test-ingest          Smoke test (cvmfs_server ingest, needs bootstrap)"
 	@echo "  make test-bits            Smoke test (cvmfs-prepub REST API)"
 	@echo "  make test-mqtt            End-to-end MQTT notification test"
-	@echo "  make test-pull            End-to-end pull-distribution test (ADR-0001)"
+	@echo "  make test-pull            End-to-end pull-distribution test (needs make start-pull)"
+	@echo "  make test-pull-wss        End-to-end pull test over embedded wss (needs make start-wss)"
 	@echo "  make pull-status          Dump pull-relevant publisher/receiver logs"
 	@echo ""
 	@echo "  make stresstest [N=10]    Stress test, N jobs (bits)"
@@ -351,8 +367,10 @@ help:
 	@echo ""
 	@echo "  make start-mqtt           Start testbed with Mosquitto MQTT broker"
 	@echo "  make start-pull           Start testbed with pull + MQTT overlays (ADR-0001)"
+	@echo "  make start-wss            Start testbed with embedded MQTT-over-WSS broker (no mosquitto)"
 	@echo "  make MQTT=1 <target>      Enable MQTT overlay for any target"
 	@echo "  make PULL=1 <target>      Enable pull overlay (implies MQTT) for any target"
+	@echo "  make WSS=1 <target>       Enable embedded MQTT-over-WSS overlay for any target"
 	@echo ""
 	@echo "  make catdump-ingest       Dump catalogs after ingest test"
 	@echo "  make catdump-bits         Dump catalogs after bits test"
