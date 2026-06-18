@@ -22,6 +22,7 @@ services:
       - stratum0
     volumes:
       - ${TESTBED_ROOT}/config/broker-tls:/etc/cvmfs-prepub/tls:ro
+      - ${TESTBED_ROOT}/config/discovery-keys:/etc/cvmfs-prepub/discovery-keys:ro
     command: >
       /usr/local/bin/cvmfs-prepub
       --config /etc/cvmfs-prepub/config.yaml
@@ -34,14 +35,19 @@ services:
       --embedded-broker-auth
       --enroll-tls-addr :8443
       --enroll-url https://cvmfs-prepub:8443
+      --discovery-signing-key /etc/cvmfs-prepub/discovery-keys/discovery.key
       --pull-object-base-url http://cvmfs-prepub:8080
 
   stratum1-a:
     depends_on:
       - cvmfs-prepub
       - stratum0
+    environment:
+      PREPUB_HMAC_SECRET: ""
+      PREPUB_NODE_KEY: ${PREPUB_NODE_KEY_STRATUM1_A}
     volumes:
-      - ${TESTBED_ROOT}/config/broker-tls:/etc/cvmfs-prepub/tls:ro
+      - ${TESTBED_ROOT}/config/broker-tls/ca.crt:/etc/cvmfs-prepub/tls/ca.crt:ro
+      - ${TESTBED_ROOT}/config/discovery-keys/discovery.pub:/etc/cvmfs-prepub/discovery.pub:ro
     command: >
       /usr/local/bin/cvmfs-prepub
       --config /etc/cvmfs-prepub/config.yaml
@@ -50,6 +56,7 @@ services:
       --receiver-stratum0-url http://cvmfs-prepub:8080
       --discovery-url http://cvmfs-prepub:8080
       --broker-ca-cert /etc/cvmfs-prepub/tls/ca.crt
+      --discovery-verify-key /etc/cvmfs-prepub/discovery.pub
       --broker-auth
       --distribute-mode pull
 
@@ -57,8 +64,12 @@ services:
     depends_on:
       - cvmfs-prepub
       - stratum0
+    environment:
+      PREPUB_HMAC_SECRET: ""
+      PREPUB_NODE_KEY: ${PREPUB_NODE_KEY_STRATUM1_B}
     volumes:
-      - ${TESTBED_ROOT}/config/broker-tls:/etc/cvmfs-prepub/tls:ro
+      - ${TESTBED_ROOT}/config/broker-tls/ca.crt:/etc/cvmfs-prepub/tls/ca.crt:ro
+      - ${TESTBED_ROOT}/config/discovery-keys/discovery.pub:/etc/cvmfs-prepub/discovery.pub:ro
     command: >
       /usr/local/bin/cvmfs-prepub
       --config /etc/cvmfs-prepub/config.yaml
@@ -67,5 +78,6 @@ services:
       --receiver-stratum0-url http://cvmfs-prepub:8080
       --discovery-url http://cvmfs-prepub:8080
       --broker-ca-cert /etc/cvmfs-prepub/tls/ca.crt
+      --discovery-verify-key /etc/cvmfs-prepub/discovery.pub
       --broker-auth
       --distribute-mode pull

@@ -338,6 +338,37 @@ else
     warn "Reusing existing embedded-broker TLS material in $BROKER_TLS_DIR"
 fi
 
+# ── Discovery signing keypair (Ed25519) + per-node enrollment keys ────────────
+# Discovery is signed asymmetrically: the publisher holds the private key; each
+# receiver gets only the public key, so the master secret never reaches a
+# receiver. Per-node enrollment keys = HMAC-SHA256(PREPUB_HMAC_SECRET, node) are
+# provisioned to each receiver in place of the master.
+DISCO_DIR="$TESTBED_ROOT/config/discovery-keys"
+mkdir -p "$DISCO_DIR"
+if [[ ! -s "$DISCO_DIR/discovery.key" || ! -s "$DISCO_DIR/discovery.pub" ]]; then
+    info "Minting Ed25519 discovery signing keypair..."
+    openssl genpkey -algorithm ed25519 -out "$DISCO_DIR/discovery.key" >/dev/null 2>&1
+    openssl pkey -in "$DISCO_DIR/discovery.key" -pubout -out "$DISCO_DIR/discovery.pub" >/dev/null 2>&1
+    chmod 644 "$DISCO_DIR/discovery.key"  # non-root publisher container must read it (CA/master stay off the host elsewhere)
+    chmod 644 "$DISCO_DIR/discovery.pub"
+    success "Discovery keypair written to $DISCO_DIR"
+else
+    warn "Reusing existing discovery keypair in $DISCO_DIR"
+fi
+_upsert_env() {
+    local n="$1" v="$2"
+    if grep -q "^$n=" "$ENV_FILE" 2>/dev/null; then
+        sed -i "s|^$n=.*|$n=$v|" "$ENV_FILE"
+    else
+        echo "$n=$v" >> "$ENV_FILE"
+    fi
+}
+for node in stratum1-a stratum1-b; do
+    nk=$(printf '%s' "$node" | openssl dgst -sha256 -hmac "$PREPUB_HMAC_SECRET" | awk '{print $NF}')
+    _upsert_env "PREPUB_NODE_KEY_$(echo "$node" | tr 'a-z-' 'A-Z_')" "$nk"
+done
+success "Per-node enrollment keys provisioned (PREPUB_NODE_KEY_*)"
+
 # ── Write service config files ────────────────────────────────────────────────
 # Done unconditionally — always re-written from templates so they stay in sync
 # with the current TESTBED_ROOT, REPO_NAME, and gateway secret.
