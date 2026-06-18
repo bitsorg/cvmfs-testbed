@@ -207,5 +207,7 @@ if cvmfs_server ingest \
     touch "$SENTINEL"
     success "Bootstrap complete.  Repository ${REPO_NAME} is ready for cvmfs_server ingest."
 else
+    warn "cvmfs_server ingest failed; aborting transaction to release the gateway lease."
+    cvmfs_server abort -f "$REPO_NAME" 2>&1 || warn "cvmfs_server abort returned non-zero (lease may already be free)."
     die "cvmfs_server ingest failed — see output above."
 fi
