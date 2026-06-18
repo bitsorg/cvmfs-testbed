@@ -1642,6 +1642,26 @@ cmd_pulltest() {
         exit 1
     fi
 
+    # Guard: the RUNNING stack must match the requested overlay. pulltest does not
+    # start containers; it runs against whatever is up. Without this check an
+    # overlay mismatch (e.g. the base push stack while --pull was requested) fails
+    # silently at Step 5 ("did NOT report a new pull warm"). Fail fast instead.
+    local _mosq_up=false
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'mosquitto'; then _mosq_up=true; fi
+    if $USE_PULL && ! $_mosq_up; then
+        error "The running stack is NOT the --pull overlay (mosquitto is not up)."
+        error "Pull distribution needs the MQTT control plane. Start it first:"
+        error "  ./testbed.sh start --pull   (or: make start-pull)"
+        exit 1
+    fi
+    if $USE_WSS; then
+        if ! run_compose logs --no-log-prefix --tail=400 cvmfs-prepub 2>&1 | grep -q "embedded MQTT broker started"; then
+            error "The running stack is NOT the --wss overlay (embedded broker not detected)."
+            error "Start it first:  ./testbed.sh start --wss"
+            exit 1
+        fi
+    fi
+
     local REPO="${REPO_NAME:?REPO_NAME not set — run: ./testbed.sh init}"
     local receivers=(stratum1-a stratum1-b)
     local quorum="${PULL_QUORUM:-1}"
