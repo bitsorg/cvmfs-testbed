@@ -322,3 +322,12 @@ help:
 	@echo "  Full comparison workflow:"
 	@echo "    make test-ingest catdump-ingest test-bits catdump-bits catdiff"
 	@echo ""
+
+# verify-chunking — publish via bits at the configured chunk sizes, then verify
+# the published catalog's chunk boundaries match CVMFS's xor32 content-defined
+# chunker (cvmfs/ingestion/chunk_detector.cc) exactly. CVMFS's tarball ingest
+# path does not chunk, so the oracle is the algorithm itself (reproduced in
+# scripts/cvmfs-chunk-reference.py). Sizes must match config/cvmfs-prepub/config.yaml.
+verify-chunking:
+	bash "$(TESTBED)" test --method bits
+	@r=$$(ls repos | head -1); python3 scripts/verify-chunking.py repos/$$r data/payload/payload.tar 4194304 8388608 16777216

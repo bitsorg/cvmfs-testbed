@@ -156,6 +156,7 @@ services:
       service: cvmfs-bootstrap
     environment:
       REPO_NAME: ${REPO_NAME}
+      NESTED_CATALOG_PATH: golden/smoke
     volumes:
       # CVMFS binaries and shared libraries — mounted read-only; bootstrap.sh
       # stages copies to a tmpfs path and sets caps/suid there.
