@@ -141,6 +141,8 @@ services:
       RUN_LOG_FILE: /data/runs.ndjson
     volumes:
       - ${TESTBED_ROOT}/data/runs.ndjson:/data/runs.ndjson
+      # ADR-0001: shared canonical test payload (generated once host-side).
+      - ${TESTBED_ROOT}/data/payload:/data/payload:ro
     depends_on:
       - cvmfs-prepub
 
@@ -206,6 +208,8 @@ services:
       - ${TESTBED_ROOT}/data/ingest-jobs.ndjson:/data/ingest-jobs.ndjson
       # Run history log — appended at the end of each test run.
       - ${TESTBED_ROOT}/data/runs.ndjson:/data/runs.ndjson
+      # ADR-0001: shared canonical test payload (generated once host-side).
+      - ${TESTBED_ROOT}/data/payload:/data/payload:ro
       # Read-only access to the repo filesystem so cvmfs_server can read the
       # current .cvmfspublished without going through HTTP (optional but faster).
       - ${TESTBED_ROOT}/repos/${REPO_NAME}:/srv/cvmfs/${REPO_NAME}:ro

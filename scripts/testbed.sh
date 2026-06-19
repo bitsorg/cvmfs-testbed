@@ -658,9 +658,30 @@ cmd_logs() {
     fi
 }
 
+# ── _ensure_payload ───────────────────────────────────────────────────────────
+# ADR-0001: generate the canonical test payload once (host-side; the host has
+# openssl) into data/payload/payload.tar, shared into both publisher containers
+# via a read-only bind mount. Deterministic => gitignored, regenerated on a fresh
+# checkout. Both smoke paths consume this one tar (byte-identical input).
+_ensure_payload() {
+    local tar="${TESTBED_ROOT}/data/payload/payload.tar"
+    if [[ -f "$tar" ]]; then
+        info "Canonical payload present: $tar ($(du -sh "$tar" | cut -f1))"
+        return 0
+    fi
+    info "Generating canonical test payload (one-time) ..."
+    mkdir -p "${TESTBED_ROOT}/data/payload"
+    local wd; wd="$(mktemp -d)"
+    bash "${TESTBED_ROOT}/cvmfs-elements/containers/publisher/scripts/make-test-payload.sh" "$wd"
+    mv -f "$wd/payload.tar" "$tar"
+    rm -rf "$wd"
+    success "Canonical payload ready: $tar ($(du -sh "$tar" | cut -f1))"
+}
+
 cmd_test() {
     section "Running smoke test (method: ${PUBLISH_METHOD})"
     load_env
+    _ensure_payload
     case "$PUBLISH_METHOD" in
         bits)
             run_compose exec publisher /scripts/smoke-test.sh

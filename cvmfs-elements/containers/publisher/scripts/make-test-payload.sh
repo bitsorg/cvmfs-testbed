@@ -1,108 +1,101 @@
 #!/usr/bin/env bash
-# make-test-payload.sh — Create a comprehensive CVMFS test payload.
+# make-test-payload.sh — Create a comprehensive, DETERMINISTIC CVMFS test payload.
 #
-# Exercises catalog corner cases that simple smoke tests miss:
+# Determinism is mandatory: the bits and native-ingest paths must ingest
+# BYTE-IDENTICAL input so their catalogs/chunks can be compared (ADR-0001).
+# All "random" data is a fixed AES-CTR keystream (same key+iv => same bytes);
+# no $(date), no /dev/urandom. The tar is built reproducibly (--sort, fixed
+# --mtime, numeric 0 owner).
 #
-#   simple/        — basic files: regular, empty, no extension, executable
-#   hierarchy/     — 5-level deep directory tree with sibling dirs at each level
-#   links/         — identical-content pair (CAS dedup), relative symlink, relative dangling symlink
-#   large/         — 20 MiB file of pseudo-random data (triggers CVMFS file chunking)
-#   permissions/   — files with 0755, 0644, 0444, 0600 modes; dirs with 0750, 0700
-#   unusual-names/ — spaces, brackets, parens, hash, leading dot, unicode (accents,
-#                    CJK), tilde, comma, semicolon, very long name (200 chars)
-#   empty-dir/     — completely empty directory (tests catalog entry for empty dirs)
+# Coverage:
+#   simple/        — regular, empty, no-extension, executable
+#   hierarchy/     — 5-level deep tree + siblings
+#   links/         — CAS-dedup pair, relative symlink, dangling symlink
+#   large/         — 8 MiB deterministic file (legacy case)
+#   permissions/   — 0644/0600/0444/0640 files; 0750/0700 dirs
+#   unusual-names/ — spaces, brackets, unicode, long name, dash-prefix, ...
+#   empty-dir/     — empty directory
+#   chunk/         — (A) chunk-boundary + intra-file-dedup cases
+#   compress/      — (B) zeros / incompressible / pre-compressed
+#   nested/, manyfiles/ — (C) nested-catalog marker + many-entry dir
+#   meta/          — (D) setuid/setgid/sticky, symlink chain, all-bytes binary
 #
-# Usage:
-#   bash make-test-payload.sh <work-dir>
+# Optional (default OFF) — bits-incompatible cases kept behind a flag so the
+# normal suite stays green; enable to drive bits fixes:
+#   PAYLOAD_INCLUDE_INCOMPATIBLE=1  adds a true hardlink group and an absolute
+#   symlink (both currently rejected by cvmfs-prepub staging/unpack).
 #
-# Outputs:
-#   <work-dir>/payload/   — the unpacked directory tree
-#   <work-dir>/payload.tar — tar archive suitable for cvmfs_server ingest or
-#                            multipart upload to cvmfs-prepub API
+# Usage:   bash make-test-payload.sh <work-dir>
+# Outputs: <work-dir>/payload/  and  <work-dir>/payload.tar
 #
-# The caller can then use:
-#   PAYLOAD_DIR=<work-dir>/payload
-#   PAYLOAD_TAR=<work-dir>/payload.tar
-#
-# Dependencies: bash, coreutils (dd, ln, chmod, mkdir, touch, tar), /dev/urandom.
-#               No Python or other extras required.
+# Dependencies: bash, coreutils, tar, gzip, openssl. (Runs where these exist —
+# the native-publisher or the host; NOT the bits container, which lacks
+# openssl. The bits path consumes the pre-built tar instead of regenerating.)
 
 set -euo pipefail
 
 WORK_DIR="${1:?Usage: $0 <work-dir>}"
 PAYLOAD_DIR="$WORK_DIR/payload"
 PAYLOAD_TAR="$WORK_DIR/payload.tar"
+INCOMPAT="${PAYLOAD_INCLUDE_INCOMPATIBLE:-0}"
 
+# Live CVMFS chunk thresholds (config/repo-config/server.conf).
+MIN=4194304      # 4 MiB
+AVG=8388608      # 8 MiB
+MAX=16777216     # 16 MiB
+
+rm -rf "$PAYLOAD_DIR"
 mkdir -p "$PAYLOAD_DIR"
 
+# ── deterministic byte source ─────────────────────────────────────────────────
+# gen_rand <nbytes> <iv-index> <outfile>: AES-256-CTR keystream over zeros.
+# Fixed key; iv derived from a per-file index so distinct files differ but every
+# regeneration is identical.
+_KEY=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+gen_rand() {
+    local n="$1" idx="$2" out="$3"
+    local iv
+    iv="$(printf '%032x' "$idx")"
+    head -c "$n" /dev/zero \
+      | openssl enc -aes-256-ctr -nosalt -K "$_KEY" -iv "$iv" 2>/dev/null \
+      > "$out"
+}
+
 # ── 1. simple/ ────────────────────────────────────────────────────────────────
-# Regular files covering the most basic catalog entry types.
 mkdir -p "$PAYLOAD_DIR/simple"
-echo "hello from cvmfs comprehensive test $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+# Fixed suffix (was $(date)) so content is deterministic; verify-ingest checks
+# only the prefix "hello from cvmfs comprehensive test ".
+echo "hello from cvmfs comprehensive test fixed-payload-v1" \
     > "$PAYLOAD_DIR/simple/hello.txt"
-touch   "$PAYLOAD_DIR/simple/empty-file"           # 0-byte regular file
+touch   "$PAYLOAD_DIR/simple/empty-file"
 echo "no extension"   > "$PAYLOAD_DIR/simple/no-extension"
 printf '#!/bin/sh\necho "I am executable"\n' > "$PAYLOAD_DIR/simple/exec-script.sh"
 chmod 0755 "$PAYLOAD_DIR/simple/exec-script.sh"
 
 # ── 2. hierarchy/ ─────────────────────────────────────────────────────────────
-# 5-level deep tree with sibling directories at each level.
-# Exercises nested catalog creation and parent-catalog cross-references.
 for depth in 1 2 3 4 5; do
     path="$PAYLOAD_DIR/hierarchy"
     for lvl in $(seq 1 $depth); do path="$path/level${lvl}"; done
-    mkdir -p "$path"
-    echo "depth=${depth}" > "$path/file.txt"
+    mkdir -p "$path"; echo "depth=${depth}" > "$path/file.txt"
 done
-# Sibling directories at level 2 (tests multiple children in same parent catalog)
-mkdir -p "$PAYLOAD_DIR/hierarchy/level1/sibling-a"
-mkdir -p "$PAYLOAD_DIR/hierarchy/level1/sibling-b"
+mkdir -p "$PAYLOAD_DIR/hierarchy/level1/sibling-a" "$PAYLOAD_DIR/hierarchy/level1/sibling-b"
 echo "sibling-a content" > "$PAYLOAD_DIR/hierarchy/level1/sibling-a/data.txt"
 echo "sibling-b content" > "$PAYLOAD_DIR/hierarchy/level1/sibling-b/data.txt"
 
 # ── 3. links/ ─────────────────────────────────────────────────────────────────
-# Tests all link types CVMFS must handle in its catalog.
 mkdir -p "$PAYLOAD_DIR/links"
-
-# Identical-content pair: two files with the same content, stored as separate
-# regular files in the tar.  CVMFS's CAS deduplicates them to the same content
-# hash; both catalog entries should reference that single hash.
-# NOTE: we intentionally avoid hard-link tar entries (POSIX type '1') because
-# the cvmfs-prepub staging processor does not handle them, causing a staging
-# failure.  For catalog comparison purposes the result is equivalent: two
-# directory entries pointing to the same CAS object.
 SHARED_CONTENT="shared content — same hash expected in both catalog entries"
 echo "$SHARED_CONTENT" > "$PAYLOAD_DIR/links/original.txt"
 echo "$SHARED_CONTENT" > "$PAYLOAD_DIR/links/duplicate.txt"
-
-# Relative symlink pointing to a sibling file inside the payload tree.
-# Tests that the catalog stores the literal relative target string.
 ln -s "../simple/hello.txt"  "$PAYLOAD_DIR/links/rel-symlink-to-hello"
-
-# Relative dangling symlink (target does not exist anywhere in the payload).
-# Tests that CVMFS stores dangling symlinks without error.
-# NOTE: absolute symlink targets are rejected by cvmfs-prepub's unpack stage,
-# so we use a relative target here — the catalog behaviour (storing the
-# literal target string) is the same regardless of whether it is absolute or
-# relative.
 ln -s "../nonexistent-target" "$PAYLOAD_DIR/links/dangling-symlink"
 
-# ── 4. large/ ─────────────────────────────────────────────────────────────────
-# 8 MiB of pseudo-random data.  At the default CVMFS chunk size of 4 MiB this
-# produces exactly 2 chunks.  Tests the chunks catalog table and that the
-# manifest's file-chunk-size field is populated correctly.
-#
-# 8 MiB keeps staging time short while still exercising the chunking path.
-# Using /dev/urandom avoids Python dependency and produces non-compressible
-# data that the gateway cannot trivially deduplicate.
+# ── 4. large/ (legacy 8 MiB case, now deterministic) ──────────────────────────
 mkdir -p "$PAYLOAD_DIR/large"
-dd if=/dev/urandom bs=1M count=8 of="$PAYLOAD_DIR/large/large-8m.bin" 2>/dev/null
+gen_rand "$AVG" 1 "$PAYLOAD_DIR/large/large-8m.bin"
 
 # ── 5. permissions/ ──────────────────────────────────────────────────────────
-# Various UNIX mode bits.  Tests that the catalog stores mode flags correctly
-# and that the client exposes the right permissions on mount.
-mkdir -p "$PAYLOAD_DIR/permissions/private-dir"     # mode applied below
-mkdir -p "$PAYLOAD_DIR/permissions/group-dir"
+mkdir -p "$PAYLOAD_DIR/permissions/private-dir" "$PAYLOAD_DIR/permissions/group-dir"
 echo "world readable"  > "$PAYLOAD_DIR/permissions/world-readable.txt"
 echo "owner only"      > "$PAYLOAD_DIR/permissions/owner-only.txt"
 echo "read only"       > "$PAYLOAD_DIR/permissions/readonly.txt"
@@ -115,65 +108,93 @@ chmod 0700 "$PAYLOAD_DIR/permissions/private-dir"
 chmod 0750 "$PAYLOAD_DIR/permissions/group-dir"
 
 # ── 6. unusual-names/ ────────────────────────────────────────────────────────
-# File names with characters that can trip up tar readers, catalog SQL queries,
-# HTTP path encoders, and FUSE directory-entry handlers.
 mkdir -p "$PAYLOAD_DIR/unusual-names"
-
-# Spaces in name (most common trap for unquoted shell variables)
 echo "space" > "$PAYLOAD_DIR/unusual-names/file with spaces.txt"
-
-# Multiple consecutive spaces
 echo "multi-space" > "$PAYLOAD_DIR/unusual-names/file  with  many  spaces.txt"
-
-# Square brackets (glob metacharacters)
 echo "brackets" > "$PAYLOAD_DIR/unusual-names/file[square-brackets].txt"
-
-# Parentheses
 echo "parens" > "$PAYLOAD_DIR/unusual-names/file(parens-here).txt"
-
-# Hash and exclamation mark
 echo "hash-bang" > "$PAYLOAD_DIR/unusual-names/file#hash!bang.txt"
-
-# Tilde (shell home-dir expansion if unquoted)
 echo "tilde" > "$PAYLOAD_DIR/unusual-names/file~tilde.txt"
-
-# Comma and semicolon (SQL separators)
 echo "punct" > "$PAYLOAD_DIR/unusual-names/file,comma;semicolon.txt"
-
-# Leading dot (hidden file on POSIX systems)
 echo "hidden" > "$PAYLOAD_DIR/unusual-names/.hidden-dotfile"
-
-# Unicode — Latin accented characters (2-byte UTF-8 sequences)
 echo "cafe" > "$PAYLOAD_DIR/unusual-names/unicode-café.txt"
 echo "resume" > "$PAYLOAD_DIR/unusual-names/unicode-résumé.txt"
-
-# Unicode — CJK characters (3-byte UTF-8 sequences)
 echo "japanese" > "$PAYLOAD_DIR/unusual-names/unicode-日本語.txt"
-
-# Very long file name (POSIX allows 255 bytes; test near the limit)
-LONG_NAME="$(printf 'a%.0s' {1..200}).txt"   # 204 chars
+LONG_NAME="$(printf 'a%.0s' {1..200}).txt"
 echo "long name" > "$PAYLOAD_DIR/unusual-names/${LONG_NAME}"
-
-# Name that looks like a flag (leading dash — shell option prefix)
 echo "dash" > "$PAYLOAD_DIR/unusual-names/-not-a-flag.txt"
 
 # ── 7. empty-dir/ ─────────────────────────────────────────────────────────────
-# An empty directory.  CVMFS must create a catalog entry for it even though
-# there are no child inodes.  Verifies the directory entry flags (S_ISDIR) are
-# stored correctly with zero children.
 mkdir -p "$PAYLOAD_DIR/empty-dir"
 
-# ── 8. Build the tar archive ──────────────────────────────────────────────────
-# --hard-dereference: convert any remaining hard links to regular file copies,
-#   preventing POSIX type-'1' link entries that crash the cvmfs-prepub staging
-#   processor.  Symlinks are kept as symlinks (no --dereference flag).
-# --preserve-permissions: propagate mode bits into the catalog flags field.
+# ── 8. chunk/ — (A) chunk boundaries + intra-file dedup ───────────────────────
+# Sizes sit exactly on the live min/avg/max thresholds so the test catches any
+# divergence between bits' chunker and CVMFS content-defined chunking.
+mkdir -p "$PAYLOAD_DIR/chunk"
+gen_rand $((MIN - 1048576))     10 "$PAYLOAD_DIR/chunk/whole-small.bin"   # 3 MiB, below min -> single object
+gen_rand "$MIN"                 11 "$PAYLOAD_DIR/chunk/at-min.bin"        # exactly min
+gen_rand "$AVG"                 12 "$PAYLOAD_DIR/chunk/at-avg.bin"        # exactly avg
+gen_rand "$MAX"                 13 "$PAYLOAD_DIR/chunk/at-max.bin"        # exactly max
+gen_rand $((MAX + 65536))       14 "$PAYLOAD_DIR/chunk/over-max.bin"     # max+64K -> >=2 chunks
+gen_rand $((AVG * 5))           15 "$PAYLOAD_DIR/chunk/multi-large.bin"  # 40 MiB -> several chunks
+# Intra-file dedup: one deterministic AVG-sized block repeated 4x. The same
+# chunk hash must recur; CVMFS/bits should both dedup it.
+gen_rand "$AVG" 16 "$PAYLOAD_DIR/chunk/.block"
+cat "$PAYLOAD_DIR/chunk/.block" "$PAYLOAD_DIR/chunk/.block" \
+    "$PAYLOAD_DIR/chunk/.block" "$PAYLOAD_DIR/chunk/.block" \
+    > "$PAYLOAD_DIR/chunk/repeated-blocks.bin"
+rm -f "$PAYLOAD_DIR/chunk/.block"
+
+# ── 9. compress/ — (B) compressibility extremes ───────────────────────────────
+mkdir -p "$PAYLOAD_DIR/compress"
+head -c $((AVG + AVG/2)) /dev/zero > "$PAYLOAD_DIR/compress/zeros.bin"     # 12 MiB zeros (maximally compressible)
+gen_rand $((AVG + AVG/2)) 20 "$PAYLOAD_DIR/compress/random.bin"           # 12 MiB incompressible
+gen_rand "$MIN" 21 "$WORK_DIR/.precompress.src"
+gzip -n -c "$WORK_DIR/.precompress.src" > "$PAYLOAD_DIR/compress/precompressed.gz"  # -n => deterministic header
+rm -f "$WORK_DIR/.precompress.src"
+
+# ── 10. nested/ + manyfiles/ — (C) nested catalog + scale ─────────────────────
+mkdir -p "$PAYLOAD_DIR/nested/sub"
+touch "$PAYLOAD_DIR/nested/.cvmfscatalog"      # forces a nested-catalog boundary
+echo "nested root file" > "$PAYLOAD_DIR/nested/file-a.txt"
+echo "nested sub file"  > "$PAYLOAD_DIR/nested/sub/file-b.txt"
+mkdir -p "$PAYLOAD_DIR/manyfiles"
+for i in $(seq -w 1 2000); do echo "f$i" > "$PAYLOAD_DIR/manyfiles/f${i}.txt"; done
+
+# ── 11. meta/ — (D) metadata fidelity (bits-compatible subset) ────────────────
+mkdir -p "$PAYLOAD_DIR/meta/sticky-dir"
+echo "setuid" > "$PAYLOAD_DIR/meta/setuid";  chmod 4755 "$PAYLOAD_DIR/meta/setuid"
+echo "setgid" > "$PAYLOAD_DIR/meta/setgid";  chmod 2755 "$PAYLOAD_DIR/meta/setgid"
+chmod 1777 "$PAYLOAD_DIR/meta/sticky-dir"
+# Relative symlink chain: chain-1 -> chain-2 -> chain-target.txt
+echo "chain target" > "$PAYLOAD_DIR/meta/chain-target.txt"
+ln -s "chain-target.txt" "$PAYLOAD_DIR/meta/chain-2"
+ln -s "chain-2"          "$PAYLOAD_DIR/meta/chain-1"
+# All 256 byte values, no trailing newline.
+for b in $(seq 0 255); do printf "\\$(printf '%03o' "$b")"; done > "$PAYLOAD_DIR/meta/all-bytes.bin"
+
+# ── 12. optional bits-incompatible cases (default OFF) ────────────────────────
+TAR_LINK_FLAG="--hard-dereference"
+if [[ "$INCOMPAT" == "1" ]]; then
+    # True hardlink group (POSIX type-1) — currently crashes cvmfs-prepub staging.
+    echo "hardlinked content" > "$PAYLOAD_DIR/meta/hardlink-a"
+    ln "$PAYLOAD_DIR/meta/hardlink-a" "$PAYLOAD_DIR/meta/hardlink-b"
+    # Absolute symlink — currently rejected by cvmfs-prepub unpack.
+    ln -s "/etc/hostname" "$PAYLOAD_DIR/meta/abs-symlink"
+    TAR_LINK_FLAG=""   # keep real hardlinks in the tar
+    echo "PAYLOAD_INCLUDE_INCOMPATIBLE=1: added hardlink group + absolute symlink"
+fi
+
+# ── 13. Build the tar (reproducible) ──────────────────────────────────────────
 tar \
     --create \
     --file="$PAYLOAD_TAR" \
     --directory="$PAYLOAD_DIR" \
-    --hard-dereference \
+    $TAR_LINK_FLAG \
     --preserve-permissions \
+    --sort=name \
+    --mtime=@1577836800 \
+    --owner=0 --group=0 --numeric-owner \
     .
 
 echo "Payload directory: $PAYLOAD_DIR"

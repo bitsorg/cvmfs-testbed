@@ -103,10 +103,17 @@ unset _rdonly _path _components _c
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
-echo "Building comprehensive test payload..."
-bash /scripts/make-test-payload.sh "$WORK_DIR"
-
-PAYLOAD_TAR="$WORK_DIR/payload.tar"
+# ADR-0001: prefer the shared canonical payload so both publish paths ingest
+# byte-identical input. Fall back to local generation if the shared tar is absent.
+SHARED_PAYLOAD="${SHARED_PAYLOAD:-/data/payload/payload.tar}"
+if [[ -f "$SHARED_PAYLOAD" ]]; then
+    echo "Using shared canonical payload: $SHARED_PAYLOAD"
+    PAYLOAD_TAR="$SHARED_PAYLOAD"
+else
+    echo "Building comprehensive test payload (shared tar absent)..."
+    bash /scripts/make-test-payload.sh "$WORK_DIR"
+    PAYLOAD_TAR="$WORK_DIR/payload.tar"
+fi
 
 echo ""
 echo "Ingesting to ${REPO_NAME}:${INGEST_BASE} ..."

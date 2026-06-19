@@ -81,10 +81,18 @@ log_run() {
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
-echo "Building comprehensive test payload..."
-bash /scripts/make-test-payload.sh "$WORK_DIR"
-
-SMOKE_TAR="$WORK_DIR/payload.tar"
+# ADR-0001: prefer the shared canonical payload (generated once host-side) so
+# the bits and native-ingest paths ingest byte-identical input. The bits
+# container lacks openssl and cannot regenerate; it requires the shared tar.
+SHARED_PAYLOAD="${SHARED_PAYLOAD:-/data/payload/payload.tar}"
+if [[ -f "$SHARED_PAYLOAD" ]]; then
+    echo "Using shared canonical payload: $SHARED_PAYLOAD"
+    SMOKE_TAR="$SHARED_PAYLOAD"
+else
+    echo "Building comprehensive test payload (shared tar absent)..."
+    bash /scripts/make-test-payload.sh "$WORK_DIR"
+    SMOKE_TAR="$WORK_DIR/payload.tar"
+fi
 
 echo ""
 echo "Created test tar: $SMOKE_TAR  ($(du -sh "$SMOKE_TAR" | cut -f1))"
