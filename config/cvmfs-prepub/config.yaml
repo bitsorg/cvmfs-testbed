@@ -1,0 +1,32 @@
+dev: true
+log_level: info
+spool_root: /data/spool
+# stratum0_url is used to fetch the existing root catalog for merging before
+# each publish.  Must point to the Stratum 0 Apache endpoint inside the Docker
+# network.  Without this the catalog merge step is skipped, which causes
+# cvmfs_receiver to crash on the commit (it receives an empty new_root_hash).
+stratum0_url: http://stratum0/cvmfs
+cas:
+  type: localfs
+  root: /data/cas
+server:
+  listen: ":8080"
+gateway:
+  url: http://gateway:4929
+# Stratum 1 distribution is now driven by the embedded MQTT-over-WSS pull
+# broker: receivers learn of new commits over the control plane and pull the
+# objects from Stratum 0 themselves. The cvmfs-prepub binary no longer reads
+# any push-era distribution.* keys (stratum1_endpoints, quorum, worker/queue/
+# backoff settings) — they are intentionally omitted here.
+# Per-job wall-clock timeout.  Cancels any job that is stuck in pipeline,
+# catalog merge, SubmitPayload, or commit for longer than this duration.
+# Prevents jobs from hanging indefinitely when a remote endpoint stalls.
+# 30m is generous for typical payloads; increase for very large repos.
+job_timeout: 30m
+
+# CVMFS content-defined chunking (xor32). Match native cvmfs_server
+# CVMFS_MIN/AVG/MAX_CHUNK_SIZE so bits chunks at identical boundaries.
+chunking:
+  min: 4194304
+  avg: 8388608
+  max: 16777216
