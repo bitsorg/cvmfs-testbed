@@ -331,3 +331,14 @@ help:
 verify-chunking:
 	bash "$(TESTBED)" test --method bits
 	@r=$$(basename $$(dirname $$(ls repos/*/.cvmfspublished | head -1))); python3 scripts/verify-chunking.py repos/$$r data/payload/payload.tar 4194304 8388608 16777216
+
+# verify-content — directly compare the latest bits publish to the native
+# cvmfs_server-ingest golden (golden/smoke) for byte-identical decompressed
+# content (compressor/chunking-independent). Reports metadata diffs as warnings.
+verify-content:
+	@r=$$(basename $$(dirname $$(ls repos/*/.cvmfspublished | head -1))); \
+	a=$$(python3 -c "import zlib,sqlite3,os,tempfile;cas='repos/'+'$$r';root=[l[1:].strip().decode() for l in open(cas+'/.cvmfspublished','rb') if l[:1]==b'C'][0];raw=zlib.decompress(open(cas+'/data/'+root[:2]+'/'+root[2:]+'C','rb').read());fd,t=tempfile.mkstemp();os.write(fd,raw);os.close(fd);print(sorted([p for (p,h) in sqlite3.connect(t).execute('select path,sha1 from nested_catalogs') if '/test/smoke.' in p])[-1])"); \
+	python3 scripts/compare-trees.py repos/$$r "$$a" /golden/smoke
+
+# verify — full bits-reproduces-CVMFS check: chunk boundaries + content.
+verify: verify-chunking verify-content
