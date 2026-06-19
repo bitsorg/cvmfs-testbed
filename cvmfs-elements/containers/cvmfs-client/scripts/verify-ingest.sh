@@ -106,6 +106,29 @@ echo ""
 
 # ── Check helpers ─────────────────────────────────────────────────────────────
 BASE="${MOUNT_POINT}/${INGEST_BASE}"
+
+# Fresh-path resolution (bits smoke test): smoke-test.sh publishes to a fresh
+# numbered sub-path test/smoke.<n> (n = runs.ndjson line count) so re-runs never
+# collide on the nested catalog.  The caller passes the stem (e.g. test/smoke);
+# the just-published revision is the highest-numbered sibling.  When the literal
+# base is absent but numbered siblings exist, select the highest-numbered one,
+# polling with remounts until it becomes visible.
+if [[ ! -d "$BASE" ]]; then
+    _frdl=$(( $(date +%s) + POLL_TIMEOUT ))
+    while [[ $(date +%s) -lt $_frdl ]]; do
+        _newest=$(ls -d "${BASE}".* 2>/dev/null | awk -F. '{print $NF, $0}' | sort -n -k1 | tail -1 | cut -d" " -f2-)
+        if [[ -n "$_newest" && -d "$_newest" ]]; then
+            BASE="$_newest"
+            INGEST_BASE="${BASE#${MOUNT_POINT}/}"
+            echo "  Resolved fresh-path INGEST_BASE -> ${INGEST_BASE}"
+            break
+        fi
+        if [[ -S "$_socket" ]]; then "$CVMFS_TALK" -p "$_socket" remount sync 2>/dev/null || true
+        else "$CVMFS_TALK" -i "${REPO_NAME}" remount sync 2>/dev/null || true; fi
+        sleep 0.5
+    done
+    unset _frdl _newest
+fi
 PASS=0; FAIL=0
 
 _ok()   { echo -e "  ${GREEN}OK  ${NC} $*"; PASS=$(( PASS + 1 )); }
