@@ -330,4 +330,4 @@ help:
 # scripts/cvmfs-chunk-reference.py). Sizes must match config/cvmfs-prepub/config.yaml.
 verify-chunking:
 	bash "$(TESTBED)" test --method bits
-	@r=$$(ls repos | head -1); python3 scripts/verify-chunking.py repos/$$r data/payload/payload.tar 4194304 8388608 16777216
+	@r=$$(basename $$(dirname $$(ls repos/*/.cvmfspublished | head -1))); python3 scripts/verify-chunking.py repos/$$r data/payload/payload.tar 4194304 8388608 16777216
