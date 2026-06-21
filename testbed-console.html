@@ -2261,10 +2261,11 @@ function renderTimings(){
   }
   if(empty) empty.style.display='none';
   wrap.style.display='';
-  if(subEl) subEl.textContent = `${runs.length} run${runs.length!==1?'s':''} · ${names.length} test${names.length!==1?'s':''} · click a test for its own graph`;
-
   // Selected test may have aged out of the window/data — fall back to stacked.
   if(_timingsSel!=='__all__' && !names.includes(_timingsSel)) _timingsSel='__all__';
+
+  const _hint = _timingsSel==='__all__' ? 'click a test for its own graph' : 'click the legend or “All” to go back';
+  if(subEl) subEl.textContent = `${runs.length} run${runs.length!==1?'s':''} · ${names.length} test${names.length!==1?'s':''} · ${_hint}`;
 
   // Chips: All + one per test (with passing-run average).
   if(chipsEl){
@@ -2336,7 +2337,10 @@ function renderTimings(){
       data:{labels,datasets},
       options:{responsive:true,maintainAspectRatio:false,
         plugins:{
-          legend:{position:'bottom',labels:{boxWidth:12,font:{size:11},filter:i=>i.text!=='failed'||failedIdx.size>0}},
+          // In the single-test view, clicking any legend entry returns to the
+          // cumulative (All) chart rather than toggling a series.
+          legend:{position:'bottom',onClick:(e,item)=>selectTiming('__all__'),
+            labels:{boxWidth:12,font:{size:11},filter:i=>i.text!=='failed'||failedIdx.size>0}},
           tooltip:{callbacks:{label:c=>c.dataset.label==='failed'?'failed (excluded)':`${c.parsed.y!=null?c.parsed.y.toFixed(1):'–'}s`}},
         },
         scales:{
