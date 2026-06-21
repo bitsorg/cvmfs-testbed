@@ -2261,14 +2261,15 @@ function renderTimings(){
   }
   if(empty) empty.style.display='none';
   wrap.style.display='';
-  if(subEl) subEl.textContent = `${runs.length} run${runs.length!==1?'s':''} · ${names.length} test${names.length!==1?'s':''}`;
+  if(subEl) subEl.textContent = `${runs.length} run${runs.length!==1?'s':''} · ${names.length} test${names.length!==1?'s':''} · click a test for its own graph`;
 
   // Selected test may have aged out of the window/data — fall back to stacked.
   if(_timingsSel!=='__all__' && !names.includes(_timingsSel)) _timingsSel='__all__';
 
   // Chips: All + one per test (with passing-run average).
   if(chipsEl){
-    let html = `<button class="btn btn-sm ${_timingsSel==='__all__'?'btn-primary':'btn-outline'}" onclick="selectTiming('__all__')">All (stacked)</button>`;
+    let html = `<span class="muted" style="font-size:12px;align-self:center;margin-right:4px">Show:</span>`;
+    html += `<button class="btn btn-sm ${_timingsSel==='__all__'?'btn-primary':'btn-outline'}" onclick="selectTiming('__all__')">All (stacked)</button>`;
     html += names.map(n=>{
       const a=_timingAvg(runs,n), col=_timingColor(n,names);
       const lbl = a!=null ? `${n} · ${a.toFixed(1)}s` : `${n} · –`;
@@ -2299,8 +2300,11 @@ function renderTimings(){
     _charts['chart-test-timings']=new Chart(ctx,{ type:'bar',
       data:{labels,datasets},
       options:{responsive:true,maintainAspectRatio:false,
+        // Click a bar segment → drill into that test's own graph.
+        onClick:(e,els)=>{ if(els && els.length) selectTiming(names[els[0].datasetIndex]); },
         plugins:{
-          legend:{position:'bottom',labels:{boxWidth:12,font:{size:11}}},
+          // Click a legend label → drill in (instead of the default show/hide toggle).
+          legend:{position:'bottom',onClick:(e,item)=>selectTiming(item.text),labels:{boxWidth:12,font:{size:11}}},
           tooltip:{filter:i=>i.parsed.y>0,
             callbacks:{
               label:c=>`${c.dataset.label}: ${c.parsed.y.toFixed(1)}s`,
