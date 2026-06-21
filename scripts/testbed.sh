@@ -282,7 +282,18 @@ compose_files() {
 
 run_compose() {
     compose_files
-    docker compose "${_COMPOSE_FILES[@]}" "$@"
+    # For `exec`, always detach stdin (</dev/null).  With `-T` the CLI still
+    # attaches the caller's stdin; when invoked from an interactive terminal
+    # (e.g. `make test`) that stdin never reaches EOF, so `docker compose exec`
+    # blocks on its stdin-copy goroutine and does NOT return even after the
+    # in-container command has exited — making the suite appear to hang until
+    # the per-test `timeout` kills it.  All our exec uses run non-interactive
+    # baked scripts, so EOF-on-stdin is the correct behaviour.
+    if [[ "${1:-}" == "exec" ]]; then
+        docker compose "${_COMPOSE_FILES[@]}" "$@" </dev/null
+    else
+        docker compose "${_COMPOSE_FILES[@]}" "$@"
+    fi
 }
 
 # ── Commands ──────────────────────────────────────────────────────────────────
