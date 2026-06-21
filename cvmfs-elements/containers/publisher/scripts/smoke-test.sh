@@ -121,45 +121,20 @@ fi
 
 echo "Job submitted: $JOB_ID"
 
-# Stream state changes via SSE instead of polling.
-# The endpoint emits "data: {\"state\":\"...\"}" lines whenever the job
-# transitions.  curl -N streams indefinitely; we break on the first terminal
-# state.  --max-time 300 is a hard safety cap (5 min) in case the server
-# closes the stream without sending a terminal event.
-SSE_URL="${PREPUB_URL}/api/v1/jobs/${JOB_ID}/events"
-echo "Watching SSE stream: $SSE_URL"
-
+# Poll the job state until terminal or timeout. Polling is race-free; the SSE
+# event stream could miss a fast publish's "published" event (fired before the
+# watch connects), which left the curl blocked for its full --max-time (hang).
+echo "Polling job state: ${PREPUB_URL}/api/v1/jobs/${JOB_ID}"
 FINAL_STATE=""
-while IFS= read -r line; do
-    # SSE lines look like:  data: {"job_id":"...","state":"leased",...}
-    [[ "$line" == data:* ]] || continue
-    json="${line#data: }"
-    state=$(echo "$json" | jq -r '.state // empty' 2>/dev/null) || continue
-    [[ -n "$state" ]] || continue
-
-    echo "  → $state"
-
-    case "$state" in
-        published)
-            FINAL_STATE="published"
-            break ;;
-        failed|aborted)
-            FINAL_STATE="$state"
-            break ;;
+_deadline=$(( $(date +%s) + 120 ))
+while [[ $(date +%s) -lt $_deadline ]]; do
+    _st=$(curl -sf --max-time 10 -H "Authorization: Bearer ${PREPUB_API_TOKEN}" "${PREPUB_URL}/api/v1/jobs/${JOB_ID}" | jq -r '.state // empty' 2>/dev/null)
+    case "$_st" in
+        published)      FINAL_STATE="published"; echo "  -> published"; break ;;
+        failed|aborted) FINAL_STATE="$_st"; echo "  -> $_st"; break ;;
     esac
-done < <(curl -sN --no-buffer --max-time 300 \
-             -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
-             "$SSE_URL")
-
-# If SSE closed without a terminal state (e.g. server restarted mid-flight),
-# fall back to a single status fetch so we don't misreport.
-if [[ -z "$FINAL_STATE" ]]; then
-    echo "SSE stream closed without terminal state — fetching current status..."
-    JOB_STATUS=$(curl -sf --max-time 10 \
-        -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
-        "${PREPUB_URL}/api/v1/jobs/${JOB_ID}") || JOB_STATUS=""
-    FINAL_STATE=$(echo "$JOB_STATUS" | jq -r '.state // empty')
-fi
+    sleep 1
+done
 
 JOB_STATUS=$(curl -sf --max-time 10 \
     -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
