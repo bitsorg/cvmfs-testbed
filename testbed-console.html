@@ -35,6 +35,7 @@
 
   <div class="nav-section">Operations</div>
   <div class="nav-item" onclick="showTab('testbed')" id="nav-testbed"><span class="icon"><svg viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span> Testbed</div>
+  <div class="nav-item" onclick="showTab('tests')" id="nav-tests"><span class="icon"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span> Tests<span class="nav-badge info" id="badge-tests" style="display:none"></span></div>
   <div class="nav-item" onclick="showTab('jobs')" id="nav-jobs"><span class="icon"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></span> Jobs<span class="nav-badge info" id="badge-jobs"></span></div>
   <div class="nav-item" onclick="showTab('mqtt')" id="nav-mqtt"><span class="icon"><svg viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg></span> MQTT Monitor</div>
   <div class="nav-item" onclick="showTab('upload')" id="nav-upload"><span class="icon"><svg viewBox="0 0 24 24"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg></span> Upload<span class="nav-badge info" id="badge-upload" style="display:none"></span></div>
@@ -531,6 +532,62 @@
       </div>
       <div id="cc-output" style="background:#0d1117;color:#c9d1d9;border-radius:var(--radius);padding:12px;font-family:var(--mono);font-size:12px;min-height:120px;max-height:420px;overflow-y:auto;white-space:pre-wrap;display:none"></div>
       <div id="cc-placeholder" style="color:var(--c-muted);font-size:12px;padding:8px 0">Run a command to see output here. Requires server mode and Docker access.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ TESTS ═══════════════════════════════════ -->
+<div id="tab-tests" class="tab-content">
+  <div class="page-title">Tests</div>
+  <div class="page-sub">Run the selectable test suite and track results over time. <span id="tests-server-warn" class="muted" style="display:none">⚠️ Server mode required — start <code>./testbed.sh server</code> on the testbed host.</span></div>
+
+  <!-- Catalog + run controls -->
+  <div class="box" style="margin-bottom:16px">
+    <div class="box-header">
+      <span class="box-title">Test catalog</span>
+      <div class="flex" style="margin-left:auto;gap:8px">
+        <button class="btn btn-outline btn-sm" onclick="testsSelectAll(true)">Select all</button>
+        <button class="btn btn-outline btn-sm" onclick="testsSelectAll(false)">Clear</button>
+        <button class="btn btn-primary btn-sm" id="tests-run-selected" onclick="runSuite(false)">▶ Run selected</button>
+        <button class="btn btn-primary btn-sm" id="tests-run-all" onclick="runSuite(true)">▶ Run all</button>
+      </div>
+    </div>
+    <div class="box-pad">
+      <div id="tests-catalog" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div id="tests-run-msg" class="muted" style="font-size:12px;margin-top:10px"></div>
+    </div>
+  </div>
+
+  <!-- Live progress (visible only while a suite is running) -->
+  <div class="box" id="tests-progress-box" style="margin-bottom:16px;display:none">
+    <div class="box-header">
+      <span class="box-title">Live progress</span>
+      <span id="tests-progress-count" class="muted" style="font-size:12px;margin-left:8px"></span>
+      <span id="tests-progress-state" class="badge" style="margin-left:auto;font-size:11px"></span>
+    </div>
+    <div class="box-pad">
+      <div id="tests-progress-list" style="display:flex;flex-direction:column;gap:6px"></div>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div class="box">
+    <div class="box-header">
+      <span class="box-title">History</span>
+      <span id="tests-history-count" class="muted" style="font-size:12px;margin-left:8px"></span>
+      <button class="btn btn-outline btn-sm" style="margin-left:auto" onclick="refreshTestResults()">↻ Refresh</button>
+    </div>
+    <div style="overflow-x:auto;max-height:480px">
+      <table style="width:100%;font-size:12px">
+        <thead>
+          <tr>
+            <th>Time</th><th>Test</th><th>Method</th><th>Status</th><th>Duration</th><th>Metrics</th>
+          </tr>
+        </thead>
+        <tbody id="tests-history-tbody">
+          <tr><td colspan="6" class="empty muted">No test results recorded yet — run the suite to see history.</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </div>
@@ -1179,6 +1236,7 @@ function showTab(name){
   if(name==='stratum0')   refreshStatusDiagram();
   if(name==='monitoring'){ refreshMonitoring(); }
   if(name==='upload')     refreshUploadFilelist();
+  if(name==='tests')      refreshTests();
 }
 
 // ═══════════════════════════ Services health ═════════════════════════════════
@@ -1991,6 +2049,224 @@ async function refreshRuns(){
   renderRunsTable();
   // Rebuild volume-over-time chart whenever _runs changes
   buildMonitoringCharts();
+}
+
+// ═══════════════════════════ TESTS (suite runner) ════════════════════════════
+// Catalog mirrors _SUITE_TESTS in scripts/testbed.sh and _SUITE_TESTS in
+// scripts/testbed-server.py.  Data contract:
+//   GET  /api/test-results?limit=N  → array of records (most recent first)
+//   GET  /api/test-status           → live status object
+//   POST /api/test-run {tests:[...]}|{all:true} → {suite_run_id, started}
+const TEST_CATALOG = [
+  {name:'bits',     desc:'bits smoke publish via cvmfs-prepub REST API'},
+  {name:'ingest',   desc:'native cvmfs_server ingest smoke (needs bootstrap)'},
+  {name:'pull-wss', desc:'end-to-end pull distribution over embedded wss'},
+  {name:'chunking', desc:'bits publish + xor32 chunk-boundary verify'},
+  {name:'content',  desc:'compare-trees: bits vs native golden/smoke'},
+  {name:'stress',   desc:'stress test, N=10 bits jobs'},
+];
+let _testSel = new Set(TEST_CATALOG.map(t=>t.name));   // all selected by default
+let _testStatusTimer = null;
+
+function renderTestCatalog(){
+  const box = $('tests-catalog'); if(!box) return;
+  box.innerHTML = TEST_CATALOG.map(t=>{
+    const checked = _testSel.has(t.name) ? 'checked' : '';
+    return `<label style="display:flex;gap:10px;align-items:center;font-size:13px;cursor:pointer;padding:6px 8px;border:1px solid var(--c-border);border-radius:var(--radius)">
+      <input type="checkbox" data-test="${esc(t.name)}" ${checked} onchange="testToggle('${esc(t.name)}',this.checked)">
+      <code style="min-width:90px">${esc(t.name)}</code>
+      <span class="muted">${esc(t.desc)}</span>
+    </label>`;
+  }).join('');
+}
+
+function testToggle(name, on){
+  if(on) _testSel.add(name); else _testSel.delete(name);
+}
+
+function testsSelectAll(on){
+  _testSel = on ? new Set(TEST_CATALOG.map(t=>t.name)) : new Set();
+  renderTestCatalog();
+}
+
+function _testStatusBadge(status){
+  const map = {pass:'#1a7f37', fail:'#cf222e', skip:'#9a6700', running:'#0969da'};
+  const bg = map[status] || '#57606a';
+  return `<span class="badge" style="background:${bg};color:#fff;font-size:10px">${esc(status)}</span>`;
+}
+
+function _testMetricsSummary(rec){
+  const m = rec.metrics || {};
+  const parts = [];
+  switch(rec.test){
+    case 'bits': case 'ingest':
+      if(m.objects!=null) parts.push(`obj ${m.objects}`);
+      if(m.new_objects!=null) parts.push(`new ${m.new_objects}`);
+      if(m.chunks!=null) parts.push(`chunks ${m.chunks}`);
+      if(m.bytes_compressed!=null) parts.push(`${(m.bytes_compressed/1048576).toFixed(2)} MB`);
+      if(m.published_path) parts.push(esc(m.published_path));
+      break;
+    case 'chunking':
+      if(m.files_checked!=null) parts.push(`${m.files_checked} files`);
+      if(m.all_match!=null) parts.push(m.all_match?'all match':'DIVERGE');
+      break;
+    case 'content':
+      if(m.files!=null) parts.push(`${m.files} files`);
+      if(m.content_identical!=null) parts.push(m.content_identical?'identical':'DIFFERS');
+      if(m.metadata_diffs!=null) parts.push(`${m.metadata_diffs} meta-diff`);
+      break;
+    case 'pull-wss':
+      if(m.receivers_warmed!=null) parts.push(`${m.receivers_warmed} warmed`);
+      if(m.quorum_needed!=null) parts.push(`need ${m.quorum_needed}`);
+      break;
+    case 'stress':
+      if(m.n!=null) parts.push(`n ${m.n}`);
+      if(m.n_published!=null) parts.push(`pub ${m.n_published}`);
+      if(m.n_failed!=null) parts.push(`fail ${m.n_failed}`);
+      if(m.throughput_per_min!=null) parts.push(`${Number(m.throughput_per_min).toFixed(1)}/min`);
+      if(m.p50_s!=null) parts.push(`p50 ${m.p50_s}s`);
+      break;
+  }
+  const summary = parts.length ? parts.join(' · ') : '–';
+  return `<span class="mono muted" style="font-size:11px" title="${esc(rec.message||'')}">${esc(summary)}</span>`;
+}
+
+async function refreshTestResults(){
+  if(!SERVER_MODE) return;
+  const hdrs = {'X-Testbed-Token': SERVER_TOKEN||''};
+  let recs = [];
+  try{
+    const r = await fetch('/api/test-results?limit=100',{headers:hdrs,signal:AbortSignal.timeout(5000)});
+    if(!r.ok) return;
+    recs = await r.json();
+  }catch(_){ return; }
+  const tb = $('tests-history-tbody'); if(!tb) return;
+  const label = $('tests-history-count');
+  if(label) label.textContent = `${recs.length} result${recs.length!==1?'s':''}`;
+  if(!recs.length){
+    tb.innerHTML = `<tr><td colspan="6" class="empty muted">No test results recorded yet — run the suite to see history.</td></tr>`;
+    return;
+  }
+  tb.innerHTML = recs.map(r=>{
+    const method = r.method||'bits';
+    const mBadge = `<span class="badge" style="background:${method==='ingest'?'#6f42c1':'#0075ca'};color:#fff;font-size:10px">${esc(method)}</span>`;
+    const dur = (r.duration_s!=null && r.duration_s>0) ? fmtSec(r.duration_s) : (r.status==='skip'?'–':'0s');
+    return `<tr>
+      <td>${relTime(r.start_time)}</td>
+      <td><code>${esc(r.test)}</code></td>
+      <td>${mBadge}</td>
+      <td>${_testStatusBadge(r.status)}</td>
+      <td>${dur}</td>
+      <td>${_testMetricsSummary(r)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderTestProgress(status){
+  const box = $('tests-progress-box');
+  const list = $('tests-progress-list');
+  const cnt  = $('tests-progress-count');
+  const stateBadge = $('tests-progress-state');
+  if(!box || !list) return;
+
+  const selected = status.selected || [];
+  const results  = status.results || [];
+  const running  = !!status.running;
+
+  if(!running && results.length===0){ box.style.display='none'; return; }
+  box.style.display = '';
+
+  const byName = {};
+  results.forEach(r=>{ byName[r.test] = r; });
+  const doneCount = results.length;
+  if(cnt) cnt.textContent = `${doneCount}/${selected.length} complete`;
+  if(stateBadge){
+    if(running){ stateBadge.textContent='running'; stateBadge.style.background='#0969da'; stateBadge.style.color='#fff'; }
+    else { stateBadge.textContent='finished'; stateBadge.style.background='#1a7f37'; stateBadge.style.color='#fff'; }
+  }
+
+  list.innerHTML = selected.map(name=>{
+    const r = byName[name];
+    let icon, status_;
+    if(r){ status_ = r.status; icon = _testStatusBadge(r.status); }
+    else if(status.current===name){ status_='running'; icon = `<span class="spinner" style="width:12px;height:12px"></span> ${_testStatusBadge('running')}`; }
+    else { status_='pending'; icon = `<span class="badge" style="background:#57606a;color:#fff;font-size:10px">pending</span>`; }
+    const dur = (r && r.duration_s!=null && r.duration_s>0) ? `<span class="muted" style="font-size:11px">${fmtSec(r.duration_s)}</span>` : '';
+    return `<div style="display:flex;gap:10px;align-items:center;font-size:13px">
+      <code style="min-width:90px">${esc(name)}</code>${icon}
+      <span style="margin-left:auto">${dur}</span>
+    </div>`;
+  }).join('');
+}
+
+async function pollTestStatus(){
+  if(!SERVER_MODE) return;
+  const hdrs = {'X-Testbed-Token': SERVER_TOKEN||''};
+  let status = null;
+  try{
+    const r = await fetch('/api/test-status',{headers:hdrs,signal:AbortSignal.timeout(5000)});
+    if(r.ok) status = await r.json();
+  }catch(_){ /* ignore transient errors */ }
+  if(!status) return;
+  renderTestProgress(status);
+
+  const badge = $('badge-tests');
+  if(badge){
+    if(status.running){ badge.style.display=''; badge.textContent='●'; }
+    else badge.style.display='none';
+  }
+
+  if(status.running){
+    // Keep polling fast while running; pull fresh history each cycle.
+    refreshTestResults();
+    if(!_testStatusTimer){
+      _testStatusTimer = setInterval(pollTestStatus, 2000);
+    }
+  } else {
+    if(_testStatusTimer){ clearInterval(_testStatusTimer); _testStatusTimer=null; }
+    // Final refresh of history when a run just finished.
+    refreshTestResults();
+  }
+}
+
+async function runSuite(all){
+  if(!SERVER_MODE){
+    const w=$('tests-server-warn'); if(w) w.style.display='';
+    return;
+  }
+  const tests = all ? TEST_CATALOG.map(t=>t.name) : Array.from(_testSel);
+  const msg = $('tests-run-msg');
+  if(!all && tests.length===0){ if(msg){msg.style.color='var(--c-danger)';msg.textContent='Select at least one test.';} return; }
+  const body = all ? {all:true} : {tests};
+  if(msg){ msg.style.color='var(--c-muted)'; msg.textContent='Launching suite…'; }
+  try{
+    const r = await fetch('/api/test-run',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-Testbed-Token':SERVER_TOKEN||''},
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await r.json().catch(()=>({}));
+    if(r.status===409){
+      if(msg){ msg.style.color='var(--c-danger)'; msg.textContent='A suite is already running — wait for it to finish.'; }
+    } else if(r.ok && data.started){
+      if(msg){ msg.style.color='var(--c-accent)'; msg.textContent=`Suite ${data.suite_run_id} started: ${(data.tests||tests).join(', ')}`; }
+      // Begin polling immediately.
+      pollTestStatus();
+    } else {
+      if(msg){ msg.style.color='var(--c-danger)'; msg.textContent='Failed to start: '+(data.error||r.status); }
+    }
+  }catch(ex){
+    if(msg){ msg.style.color='var(--c-danger)'; msg.textContent='Request failed: '+ex; }
+  }
+}
+
+function refreshTests(){
+  renderTestCatalog();
+  refreshTestResults();
+  pollTestStatus();
+  const warn=$('tests-server-warn');
+  if(warn) warn.style.display = SERVER_MODE ? 'none' : '';
 }
 
 function renderRunsTable(){
@@ -3385,6 +3661,8 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     submitJob, applyJobsFilter, cycleRange, resetMonStats,
     refreshJobs, refreshMonitoring, refreshStatusDiagram, refreshRuns,
     refreshS1Backlog, refreshCASStats, refreshHostMetrics,
+    // Tests / suite runner
+    refreshTests, refreshTestResults, runSuite, testToggle, testsSelectAll,
     showMetricHistory, closeMetricHistory, toggleRunSelection, clearRunComparison,
     // Upload
     scanUploadDir, runUploadFilelist, abortUpload, retryFailedUploads,
@@ -3403,6 +3681,9 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   // Start ring refresh unconditionally — S1 replication happens in the
   // background regardless of which tab is active, so we keep polling.
   _ensureRingRefresh();
+  // Poll suite status once at boot so the Tests nav badge reflects an in-flight
+  // run; if one is active this also starts the 2 s polling loop.
+  if(SERVER_MODE) pollTestStatus();
 });
 </script>
 </body>

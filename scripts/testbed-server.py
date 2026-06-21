@@ -82,7 +82,7 @@ ANSI_RE = re.compile(r'\x1b\[[0-9;]*[mKHABCDGJ]')
 
 # Commands allowed via /api/run (security whitelist — no shell metacharacters).
 ALLOWED_COMMANDS = frozenset({
-    'status', 'info', 'logs', 'test', 'stresstest', 'mqtttest', 'unittest',
+    'status', 'info', 'logs', 'test', 'suite', 'stresstest', 'mqtttest', 'unittest',
     'pulltest', 'pullstatus',
     'start', 'stop', 'restart', 'bootstrap', 'snapshot', 'restore',
     'catdump', 'catdiff', 'verify', 'clean', 'reset', 'help',
@@ -167,6 +167,7 @@ def parse_args():
     # Overlay flags
     p.add_argument('--bits',  action='store_true', help='--bits overlay active')
     p.add_argument('--mqtt',  action='store_true', help='--mqtt overlay active')
+    p.add_argument('--wss',   action='store_true', help='--wss (embedded broker) overlay active')
     # CAS stats
     p.add_argument('--cas-container', default='cvmfs-prepub',
                    help='Docker container that hosts the prepub CAS (default: cvmfs-prepub)')
@@ -351,6 +352,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._runs()
                 return
 
+            if path == '/api/test-results':
+                self._test_results(parsed.query)
+                return
+
+            if path == '/api/test-status':
+                self._test_status()
+                return
+
             if path == '/api/manifest':
                 self._manifest()
                 return
@@ -416,6 +425,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == '/api/run':
             self._run_command()
+        elif path == '/api/test-run':
+            self._test_run()
         elif path == '/api/exec-container':
             self._exec_container()
         elif path.startswith('/api/proxy/'):
@@ -684,6 +695,137 @@ class Handler(BaseHTTPRequestHandler):
             runs.sort(key=lambda r: r.get('start_time', ''), reverse=True)
             self.server._runs_cache = {'mtime': mtime, 'data': runs}
         self._json(runs)
+
+    # ── Test-suite results ────────────────────────────────────────────────────
+    # Catalog of selectable suite tests (must mirror _SUITE_TESTS in testbed.sh).
+    _SUITE_TESTS = ('bits', 'ingest', 'pull-wss', 'chunking', 'content', 'stress')
+
+    def _test_results(self, query_string: str):
+        """
+        GET /api/test-results?limit=N
+        Reads TESTBED_ROOT/data/test-results.ndjson and returns a JSON array of
+        the last N records, most recent (file-append order) first.
+        Returns [] when the file is absent or empty.  limit defaults to 100.
+        """
+        params = urllib.parse.parse_qs(query_string or '')
+        try:
+            limit = int(params.get('limit', ['100'])[0])
+        except (TypeError, ValueError):
+            limit = 100
+        limit = max(1, min(limit, 5000))
+
+        log_path = self.server.testbed_root / 'data' / 'test-results.ndjson'
+        records = []
+        try:
+            with open(log_path, 'r', encoding='utf-8') as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        except FileNotFoundError:
+            self._json([])
+            return
+        # NDJSON is appended chronologically; newest is at the end.  Return the
+        # last `limit` records reversed so the newest is first.
+        records = records[-limit:]
+        records.reverse()
+        self._json(records)
+
+    def _test_status(self):
+        """
+        GET /api/test-status
+        Returns the contents of TESTBED_ROOT/data/test-suite-status.json, or an
+        idle default if the file is absent or unparseable.
+        """
+        idle = {
+            'suite_run_id': None, 'started_at': None, 'finished_at': None,
+            'running': False, 'selected': [], 'current': None, 'results': [],
+        }
+        status_path = self.server.testbed_root / 'data' / 'test-suite-status.json'
+        try:
+            obj = json.loads(status_path.read_text(encoding='utf-8'))
+            if not isinstance(obj, dict):
+                obj = idle
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            obj = idle
+        self._json(obj)
+
+    def _test_run(self):
+        """
+        POST /api/test-run
+        Body JSON: {"tests": ["bits","chunking"]}  or  {"all": true}
+        If a suite is already running (status file running=true) → 409.
+        Otherwise launch  testbed.sh suite <names...>  in the BACKGROUND on the
+        host (detached subprocess, cwd=testbed_root) and return immediately.
+        Returns {"suite_run_id": <ts>, "started": true, "tests": [...]}.
+        """
+        cl = int(self.headers.get('Content-Length', 0) or 0)
+        raw = self.rfile.read(cl) if cl else b'{}'
+        try:
+            req = json.loads(raw or b'{}')
+        except Exception:
+            self._json({'error': 'Invalid JSON body'}, 400)
+            return
+
+        # ── Refuse if a suite is already running ──────────────────────────────
+        status_path = self.server.testbed_root / 'data' / 'test-suite-status.json'
+        try:
+            cur = json.loads(status_path.read_text(encoding='utf-8'))
+            if isinstance(cur, dict) and cur.get('running'):
+                self._json({'error': 'A suite is already running',
+                            'suite_run_id': cur.get('suite_run_id')}, 409)
+                return
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass  # no/garbled status file → treat as idle
+
+        # ── Resolve the requested test names ──────────────────────────────────
+        if req.get('all'):
+            tests = list(self._SUITE_TESTS)
+        else:
+            raw_tests = req.get('tests') or []
+            if not isinstance(raw_tests, list):
+                self._json({'error': 'tests must be a list'}, 400)
+                return
+            tests = [t for t in raw_tests
+                     if isinstance(t, str) and t in self._SUITE_TESTS]
+        if not tests:
+            self._json({'error': 'no valid tests selected',
+                        'known': list(self._SUITE_TESTS)}, 400)
+            return
+
+        # ── Launch the suite detached in the background ───────────────────────
+        sid = str(int(time.time()))
+        script = str(self.server.script_path)
+        full_cmd = [script, 'suite'] + tests
+        env = {
+            **os.environ,
+            'FORCE_COLOR': '0', 'NO_COLOR': '1', 'TERM': 'dumb',
+            'TESTBED_ROOT': str(self.server.testbed_root),
+        }
+        try:
+            # Detach: own session, stdio to DEVNULL so the HTTP response returns
+            # immediately and the child outlives this request handler.
+            subprocess.Popen(
+                full_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                cwd=str(self.server.testbed_root),
+                env=env,
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            self._json({'error': f'Script not found: {script}'}, 500)
+            return
+        except Exception as ex:
+            self._json({'error': str(ex)}, 500)
+            return
+
+        self._json({'suite_run_id': sid, 'started': True, 'tests': tests})
 
     # ── CVMFS manifest ────────────────────────────────────────────────────────
     def _manifest(self):

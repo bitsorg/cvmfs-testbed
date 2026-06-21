@@ -241,7 +241,7 @@ chmod 777 \
     "$TESTBED_ROOT/data/gateway-spool"
 # NDJSON log files — must exist as regular files before docker-compose mounts
 # them (bind-mounting a non-existent path creates a directory, not a file).
-for _log in ingest-jobs.ndjson runs.ndjson; do
+for _log in ingest-jobs.ndjson runs.ndjson test-results.ndjson; do
     if [[ ! -f "$TESTBED_ROOT/data/$_log" ]]; then
         touch "$TESTBED_ROOT/data/$_log"
         chmod 666 "$TESTBED_ROOT/data/$_log"
@@ -249,6 +249,14 @@ for _log in ingest-jobs.ndjson runs.ndjson; do
     fi
 done
 unset _log
+# Live test-suite status (single JSON object, overwritten by `testbed.sh suite`).
+# Seed an idle default so the console's Tests tab renders before any suite runs.
+if [[ ! -f "$TESTBED_ROOT/data/test-suite-status.json" ]]; then
+    printf '%s\n' '{"suite_run_id":null,"started_at":null,"finished_at":null,"running":false,"selected":[],"current":null,"results":[]}' \
+        > "$TESTBED_ROOT/data/test-suite-status.json"
+    chmod 666 "$TESTBED_ROOT/data/test-suite-status.json"
+    success "Created test-suite-status.json (idle)."
+fi
 success "Directory structure created."
 
 # (BITS_CONSOLE_SRC is derived from the conventional path $TESTBED_DIR/bits-console

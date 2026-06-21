@@ -27,9 +27,14 @@
 #   make redeploy      install + full reset + bootstrap
 #   make clean         Stop containers and wipe all testbed state (keeps snapshot and .env)
 #   make cleanall      Like clean, but also deletes .env (full credential reset)
-#   make test          Smoke test — bits method (default)
-#   make test-ingest   Smoke test — cvmfs_server ingest path (needs bootstrap)
-#   make test-bits     Smoke test — cvmfs-prepub REST API path
+#   make test          FULL test suite — all six tests (records metrics);
+#                      subset via  make test TESTS="bits chunking content"
+#   make test-suite    Alias of `make test` (honors TESTS=)
+#   make test-ingest   Suite: cvmfs_server ingest smoke (needs bootstrap)
+#   make test-bits     Suite: cvmfs-prepub REST API smoke
+#   make test-chunking Suite: bits publish + xor32 chunk verify
+#   make test-content  Suite: compare-trees vs golden/smoke
+#   make test-stress   Suite: stress N=10 (bits)
 #   make stresstest    Stress test — bits method, N jobs (default N=10)
 #   make stresstest-ingest  Stress test — ingest path
 #   make catdiff       Diff catalog dumps: ingest vs bits
@@ -88,8 +93,10 @@ _WSS := $(if $(filter 1 yes true,$(WSS)),--wss,)
 .DEFAULT_GOAL := all
 
 .PHONY: all build install init start start-wss bootstrap snapshot restore redeploy clean cleanall \
-        test test-ingest test-bits test-pull test-pull-wss pull-status \
+        test test-suite test-ingest test-bits test-pull test-pull-wss pull-status \
+        test-chunking test-content test-stress \
         stresstest stresstest-ingest \
+        verify verify-chunking verify-content \
         catdump-ingest catdump-bits catdiff \
         help
 
@@ -232,20 +239,27 @@ cleanall:
 	fi
 
 # ── test targets ──────────────────────────────────────────────────────────────
+# `make test` runs the FULL selectable suite (all six tests incl. stress N=10),
+# recording per-test metrics to data/test-results.ndjson and live progress to
+# data/test-suite-status.json.  Select a subset with TESTS:
+#   make test                              # all six
+#   make test TESTS="bits chunking content"
+# TESTS is passed straight through to `testbed.sh suite`.
 test:
-	bash "$(TESTBED)" test --method bits
+	bash "$(TESTBED)" suite $(TESTS)
 
-# test-ingest requires the bootstrap to have run (nested catalog in snapshot).
+# Individual smoke targets delegate to the suite so they ALSO log a
+# test-results.ndjson record (keeping history complete).
 test-ingest: $(MAKE_DIR)/bootstrap
-	bash "$(TESTBED)" test --method ingest
+	bash "$(TESTBED)" suite ingest
 
 test-bits:
-	bash "$(TESTBED)" test --method bits
+	bash "$(TESTBED)" suite bits
 
 # End-to-end pull test over the embedded MQTT-over-WSS control plane (no mosquitto).
 # Requires the wss stack: run `make start-wss` (or `make WSS=1 start`) first.
 test-pull-wss:
-	bash "$(TESTBED)" pulltest --wss --method bits
+	bash "$(TESTBED)" suite pull-wss
 
 # Convenience alias: pull distribution is now wss-only.
 test-pull: test-pull-wss
@@ -255,8 +269,13 @@ pull-status:
 	bash "$(TESTBED)" pullstatus --wss
 
 # ── stresstest targets ────────────────────────────────────────────────────────
+# Direct stress run (raw, N/C configurable, no test-results record).
 stresstest:
 	bash "$(TESTBED)" stresstest $(N) $(_CONCURRENCY) --method bits
+
+# Suite-wrapped stress (fixed N=10) — logs a test-results.ndjson record.
+test-stress:
+	bash "$(TESTBED)" suite stress
 
 stresstest-ingest: $(MAKE_DIR)/bootstrap
 	bash "$(TESTBED)" stresstest $(N) --method ingest
@@ -288,12 +307,20 @@ help:
 	@echo "  make clean                Stop + wipe state (keeps snapshot and .env)"
 	@echo "  make cleanall             Stop + wipe state + delete .env (fresh credentials)"
 	@echo ""
-	@echo "  make test                 Smoke test (bits method)"
-	@echo "  make test-ingest          Smoke test (cvmfs_server ingest, needs bootstrap)"
-	@echo "  make test-bits            Smoke test (cvmfs-prepub REST API)"
-	@echo "  make test-pull-wss        End-to-end pull test over embedded wss (needs make start-wss)"
+	@echo "  make test                 FULL test suite — all six tests (records metrics)"
+	@echo "  make test TESTS=\"bits chunking content\"   Run a selected subset"
+	@echo "  make test-suite           Alias of 'make test' (honors TESTS=)"
+	@echo "  make test-ingest          Suite: native ingest smoke (needs bootstrap)"
+	@echo "  make test-bits            Suite: cvmfs-prepub REST API smoke"
+	@echo "  make test-chunking        Suite: bits publish + xor32 chunk verify"
+	@echo "  make test-content         Suite: compare-trees vs golden/smoke"
+	@echo "  make test-stress          Suite: stress N=10 (bits)"
+	@echo "  make test-pull-wss        Suite: end-to-end pull over embedded wss (needs make start-wss)"
 	@echo "  make test-pull            Alias of test-pull-wss"
 	@echo "  make pull-status          Dump pull-relevant publisher/receiver logs"
+	@echo ""
+	@echo "  Suite tests (names for TESTS=): bits ingest pull-wss chunking content stress"
+	@echo "  Results: data/test-results.ndjson  ·  Live status: data/test-suite-status.json"
 	@echo ""
 	@echo "  make stresstest [N=10]    Stress test, N jobs (bits)"
 	@echo "  make stresstest-ingest    Stress test (ingest path)"
@@ -342,3 +369,15 @@ verify-content:
 
 # verify — full bits-reproduces-CVMFS check: chunk boundaries + content.
 verify: verify-chunking verify-content
+
+# Suite-wrapped chunking / content checks — these log a test-results.ndjson
+# record (unlike the raw verify-chunking / verify-content targets above).
+test-chunking:
+	bash "$(TESTBED)" suite chunking
+
+test-content:
+	bash "$(TESTBED)" suite content
+
+# Full suite — explicit alias for `make test` with all six tests.
+test-suite:
+	bash "$(TESTBED)" suite $(TESTS)

@@ -31,6 +31,11 @@
 #   restore         Restore repository state from repo-seed.tar.gz.  Fails if the
 #                   snapshot file does not exist.
 #   test            Run the smoke test (default method: bits).
+#   suite [name...] Run the selectable test suite (default: all six tests).
+#                   Names: bits ingest pull-wss chunking content stress.
+#                   Honors the TESTS env var when no names are given.
+#                   Records per-test metrics to data/test-results.ndjson and
+#                   live progress to data/test-suite-status.json.
 #   stresstest <n>  Stress test publishing with n concurrent/sequential jobs.
 #   catdump [label] Decompress and SQL-dump all catalogs from the current repo
 #                   snapshot into data/catalog-dumps/<label>/.
@@ -1476,6 +1481,425 @@ cmd_pullstatus() {
     done
 }
 
+# ── cmd_suite ──────────────────────────────────────────────────────────────────
+# Selectable, metrics-recording test-suite runner.
+#
+#   ./testbed.sh suite [name ...]          # run the named tests (default: all six)
+#   TESTS="bits chunking" ./testbed.sh suite
+#
+# Named catalog (name -> command -> default timeout seconds):
+#   bits      bits smoke publish                              ~180
+#   ingest    native ingest smoke (skip if no bootstrap)      ~180
+#   pull-wss  end-to-end pull over wss (skip if wss not up)   ~240
+#   chunking  bits publish + verify-chunking.py               ~200
+#   content   compare-trees.py latest-bits vs /golden/smoke   ~120 (skip if golden absent)
+#   stress    stresstest N=10 (bits)                          ~300
+#
+# Each selected test is wrapped in `timeout <T>`, its stdout/stderr captured to a
+# temp log, parsed for key metrics, and one record appended to
+# data/test-results.ndjson. Live progress is written to data/test-suite-status.json.
+# A failure does not stop the suite; the final exit code is non-zero iff any
+# non-skipped test failed.
+#
+# Data contract — see scripts/testbed-server.py (readers) and testbed-console.html.
+
+# Ordered catalog and per-test default timeouts.
+_SUITE_TESTS=(bits ingest pull-wss chunking content stress)
+declare -A _SUITE_TIMEOUT=(
+    [bits]=180 [ingest]=180 [pull-wss]=240 [chunking]=200 [content]=120 [stress]=300
+)
+
+# ISO-8601 UTC timestamp helper.
+_iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# JSON string escaper for shell-built JSON (handles \, ", newlines, tabs).
+_json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\t'/\\t}"
+    s="${s//$'\r'/}"
+    s="${s//$'\n'/\\n}"
+    printf '%s' "$s"
+}
+
+# Write the live status file via python3 (atomic, array-aware).
+# Args: suite_run_id started_at finished_at(or empty) running(true|false)
+#       current(or empty) selected_csv results_json_array
+_suite_write_status() {
+    local sid="$1" started="$2" finished="$3" running="$4" current="$5"
+    local selected_csv="$6" results_json="$7"
+    local status_file="${TESTBED_ROOT}/data/test-suite-status.json"
+    SID="$sid" STARTED="$started" FINISHED="$finished" RUNNING="$running" \
+    CURRENT="$current" SELECTED_CSV="$selected_csv" RESULTS_JSON="$results_json" \
+    STATUS_FILE="$status_file" python3 - <<'PY'
+import json, os
+sid      = os.environ["SID"]
+started  = os.environ["STARTED"]
+finished = os.environ["FINISHED"]
+running  = os.environ["RUNNING"] == "true"
+current  = os.environ["CURRENT"] or None
+selected = [x for x in os.environ["SELECTED_CSV"].split(",") if x]
+try:
+    results = json.loads(os.environ["RESULTS_JSON"] or "[]")
+except Exception:
+    results = []
+obj = {
+    "suite_run_id": sid,
+    "started_at":   started,
+    "finished_at":  finished or None,
+    "running":      running,
+    "selected":     selected,
+    "current":      current,
+    "results":      results,
+}
+path = os.environ["STATUS_FILE"]
+tmp  = path + ".tmp"
+with open(tmp, "w") as fh:
+    json.dump(obj, fh)
+os.replace(tmp, path)
+PY
+}
+
+# Append one record to data/test-results.ndjson.
+# Args: sid test method status start end dur message metrics_json
+_suite_log_result() {
+    local sid="$1" test="$2" method="$3" status="$4" start="$5" end="$6"
+    local dur="$7" message="$8" metrics="$9"
+    local out="${TESTBED_ROOT}/data/test-results.ndjson"
+    [[ -n "$metrics" ]] || metrics="{}"
+    printf '{"suite_run_id":"%s","test":"%s","method":"%s","status":"%s","start_time":"%s","end_time":"%s","duration_s":%d,"message":"%s","metrics":%s}\n' \
+        "$(_json_escape "$sid")" "$(_json_escape "$test")" "$(_json_escape "$method")" \
+        "$(_json_escape "$status")" "$start" "$end" "$dur" \
+        "$(_json_escape "$message")" "$metrics" \
+        >> "$out" 2>/dev/null || true
+}
+
+# ── Metric parsers ─────────────────────────────────────────────────────────────
+# Each emits a compact JSON object on stdout, parsed from a captured log file.
+
+# bits/ingest smoke: objects, new_objects, bytes_raw, bytes_compressed, chunks, path.
+_suite_metrics_smoke() {
+    local log="$1"
+    LOG="$log" python3 - <<'PY'
+import json, os, re
+txt = open(os.environ["LOG"], encoding="utf-8", errors="replace").read()
+m = {}
+# Published path: "path=test/smoke.N"  or  "Ingesting to <repo>:test/native/smoke"
+pm = re.search(r'path=([^\s]+)', txt) or re.search(r'Ingesting to [^:]+:([^\s]+)', txt)
+if pm:
+    m["published_path"] = pm.group(1)
+# The job JSON is printed via `jq .`; pull the numeric fields if present.
+def num(*keys):
+    for k in keys:
+        mm = re.search(r'"%s"\s*:\s*([0-9]+)' % re.escape(k), txt)
+        if mm:
+            return int(mm.group(1))
+    return None
+for out_key, src in (
+    ("objects",          ("n_objects", "num_objects")),
+    ("new_objects",      ("n_new_objects", "new_objects", "n_objects_new")),
+    ("bytes_raw",        ("n_bytes_raw", "bytes_raw", "n_bytes_uncompressed")),
+    ("bytes_compressed", ("n_bytes_compressed", "bytes_compressed")),
+    ("chunks",           ("n_chunks", "num_chunks", "chunks")),
+):
+    v = num(*src)
+    if v is not None:
+        m[out_key] = v
+print(json.dumps(m))
+PY
+}
+
+# chunking: files_checked, all_match (from verify-chunking.py output).
+_suite_metrics_chunking() {
+    local log="$1"
+    LOG="$log" python3 - <<'PY'
+import json, os, re
+txt = open(os.environ["LOG"], encoding="utf-8", errors="replace").read()
+m = {}
+cm = re.search(r'(PASS|FAIL):\s*(\d+)\s+files checked', txt)
+if cm:
+    m["all_match"] = (cm.group(1) == "PASS")
+    m["files_checked"] = int(cm.group(2))
+print(json.dumps(m))
+PY
+}
+
+# content: files, content_identical, metadata_diffs (from compare-trees.py output).
+_suite_metrics_content() {
+    local log="$1"
+    LOG="$log" python3 - <<'PY'
+import json, os, re
+txt = open(os.environ["LOG"], encoding="utf-8", errors="replace").read()
+m = {}
+m["content_identical"] = ("CONTENT IDENTICAL" in txt)
+am = re.search(r'A=\S+ \((\d+) entries\)', txt)
+if am:
+    m["files"] = int(am.group(1))
+dm = re.search(r'metadata-only diffs:\s*(\d+)', txt)
+if dm:
+    m["metadata_diffs"] = int(dm.group(1))
+print(json.dumps(m))
+PY
+}
+
+# pull-wss: receivers_warmed, quorum_needed (from pulltest output).
+_suite_metrics_pull() {
+    local log="$1"
+    LOG="$log" python3 - <<'PY'
+import json, os, re
+txt = open(os.environ["LOG"], encoding="utf-8", errors="replace").read()
+m = {}
+qm = re.search(r'quorum (?:reached|NOT reached):\s*(\d+)/\d+\s+(?:receivers\s+)?warmed\s+\(need\s+(\d+)\)', txt)
+if qm:
+    m["receivers_warmed"] = int(qm.group(1))
+    m["quorum_needed"]    = int(qm.group(2))
+print(json.dumps(m))
+PY
+}
+
+# stress: read the most-recent batch record from runs.ndjson (the stress run
+# logs it via log_run with test_type="smoke"/"stress"); fall back to the log.
+_suite_metrics_stress() {
+    local log="$1"
+    local runs="${TESTBED_ROOT}/data/runs.ndjson"
+    RUNS="$runs" python3 - <<'PY'
+import json, os
+m = {}
+path = os.environ["RUNS"]
+last = None
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if rec.get("test_type") in ("package",):
+                continue
+            last = rec
+except FileNotFoundError:
+    pass
+if last:
+    for k_out, k_in in (("n", "n_requested"), ("n_published", "n_published"),
+                        ("n_failed", "n_failed"), ("throughput_per_min", "throughput_per_min"),
+                        ("p50_s", "p50_s"), ("p95_s", "p95_s")):
+        if k_in in last and last[k_in] is not None:
+            m[k_out] = last[k_in]
+print(json.dumps(m))
+PY
+}
+
+# ── Prerequisite detection ─────────────────────────────────────────────────────
+# Return 0 if the prerequisite is present (test may run), non-zero to skip.
+
+# ingest / content need the golden nested catalog (test/native/smoke) which the
+# bootstrap step seeds and the snapshot captures. We probe for the bootstrap
+# sentinel files restored from the snapshot.
+_suite_have_bootstrap() {
+    [[ -f "${TESTBED_ROOT}/repos/${REPO_NAME}/.cvmfspublished" ]] || return 1
+    return 0
+}
+
+# wss containers must be running with the embedded-broker overlay.
+_suite_have_wss() {
+    docker inspect cvmfs-prepub --format '{{json .Args}}' 2>/dev/null \
+        | grep -q 'embedded-broker-ws-addr'
+}
+
+# /golden/smoke (mounted into the host? — actually a path inside a container) is
+# referenced by verify-content via compare-trees.py. The Makefile target passes
+# /golden/smoke literally; if the path is unavailable compare-trees.py errors.
+# Probe by checking the golden mount on the host filesystem.
+_suite_have_golden() {
+    [[ -d "${TESTBED_ROOT}/data/golden/smoke" || -d "/golden/smoke" ]]
+}
+
+# Run a single named test. Echoes nothing structured; all bookkeeping happens via
+# the caller. Returns: 0 pass, 1 fail, 2 skip. Sets globals _RT_MSG / _RT_METRICS.
+_suite_run_one() {
+    local name="$1" sid="$2"
+    local t="${_SUITE_TIMEOUT[$name]:-180}"
+    local log; log="$(mktemp "${TMPDIR:-/tmp}/suite-${name}.XXXXXX.log")"
+    local method="bits" rc=0
+    _RT_MSG=""; _RT_METRICS="{}"
+
+    case "$name" in
+        bits)
+            method="bits"
+            timeout "$t" bash "$0" test --method bits >"$log" 2>&1 || rc=$?
+            _RT_METRICS="$(_suite_metrics_smoke "$log")"
+            if [[ $rc -eq 0 ]]; then _RT_MSG="bits smoke published"; else
+                [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" || _RT_MSG="bits smoke failed (rc=$rc)"
+            fi
+            ;;
+        ingest)
+            method="ingest"
+            if ! _suite_have_bootstrap; then
+                _RT_MSG="skipped: no bootstrap/golden nested catalog"; rm -f "$log"; return 2
+            fi
+            timeout "$t" bash "$0" test --method ingest >"$log" 2>&1 || rc=$?
+            _RT_METRICS="$(_suite_metrics_smoke "$log")"
+            if [[ $rc -eq 0 ]]; then _RT_MSG="native ingest published"; else
+                [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" || _RT_MSG="ingest smoke failed (rc=$rc)"
+            fi
+            ;;
+        pull-wss)
+            method="bits"
+            if ! _suite_have_wss; then
+                _RT_MSG="skipped: wss stack not running (start --wss)"; rm -f "$log"; return 2
+            fi
+            timeout "$t" bash "$0" pulltest --wss --method bits >"$log" 2>&1 || rc=$?
+            _RT_METRICS="$(_suite_metrics_pull "$log")"
+            if [[ $rc -eq 0 ]]; then _RT_MSG="pull quorum reached"; else
+                [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" || _RT_MSG="pull quorum not reached (rc=$rc)"
+            fi
+            ;;
+        chunking)
+            method="bits"
+            # Publish via bits, then verify chunk boundaries against the xor32 oracle.
+            local cas_repo=""
+            if timeout "$t" bash -c '
+                set -o pipefail
+                bash "'"$0"'" test --method bits || exit 1
+                r=$(basename "$(dirname "$(ls "'"${TESTBED_ROOT}"'"/repos/*/.cvmfspublished | head -1)")")
+                python3 "'"$SCRIPT_DIR"'/verify-chunking.py" \
+                    "'"${TESTBED_ROOT}"'/repos/$r" \
+                    "'"${TESTBED_ROOT}"'/data/payload/payload.tar" \
+                    4194304 8388608 16777216
+            ' >"$log" 2>&1; then rc=0; else rc=$?; fi
+            _RT_METRICS="$(_suite_metrics_chunking "$log")"
+            if [[ $rc -eq 0 ]]; then _RT_MSG="chunk boundaries match xor32"; else
+                [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" || _RT_MSG="chunking divergence (rc=$rc)"
+            fi
+            ;;
+        content)
+            method="bits"
+            if ! _suite_have_golden; then
+                _RT_MSG="skipped: golden/smoke tree absent"; rm -f "$log"; return 2
+            fi
+            local golden="/golden/smoke"
+            [[ -d "${TESTBED_ROOT}/data/golden/smoke" ]] && golden="${TESTBED_ROOT}/data/golden/smoke"
+            if timeout "$t" bash -c '
+                set -o pipefail
+                r=$(basename "$(dirname "$(ls "'"${TESTBED_ROOT}"'"/repos/*/.cvmfspublished | head -1)")")
+                a=$(python3 -c "import zlib,sqlite3,os,tempfile;cas=\"'"${TESTBED_ROOT}"'/repos/\"+\"$r\";root=[l[1:].strip().decode() for l in open(cas+\"/.cvmfspublished\",\"rb\") if l[:1]==b\"C\"][0];raw=zlib.decompress(open(cas+\"/data/\"+root[:2]+\"/\"+root[2:]+\"C\",\"rb\").read());fd,t=tempfile.mkstemp();os.write(fd,raw);os.close(fd);print(sorted([p for (p,h) in sqlite3.connect(t).execute(\"select path,sha1 from nested_catalogs\") if \"/test/smoke.\" in p])[-1])")
+                python3 "'"$SCRIPT_DIR"'/compare-trees.py" "'"${TESTBED_ROOT}"'/repos/$r" "$a" "'"$golden"'"
+            ' >"$log" 2>&1; then rc=0; else rc=$?; fi
+            _RT_METRICS="$(_suite_metrics_content "$log")"
+            if [[ $rc -eq 0 ]]; then _RT_MSG="content identical to golden"; else
+                [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" || _RT_MSG="content differs (rc=$rc)"
+            fi
+            ;;
+        stress)
+            method="bits"
+            timeout "$t" bash "$0" stresstest 10 --method bits >"$log" 2>&1 || rc=$?
+            _RT_METRICS="$(_suite_metrics_stress "$log")"
+            if [[ $rc -eq 0 ]]; then _RT_MSG="stress N=10 completed"; else
+                [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" || _RT_MSG="stress failed (rc=$rc)"
+            fi
+            ;;
+        *)
+            _RT_MSG="unknown test: $name"; rm -f "$log"; return 1
+            ;;
+    esac
+
+    _RT_METHOD="$method"
+    rm -f "$log"
+    [[ $rc -eq 0 ]] && return 0 || return 1
+}
+
+cmd_suite() {
+    load_env
+
+    : "${REPO_NAME:?REPO_NAME not set — run: ./testbed.sh init}"
+
+    # Selection: positional args > TESTS env > all six.
+    local selected=()
+    if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
+        selected=("${POSITIONAL_ARGS[@]}")
+    elif [[ -n "${TESTS:-}" ]]; then
+        # shellcheck disable=SC2206
+        selected=(${TESTS})
+    else
+        selected=("${_SUITE_TESTS[@]}")
+    fi
+
+    # Validate names against the catalog.
+    local valid=()
+    local known=" ${_SUITE_TESTS[*]} "
+    local n
+    for n in "${selected[@]}"; do
+        if [[ "$known" == *" $n "* ]]; then
+            valid+=("$n")
+        else
+            warn "Unknown test '$n' — ignoring. Known: ${_SUITE_TESTS[*]}"
+        fi
+    done
+    if [[ ${#valid[@]} -eq 0 ]]; then
+        error "No valid tests selected. Catalog: ${_SUITE_TESTS[*]}"
+        exit 1
+    fi
+
+    mkdir -p "${TESTBED_ROOT}/data"
+    local sid; sid="$(date +%s)"
+    local started; started="$(_iso_now)"
+    local selected_csv; selected_csv="$(IFS=,; echo "${valid[*]}")"
+
+    section "Running test suite [$sid]: ${valid[*]}"
+
+    # results array (JSON) accumulated for the status file.
+    local results_json="[]"
+    _suite_write_status "$sid" "$started" "" "true" "" "$selected_csv" "$results_json"
+
+    local passed=0 failed=0 skipped=0
+    for n in "${valid[@]}"; do
+        # Mark current test running.
+        _suite_write_status "$sid" "$started" "" "true" "$n" "$selected_csv" "$results_json"
+        info "▶ ${n} (timeout ${_SUITE_TIMEOUT[$n]:-180}s) ..."
+
+        local t0 t1 dur start_iso end_iso rc status
+        t0="$(date +%s)"; start_iso="$(_iso_now)"
+        _RT_METHOD="bits"
+        rc=0; _suite_run_one "$n" "$sid" || rc=$?
+        t1="$(date +%s)"; end_iso="$(_iso_now)"; dur=$(( t1 - t0 ))
+
+        case "$rc" in
+            0) status="pass"; passed=$(( passed + 1 )); ok   "✔ ${n}: ${_RT_MSG} (${dur}s)" ;;
+            2) status="skip"; skipped=$(( skipped + 1 )); warn "○ ${n}: ${_RT_MSG}" ;;
+            *) status="fail"; failed=$(( failed + 1 ));   error "✘ ${n}: ${_RT_MSG} (${dur}s)" ;;
+        esac
+
+        _suite_log_result "$sid" "$n" "${_RT_METHOD:-bits}" "$status" \
+            "$start_iso" "$end_iso" "$dur" "$_RT_MSG" "$_RT_METRICS"
+
+        # Append to the live results array.
+        results_json="$(RES="$results_json" T="$n" S="$status" D="$dur" python3 - <<'PY'
+import json, os
+res = json.loads(os.environ["RES"] or "[]")
+res.append({"test": os.environ["T"], "status": os.environ["S"], "duration_s": int(os.environ["D"])})
+print(json.dumps(res))
+PY
+)"
+        _suite_write_status "$sid" "$started" "" "true" "$n" "$selected_csv" "$results_json"
+    done
+
+    local finished; finished="$(_iso_now)"
+    _suite_write_status "$sid" "$started" "$finished" "false" "" "$selected_csv" "$results_json"
+
+    section "Suite summary"
+    echo "  PASSED ${passed} / FAILED ${failed} / SKIPPED ${skipped}"
+    if [[ $failed -gt 0 ]]; then
+        error "Suite finished with failures."
+        exit 1
+    fi
+    ok "Suite finished — no failures."
+    exit 0
+}
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 case "$CMD" in
     init)           cmd_init ;;
@@ -1489,6 +1913,7 @@ case "$CMD" in
     snapshot)       cmd_snapshot ;;
     restore)        cmd_restore ;;
     test)           cmd_test ;;
+    suite)          cmd_suite ;;
     stresstest)     cmd_stresstest ;;
     upload-filelist) cmd_upload_filelist ;;
     catdump)        cmd_catdump ;;
