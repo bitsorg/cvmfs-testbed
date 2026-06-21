@@ -2222,10 +2222,12 @@ function _timingNames(runs){
   return names;
 }
 function _timingColor(name, names){ return TIMING_COLORS[names.indexOf(name) % TIMING_COLORS.length]; }
-// Mean duration across PASSING runs only (fail/skip excluded). null if none.
+// Mean duration across PASSING runs only (fail/skip excluded). A passing run
+// always counts, including a legitimate 0-second (sub-second) pass — status,
+// not duration, decides membership. null if no passing run.
 function _timingAvg(runs, name){
   let s=0,n=0;
-  runs.forEach(r=>{ const t=r.tests[name]; if(t && t.status==='pass' && t.dur>0){ s+=t.dur; n++; } });
+  runs.forEach(r=>{ const t=r.tests[name]; if(t && t.status==='pass'){ s+=t.dur; n++; } });
   return n ? s/n : null;
 }
 function _timingLabel(run){
@@ -2315,7 +2317,7 @@ function renderTimings(){
     const failedIdx=new Set();
     runs.forEach((r,i)=>{ const t=r.tests[name]; if(t && t.status==='fail') failedIdx.add(i); });
     const labels=runs.map((r,i)=>_timingLabel(r)+(failedIdx.has(i)?' ✕':''));
-    const passData=runs.map(r=>{ const t=r.tests[name]; return (t && t.status==='pass' && t.dur>0) ? t.dur : null; });
+    const passData=runs.map(r=>{ const t=r.tests[name]; return (t && t.status==='pass') ? t.dur : null; });
     const failData=runs.map((r,i)=>failedIdx.has(i)?0:null);
     const avg=_timingAvg(runs,name);
     const datasets=[
