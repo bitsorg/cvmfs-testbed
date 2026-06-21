@@ -21,6 +21,7 @@
 #   make install       build, then copy binaries into software/
 #   make init          One-time testbed initialisation
 #   make start         Start containers (auto-restores from snapshot if present)
+#   make ensure        Make the testbed ready (init+payload+start+golden), idempotent
 #   make bootstrap     Run privileged bootstrap container, create snapshot
 #   make snapshot      Save repo state to repo-seed.tar.gz (called by bootstrap)
 #   make restore       Restore repo state from repo-seed.tar.gz
@@ -28,9 +29,10 @@
 #   make clean         Stop containers and wipe all testbed state (keeps snapshot and .env)
 #   make cleanall      Like clean, but also deletes .env (full credential reset)
 #   make test          FULL test suite — all six tests (records metrics);
+#                      auto-runs 'ensure' first so it works from ANY state;
 #                      subset via  make test TESTS="bits chunking content"
 #   make test-suite    Alias of `make test` (honors TESTS=)
-#   make test-ingest   Suite: cvmfs_server ingest smoke (needs bootstrap)
+#   make test-ingest   Suite: cvmfs_server ingest smoke (auto-ensure; skips if no golden)
 #   make test-bits     Suite: cvmfs-prepub REST API smoke
 #   make test-chunking Suite: bits publish + xor32 chunk verify
 #   make test-content  Suite: compare-trees vs golden/smoke
@@ -72,6 +74,17 @@ MAKE_DIR     := $(MAKEFILE_DIR)/.make
 # cvmfs-bits source directory — override if your clone lives elsewhere.
 BITS_DIR ?= $(MAKEFILE_DIR)/cvmfs-bits
 
+# ── Runtime introspection helpers (used by verify-* recipes) ───────────────────
+# Resolve the testbed data root: prefer TESTBED_ROOT from .env, else CURDIR.
+# (verify-* use relative-looking repos/ and data/ paths; this makes them work
+# regardless of where the data root actually lives.)
+GET_TESTBED_ROOT = r=$$(sed -n 's/^TESTBED_ROOT=//p' "$(MAKEFILE_DIR)/.env" 2>/dev/null | tail -1); echo "$${r:-$(MAKEFILE_DIR)}"
+
+# "MIN AVG MAX" chunk sizes, read from config.yaml by testbed.sh (single source
+# of truth) so verify-chunking never hard-codes them and can't report a false
+# divergence when config.yaml changes.
+GET_CHUNK_SIZES = bash "$(TESTBED)" chunksizes
+
 # Number of jobs for stresstest targets.
 N ?= 10
 
@@ -92,7 +105,7 @@ _WSS := $(if $(filter 1 yes true,$(WSS)),--wss,)
 # ── Default goal ──────────────────────────────────────────────────────────────
 .DEFAULT_GOAL := all
 
-.PHONY: all build install init start start-wss bootstrap snapshot restore redeploy clean cleanall \
+.PHONY: all build install init start start-wss ensure bootstrap snapshot restore redeploy clean cleanall \
         test test-suite test-ingest test-bits test-pull test-pull-wss pull-status \
         test-chunking test-content test-stress \
         stresstest stresstest-ingest \
@@ -153,6 +166,27 @@ start: $(MAKE_DIR)/init
 start-wss: $(MAKE_DIR)/init
 	@echo "── Starting testbed with the embedded MQTT-over-WSS broker overlay ────"
 	bash "$(TESTBED)" start --wss
+
+# ── ensure ────────────────────────────────────────────────────────────────────
+# Idempotent readiness gate: bring up whatever is missing (init, canonical
+# payload, container stack, golden tree) so the test targets ALWAYS run from any
+# starting state — fresh checkout, after `make clean`, stopped stack, or already
+# running.  Fast and quiet on the happy path (every sub-step is checked first).
+#
+# This is the RUNTIME source of truth for "is the testbed ready" — it inspects
+# live container/repo state, which the .make/init and .make/bootstrap file
+# sentinels cannot (those can go stale after the stack stops or is cleaned).
+# The test targets therefore depend on `ensure`, NOT on the sentinels.
+#
+# Starts the wss overlay so the pull-wss test can also run from any state.
+#
+# After a successful ensure, reconcile the make sentinels so a later plain
+# `make` / `make bootstrap` sees init+bootstrap as already done (ensure has
+# brought the live stack to that state).  Order-only dep on $(MAKE_DIR) so the
+# directory exists before we touch into it.
+ensure: | $(MAKE_DIR)
+	bash "$(TESTBED)" ensure --wss
+	@touch $(MAKE_DIR)/init $(MAKE_DIR)/bootstrap
 
 # ── bootstrap ─────────────────────────────────────────────────────────────────
 # Run once: seeds the nested-catalog structure required by cvmfs_server ingest,
@@ -245,20 +279,20 @@ cleanall:
 #   make test                              # all six
 #   make test TESTS="bits chunking content"
 # TESTS is passed straight through to `testbed.sh suite`.
-test:
+test: | ensure
 	bash "$(TESTBED)" suite $(TESTS)
 
 # Individual smoke targets delegate to the suite so they ALSO log a
 # test-results.ndjson record (keeping history complete).
-test-ingest: $(MAKE_DIR)/bootstrap
+test-ingest: | ensure
 	bash "$(TESTBED)" suite ingest
 
-test-bits:
+test-bits: | ensure
 	bash "$(TESTBED)" suite bits
 
 # End-to-end pull test over the embedded MQTT-over-WSS control plane (no mosquitto).
 # Requires the wss stack: run `make start-wss` (or `make WSS=1 start`) first.
-test-pull-wss:
+test-pull-wss: | ensure
 	bash "$(TESTBED)" suite pull-wss
 
 # Convenience alias: pull distribution is now wss-only.
@@ -270,14 +304,14 @@ pull-status:
 
 # ── stresstest targets ────────────────────────────────────────────────────────
 # Direct stress run (raw, N/C configurable, no test-results record).
-stresstest:
+stresstest: | ensure
 	bash "$(TESTBED)" stresstest $(N) $(_CONCURRENCY) --method bits
 
 # Suite-wrapped stress (fixed N=10) — logs a test-results.ndjson record.
-test-stress:
+test-stress: | ensure
 	bash "$(TESTBED)" suite stress
 
-stresstest-ingest: $(MAKE_DIR)/bootstrap
+stresstest-ingest: | ensure
 	bash "$(TESTBED)" stresstest $(N) --method ingest
 
 # ── catalog comparison ────────────────────────────────────────────────────────
@@ -300,6 +334,7 @@ help:
 	@echo "  make install              build + copy binaries to software/"
 	@echo "  make init                 One-time testbed initialisation"
 	@echo "  make start                Start containers (auto-restores snapshot)"
+	@echo "  make ensure               Make the testbed ready (init+payload+start+golden), idempotent"
 	@echo "  make bootstrap            Seed nested catalog + create snapshot (once)"
 	@echo "  make snapshot             Save repo state to repo-seed.tar.gz"
 	@echo "  make restore              Restore repo state from repo-seed.tar.gz"
@@ -307,15 +342,18 @@ help:
 	@echo "  make clean                Stop + wipe state (keeps snapshot and .env)"
 	@echo "  make cleanall             Stop + wipe state + delete .env (fresh credentials)"
 	@echo ""
+	@echo "  All test/verify/stress targets auto-run 'ensure' first, so they work"
+	@echo "  from ANY state (fresh checkout, after 'make clean', stopped or running)."
+	@echo ""
 	@echo "  make test                 FULL test suite — all six tests (records metrics)"
 	@echo "  make test TESTS=\"bits chunking content\"   Run a selected subset"
 	@echo "  make test-suite           Alias of 'make test' (honors TESTS=)"
-	@echo "  make test-ingest          Suite: native ingest smoke (needs bootstrap)"
+	@echo "  make test-ingest          Suite: native ingest into golden/smoke (auto-ensure; skips if no golden)"
 	@echo "  make test-bits            Suite: cvmfs-prepub REST API smoke"
 	@echo "  make test-chunking        Suite: bits publish + xor32 chunk verify"
 	@echo "  make test-content         Suite: compare-trees vs golden/smoke"
 	@echo "  make test-stress          Suite: stress N=10 (bits)"
-	@echo "  make test-pull-wss        Suite: end-to-end pull over embedded wss (needs make start-wss)"
+	@echo "  make test-pull-wss        Suite: end-to-end pull over embedded wss (auto-ensure --wss; skips if not up)"
 	@echo "  make test-pull            Alias of test-pull-wss"
 	@echo "  make pull-status          Dump pull-relevant publisher/receiver logs"
 	@echo ""
@@ -354,30 +392,39 @@ help:
 # the published catalog's chunk boundaries match CVMFS's xor32 content-defined
 # chunker (cvmfs/ingestion/chunk_detector.cc) exactly. CVMFS's tarball ingest
 # path does not chunk, so the oracle is the algorithm itself (reproduced in
-# scripts/cvmfs-chunk-reference.py). Sizes must match config/cvmfs-prepub/config.yaml.
-verify-chunking:
+# scripts/cvmfs-chunk-reference.py).
+#
+# Chunk sizes are READ from config.yaml (no longer hard-coded) so they cannot
+# drift out of sync and report a false divergence.  TESTBED_ROOT is resolved
+# from .env (falling back to CURDIR) so the relative repos/ and data/ paths work
+# even when the testbed data root is not the repo checkout.
+verify-chunking: | ensure
 	bash "$(TESTBED)" test --method bits
-	@r=$$(basename $$(dirname $$(ls repos/*/.cvmfspublished | head -1))); python3 scripts/verify-chunking.py repos/$$r data/payload/payload.tar 4194304 8388608 16777216
+	@root=$$($(GET_TESTBED_ROOT)); \
+	sizes=$$($(GET_CHUNK_SIZES)); \
+	r=$$(basename $$(dirname $$(ls "$$root"/repos/*/.cvmfspublished | head -1))); \
+	python3 scripts/verify-chunking.py "$$root/repos/$$r" "$$root/data/payload/payload.tar" $$sizes
 
 # verify-content — directly compare the latest bits publish to the native
 # cvmfs_server-ingest golden (golden/smoke) for byte-identical decompressed
 # content (compressor/chunking-independent). Reports metadata diffs as warnings.
-verify-content:
-	@r=$$(basename $$(dirname $$(ls repos/*/.cvmfspublished | head -1))); \
-	a=$$(python3 -c "import zlib,sqlite3,os,tempfile;cas='repos/'+'$$r';root=[l[1:].strip().decode() for l in open(cas+'/.cvmfspublished','rb') if l[:1]==b'C'][0];raw=zlib.decompress(open(cas+'/data/'+root[:2]+'/'+root[2:]+'C','rb').read());fd,t=tempfile.mkstemp();os.write(fd,raw);os.close(fd);print(sorted([p for (p,h) in sqlite3.connect(t).execute('select path,sha1 from nested_catalogs') if '/test/smoke.' in p])[-1])"); \
-	python3 scripts/compare-trees.py repos/$$r "$$a" /golden/smoke
+verify-content: | ensure
+	@root=$$($(GET_TESTBED_ROOT)); \
+	r=$$(basename $$(dirname $$(ls "$$root"/repos/*/.cvmfspublished | head -1))); \
+	a=$$(CAS="$$root/repos/$$r" python3 -c "import zlib,sqlite3,os,tempfile;cas=os.environ['CAS'];root=[l[1:].strip().decode() for l in open(cas+'/.cvmfspublished','rb') if l[:1]==b'C'][0];raw=zlib.decompress(open(cas+'/data/'+root[:2]+'/'+root[2:]+'C','rb').read());fd,t=tempfile.mkstemp();os.write(fd,raw);os.close(fd);print(sorted([p for (p,h) in sqlite3.connect(t).execute('select path,sha1 from nested_catalogs') if '/test/smoke.' in p])[-1])"); \
+	python3 scripts/compare-trees.py "$$root/repos/$$r" "$$a" /golden/smoke
 
 # verify — full bits-reproduces-CVMFS check: chunk boundaries + content.
 verify: verify-chunking verify-content
 
 # Suite-wrapped chunking / content checks — these log a test-results.ndjson
 # record (unlike the raw verify-chunking / verify-content targets above).
-test-chunking:
+test-chunking: | ensure
 	bash "$(TESTBED)" suite chunking
 
-test-content:
+test-content: | ensure
 	bash "$(TESTBED)" suite content
 
 # Full suite — explicit alias for `make test` with all six tests.
-test-suite:
+test-suite: | ensure
 	bash "$(TESTBED)" suite $(TESTS)

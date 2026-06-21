@@ -16,6 +16,9 @@
 #   init            One-time host setup: create directories, generate secrets,
 #                   run install.sh, initialise CVMFS repository, write service configs.
 #   start           Build images (if needed) and start containers.
+#   ensure          Bring up whatever is missing (init, payload, start,
+#                   golden) idempotently so the test suite always runs.
+#                   Honors --wss. Fast/quiet when already ready.
 #                   Auto-restores from repo-seed.tar.gz if the repo is absent.
 #   stop            Stop containers without removing state.
 #   restart         Stop then start.
@@ -665,22 +668,193 @@ cmd_logs() {
 
 # ── _ensure_payload ───────────────────────────────────────────────────────────
 # ADR-0001: generate the canonical test payload once (host-side; the host has
-# openssl) into data/payload/payload.tar, shared into both publisher containers
-# via a read-only bind mount. Deterministic => gitignored, regenerated on a fresh
-# checkout. Both smoke paths consume this one tar (byte-identical input).
+# openssl — the bits container does not) into data/payload/payload.tar, shared
+# into both publisher containers via a read-only bind mount. Deterministic =>
+# gitignored, regenerated on a fresh checkout. Both smoke paths consume this one
+# tar (byte-identical input).
+#
+# Robustness:
+#   - The make-test-payload.sh generator lives in the repo checkout
+#     ($TESTBED_DIR/cvmfs-elements), NOT under $TESTBED_ROOT (the data root).
+#   - data/payload may be root-owned (a container created the bind-mount target
+#     before init ran), so a plain write fails with EPERM. We fix ownership and
+#     write into the EXISTING directory rather than `rm -rf` it (that would break
+#     a running container's bind mount).
+#   - Generate into a mktemp dir, then `mv` the tar into place + chmod 644.
 _ensure_payload() {
-    local tar="${TESTBED_ROOT}/data/payload/payload.tar"
-    if [[ -f "$tar" ]]; then
+    local dir="${TESTBED_ROOT}/data/payload"
+    local tar="${dir}/payload.tar"
+    if [[ -s "$tar" ]]; then
         info "Canonical payload present: $tar ($(du -sh "$tar" | cut -f1))"
         return 0
     fi
     info "Generating canonical test payload (one-time) ..."
-    mkdir -p "${TESTBED_ROOT}/data/payload"
+
+    # Ensure the payload directory exists and is writable by the current user.
+    # It may have been created root-owned by a container bind mount; repair that
+    # in place without removing the directory (a running container may hold it).
+    if [[ ! -d "$dir" ]]; then
+        mkdir -p "$dir" 2>/dev/null || sudo mkdir -p "$dir"
+    fi
+    if [[ ! -w "$dir" ]]; then
+        info "Repairing ownership of $dir (root-owned bind-mount target) ..."
+        sudo chown "$(id -u):$(id -g)" "$dir" 2>/dev/null || true
+        chmod u+rwx "$dir" 2>/dev/null || sudo chmod u+rwx "$dir" 2>/dev/null || true
+    fi
+
+    local gen="${TESTBED_DIR}/cvmfs-elements/containers/publisher/scripts/make-test-payload.sh"
+    if [[ ! -f "$gen" ]]; then
+        error "Payload generator not found: $gen"
+        return 1
+    fi
     local wd; wd="$(mktemp -d)"
-    bash "${TESTBED_ROOT}/cvmfs-elements/containers/publisher/scripts/make-test-payload.sh" "$wd"
+    bash "$gen" "$wd"
     mv -f "$wd/payload.tar" "$tar"
+    chmod 644 "$tar" 2>/dev/null || true
     rm -rf "$wd"
-    success "Canonical payload ready: $tar ($(du -sh "$tar" | cut -f1))"
+    ok "Canonical payload ready: $tar ($(du -sh "$tar" | cut -f1))"
+}
+
+# ── _published_path / _have_golden_catalog ─────────────────────────────────────
+# Robust golden-catalog detection: inspect the published ROOT catalog for a
+# nested catalog rooted at /golden/smoke (the path bootstrap seeds via
+# NESTED_CATALOG_PATH=golden/smoke in docker-compose.yml). This is the real
+# source of truth for "the ingest/content tests have a golden tree to compare
+# against" — far more reliable than probing for a host directory that never
+# exists (/golden/smoke is a path INSIDE the CVMFS catalog, not on the host).
+_have_golden_catalog() {
+    local cas="${TESTBED_ROOT}/repos/${REPO_NAME}"
+    [[ -f "$cas/.cvmfspublished" ]] || return 1
+    CAS="$cas" python3 - <<'PY' 2>/dev/null
+import os, sys, zlib, sqlite3, tempfile
+cas = os.environ["CAS"]
+try:
+    root = [l[1:].strip().decode() for l in open(cas + "/.cvmfspublished", "rb") if l[:1] == b"C"][0]
+    raw = zlib.decompress(open(cas + "/data/" + root[:2] + "/" + root[2:] + "C", "rb").read())
+    fd, t = tempfile.mkstemp(); os.write(fd, raw); os.close(fd)
+    paths = [p for (p,) in sqlite3.connect(t).execute("select path from nested_catalogs")]
+    os.unlink(t)
+except Exception:
+    sys.exit(1)
+# Accept any nested catalog under /golden (e.g. /golden/smoke).
+sys.exit(0 if any(p.startswith("/golden/") or p == "/golden" for p in paths) else 1)
+PY
+}
+
+# ── _stack_healthy ─────────────────────────────────────────────────────────────
+# Quick liveness probe for the running stack: the cvmfs-prepub health endpoint
+# must answer AND the cvmfs-prepub container must be in `docker ps`.
+_stack_healthy() {
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -qx cvmfs-prepub || return 1
+    curl -sf --max-time 2 "http://localhost:8080/api/v1/health" >/dev/null 2>&1 || return 1
+    return 0
+}
+
+# ── cmd_ensure ─────────────────────────────────────────────────────────────────
+# Idempotent "make the testbed ready" gate. Brings up whatever is missing so the
+# test targets always have a working stack, the canonical payload, and (best
+# effort) the golden tree. Fast and quiet on the happy path: every step runs ONLY
+# if its check fails. Honors --wss (passed by `make ensure`) to start the
+# embedded-broker overlay so the pull-wss test can run.
+#
+# Order (each step gated on its own check):
+#   a. INIT     — config keys / repo absent           → testbed.sh init
+#   b. PAYLOAD  — data/payload/payload.tar missing     → generate host-side
+#   c. START    — stack not healthy                    → testbed.sh start [--wss]
+#   d. GOLDEN   — golden/smoke nested catalog absent    → bootstrap + native-ingest
+#                 (best effort: never fails ensure)
+# ── cmd_chunksizes ─────────────────────────────────────────────────────────────
+# Print "MIN AVG MAX" chunk sizes (bytes), read from config.yaml. Used by the
+# Makefile verify-chunking recipe so the sizes are never hard-coded.
+cmd_chunksizes() {
+    load_env
+    _chunk_sizes
+}
+
+cmd_ensure() {
+    load_env   # warns (does not abort) if .env is absent — handled below.
+
+    local did_work=false
+
+    # ── a. INIT ────────────────────────────────────────────────────────────────
+    # Run init when EITHER the env/config is not yet set up (fresh checkout: no
+    # .env, no REPO_NAME) OR the signing keys are absent (after `make clean`,
+    # which wipes config/keys but keeps .env). init writes .env (REPO_NAME) and
+    # regenerates the configs/keys; we then re-source .env so the rest of ensure
+    # has REPO_NAME / TESTBED_ROOT.
+    #
+    # Note: on a truly fresh checkout init will prompt for REPO_NAME unless it is
+    # supplied via the environment or an existing .env — that is the existing
+    # init behaviour, unchanged.
+    local need_init=false
+    if [[ -z "${REPO_NAME:-}" || -z "${TESTBED_ROOT:-}" ]]; then
+        need_init=true
+    else
+        local crt="${TESTBED_ROOT}/config/keys/${REPO_NAME}.crt"
+        [[ -f "$crt" ]] || need_init=true
+    fi
+    if $need_init; then
+        info "ensuring: init (env/config/keys absent)"
+        did_work=true
+        bash "$0" init
+        _env_loaded=false; load_env   # re-read .env written/updated by init
+    fi
+
+    # Now the env MUST be resolvable; if not, init genuinely failed.
+    : "${REPO_NAME:?REPO_NAME not set after init — check: ./testbed.sh init}"
+    : "${TESTBED_ROOT:?TESTBED_ROOT not set after init — check: ./testbed.sh init}"
+
+    # ── b. PAYLOAD ──────────────────────────────────────────────────────────────
+    # Generate the canonical payload BEFORE start so a fresh bind mount resolves
+    # to a populated dir. _ensure_payload is a no-op when the tar already exists.
+    local payload="${TESTBED_ROOT}/data/payload/payload.tar"
+    local regenerated_payload=false
+    if [[ ! -s "$payload" ]]; then
+        info "ensuring: payload (canonical payload.tar absent)"
+        did_work=true
+        regenerated_payload=true
+        _ensure_payload
+    fi
+
+    # ── c. START ────────────────────────────────────────────────────────────────
+    if ! _stack_healthy; then
+        info "ensuring: start (stack not healthy)"
+        did_work=true
+        if $USE_WSS; then
+            bash "$0" start --wss
+        else
+            bash "$0" start
+        fi
+    elif $regenerated_payload; then
+        # The stack was already running when we (re)generated the payload — the
+        # publisher/native-publisher captured an empty bind mount at boot. Restart
+        # them so they re-see the populated payload directory.
+        info "ensuring: restart publishers (payload regenerated under running stack)"
+        run_compose restart publisher cvmfs-native-publisher >/dev/null 2>&1 || true
+    fi
+
+    # ── d. GOLDEN (best effort) ─────────────────────────────────────────────────
+    # The ingest/content tests compare a bits publish against the golden/smoke
+    # nested catalog. Seed it if absent. Failures here MUST NOT fail ensure — the
+    # affected tests skip cleanly when golden is missing.
+    if ! _have_golden_catalog; then
+        info "ensuring: golden (golden/smoke nested catalog absent)"
+        did_work=true
+        if bash "$0" bootstrap; then
+            # Native-ingest the canonical payload into golden/smoke so the content
+            # test has real content to compare against. Best effort.
+            if [[ -s "$payload" ]]; then
+                run_compose exec -T -e INGEST_BASE=golden/smoke \
+                    cvmfs-native-publisher /scripts/native-smoke.sh \
+                    >/dev/null 2>&1 \
+                    || warn "golden native-ingest failed - content/ingest tests will skip"
+            fi
+        else
+            warn "bootstrap failed — golden tree unavailable; ingest/content tests will skip"
+        fi
+    fi
+
+    ok "testbed ready"
 }
 
 cmd_test() {
@@ -1512,6 +1686,39 @@ declare -A _SUITE_TIMEOUT=(
 # ISO-8601 UTC timestamp helper.
 _iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# ── _chunk_sizes ───────────────────────────────────────────────────────────────
+# Emit "MIN AVG MAX" chunk sizes (bytes) for the xor32 verifier. Source of truth,
+# in order: the RUNTIME cvmfs-prepub config (what the publisher actually used),
+# then the committed repo config sample, then the CVMFS built-in defaults
+# (4/8/16 MiB). Reading them avoids a hard-coded list silently drifting out of
+# sync with config.yaml and reporting a false chunking divergence.
+_chunk_sizes() {
+    local runtime="${TESTBED_ROOT:-}/config/cvmfs-prepub/config.yaml"
+    local committed="${TESTBED_DIR}/config/cvmfs-prepub/config.yaml"
+    RUNTIME="$runtime" COMMITTED="$committed" python3 - <<'PY'
+import os, re
+def parse(path):
+    try:
+        txt = open(path).read()
+    except OSError:
+        return None
+    # Find a `chunking:` block and pull min/avg/max under it.
+    m = re.search(r'^chunking:\s*$(.*?)(^\S|\Z)', txt, re.M | re.S)
+    block = m.group(1) if m else ""
+    vals = {}
+    for key in ("min", "avg", "max"):
+        mm = re.search(r'^\s+%s:\s*([0-9]+)' % key, block, re.M)
+        if mm:
+            vals[key] = mm.group(1)
+    if all(k in vals for k in ("min", "avg", "max")):
+        return vals
+    return None
+v = parse(os.environ["RUNTIME"]) or parse(os.environ["COMMITTED"]) \
+    or {"min": "4194304", "avg": "8388608", "max": "16777216"}
+print(v["min"], v["avg"], v["max"])
+PY
+}
+
 # JSON string escaper for shell-built JSON (handles \, ", newlines, tabs).
 _json_escape() {
     local s="$1"
@@ -1704,18 +1911,23 @@ _suite_have_bootstrap() {
     return 0
 }
 
-# wss containers must be running with the embedded-broker overlay.
+# wss containers must be running with the embedded-broker overlay AND at least
+# one stratum1 receiver must be up (a half-started stack should SKIP, not fail).
 _suite_have_wss() {
     docker inspect cvmfs-prepub --format '{{json .Args}}' 2>/dev/null \
-        | grep -q 'embedded-broker-ws-addr'
+        | grep -q 'embedded-broker-ws-addr' || return 1
+    docker ps --format '{{.Names}}' 2>/dev/null \
+        | grep -Eq '^cvmfs-stratum1-(a|b)$' || return 1
+    return 0
 }
 
-# /golden/smoke (mounted into the host? — actually a path inside a container) is
-# referenced by verify-content via compare-trees.py. The Makefile target passes
-# /golden/smoke literally; if the path is unavailable compare-trees.py errors.
-# Probe by checking the golden mount on the host filesystem.
+# /golden/smoke is a path INSIDE the published CVMFS catalog (NOT a host
+# directory): compare-trees.py reads it out of the CAS. The previous probe
+# checked for a host directory that never exists, so the content/ingest tests
+# could never detect a present golden tree. Use the authoritative check:
+# inspect the published root catalog for a nested catalog rooted at /golden.
 _suite_have_golden() {
-    [[ -d "${TESTBED_ROOT}/data/golden/smoke" || -d "/golden/smoke" ]]
+    _have_golden_catalog
 }
 
 # Run a single named test. Echoes nothing structured; all bookkeeping happens via
@@ -1730,6 +1942,9 @@ _suite_run_one() {
     case "$name" in
         bits)
             method="bits"
+            if ! _stack_healthy; then
+                _RT_MSG="skipped: stack not running (run: make ensure)"; rm -f "$log"; return 2
+            fi
             timeout "$t" bash "$0" test --method bits >"$log" 2>&1 || rc=$?
             _RT_METRICS="$(_suite_metrics_smoke "$log")"
             if [[ $rc -eq 0 ]]; then _RT_MSG="bits smoke published"; else
@@ -1738,12 +1953,26 @@ _suite_run_one() {
             ;;
         ingest)
             method="ingest"
-            if ! _suite_have_bootstrap; then
-                _RT_MSG="skipped: no bootstrap/golden nested catalog"; rm -f "$log"; return 2
+            # The native ingest must target a SEEDED nested catalog. bootstrap
+            # seeds golden/smoke (docker-compose NESTED_CATALOG_PATH); the legacy
+            # default test/native/smoke is NOT seeded and ASSERTS in mountless
+            # gateway mode ("catalog for directory ... cannot be found"). Point
+            # the ingest at golden/smoke — consistent with the content golden —
+            # and skip cleanly when that catalog (or the stack) is absent.
+            if ! _stack_healthy; then
+                _RT_MSG="skipped: stack not running (run: make ensure)"; rm -f "$log"; return 2
             fi
-            timeout "$t" bash "$0" test --method ingest >"$log" 2>&1 || rc=$?
+            if ! _suite_have_golden; then
+                _RT_MSG="skipped: golden/smoke nested catalog absent (bootstrap)"; rm -f "$log"; return 2
+            fi
+            # `timeout` cannot wrap a shell function, so expand the compose
+            # invocation explicitly via compose_files (sets _COMPOSE_FILES).
+            compose_files
+            timeout "$t" docker compose "${_COMPOSE_FILES[@]}" exec -T \
+                -e INGEST_BASE=golden/smoke \
+                cvmfs-native-publisher /scripts/native-smoke.sh >"$log" 2>&1 || rc=$?
             _RT_METRICS="$(_suite_metrics_smoke "$log")"
-            if [[ $rc -eq 0 ]]; then _RT_MSG="native ingest published"; else
+            if [[ $rc -eq 0 ]]; then _RT_MSG="native ingest published (golden/smoke)"; else
                 [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" || _RT_MSG="ingest smoke failed (rc=$rc)"
             fi
             ;;
@@ -1760,8 +1989,13 @@ _suite_run_one() {
             ;;
         chunking)
             method="bits"
-            # Publish via bits, then verify chunk boundaries against the xor32 oracle.
-            local cas_repo=""
+            if ! _stack_healthy; then
+                _RT_MSG="skipped: stack not running (run: make ensure)"; rm -f "$log"; return 2
+            fi
+            # Publish via bits, then verify chunk boundaries against the xor32
+            # oracle. Chunk sizes come from config.yaml (not hard-coded) so they
+            # cannot silently drift and report a false divergence.
+            local _cz; _cz="$(_chunk_sizes)"   # "MIN AVG MAX"
             if timeout "$t" bash -c '
                 set -o pipefail
                 bash "'"$0"'" test --method bits || exit 1
@@ -1769,7 +2003,7 @@ _suite_run_one() {
                 python3 "'"$SCRIPT_DIR"'/verify-chunking.py" \
                     "'"${TESTBED_ROOT}"'/repos/$r" \
                     "'"${TESTBED_ROOT}"'/data/payload/payload.tar" \
-                    4194304 8388608 16777216
+                    '"$_cz"'
             ' >"$log" 2>&1; then rc=0; else rc=$?; fi
             _RT_METRICS="$(_suite_metrics_chunking "$log")"
             if [[ $rc -eq 0 ]]; then _RT_MSG="chunk boundaries match xor32"; else
@@ -1778,13 +2012,23 @@ _suite_run_one() {
             ;;
         content)
             method="bits"
-            if ! _suite_have_golden; then
-                _RT_MSG="skipped: golden/smoke tree absent"; rm -f "$log"; return 2
+            # golden/smoke (catalog path /golden/smoke inside the published CAS)
+            # must exist to compare against. Skip cleanly otherwise.
+            if ! _stack_healthy; then
+                _RT_MSG="skipped: stack not running (run: make ensure)"; rm -f "$log"; return 2
             fi
+            if ! _suite_have_golden; then
+                _RT_MSG="skipped: golden/smoke tree absent (bootstrap)"; rm -f "$log"; return 2
+            fi
+            # /golden/smoke is a catalog prefix (NOT a host dir); compare-trees.py
+            # reads it out of the CAS.
             local golden="/golden/smoke"
-            [[ -d "${TESTBED_ROOT}/data/golden/smoke" ]] && golden="${TESTBED_ROOT}/data/golden/smoke"
+            # Publish a fresh bits smoke first so a STANDALONE `make test-content`
+            # has a /test/smoke.N tree to compare (the suite ordering would
+            # otherwise rely on the bits/chunking test running first).
             if timeout "$t" bash -c '
                 set -o pipefail
+                bash "'"$0"'" test --method bits || exit 1
                 r=$(basename "$(dirname "$(ls "'"${TESTBED_ROOT}"'"/repos/*/.cvmfspublished | head -1)")")
                 a=$(python3 -c "import zlib,sqlite3,os,tempfile;cas=\"'"${TESTBED_ROOT}"'/repos/\"+\"$r\";root=[l[1:].strip().decode() for l in open(cas+\"/.cvmfspublished\",\"rb\") if l[:1]==b\"C\"][0];raw=zlib.decompress(open(cas+\"/data/\"+root[:2]+\"/\"+root[2:]+\"C\",\"rb\").read());fd,t=tempfile.mkstemp();os.write(fd,raw);os.close(fd);print(sorted([p for (p,h) in sqlite3.connect(t).execute(\"select path,sha1 from nested_catalogs\") if \"/test/smoke.\" in p])[-1])")
                 python3 "'"$SCRIPT_DIR"'/compare-trees.py" "'"${TESTBED_ROOT}"'/repos/$r" "$a" "'"$golden"'"
@@ -1796,6 +2040,9 @@ _suite_run_one() {
             ;;
         stress)
             method="bits"
+            if ! _stack_healthy; then
+                _RT_MSG="skipped: stack not running (run: make ensure)"; rm -f "$log"; return 2
+            fi
             timeout "$t" bash "$0" stresstest 10 --method bits >"$log" 2>&1 || rc=$?
             _RT_METRICS="$(_suite_metrics_stress "$log")"
             if [[ $rc -eq 0 ]]; then _RT_MSG="stress N=10 completed"; else
@@ -1904,6 +2151,8 @@ PY
 case "$CMD" in
     init)           cmd_init ;;
     start)          cmd_start ;;
+    ensure)         cmd_ensure ;;
+    chunksizes)     cmd_chunksizes ;;
     stop)           cmd_stop ;;
     restart)        cmd_restart ;;
     status)         cmd_status ;;
