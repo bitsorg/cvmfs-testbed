@@ -9,6 +9,9 @@ NC='\033[0m' # No Color
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 NUM_JOBS=${NUM_JOBS:-5}
+# Fresh per-run path prefix so re-runs never collide on an existing
+# directory (CVMFS panics grafting a nested catalog into an existing dir).
+STRESS_RUN_ID="${STRESS_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}"
 CONCURRENCY=${CONCURRENCY:-2}
 
 # Run log — when set (mounted from host), each test run is appended as a
@@ -184,7 +187,7 @@ submit_job() {
         -X POST \
         -H "Authorization: Bearer ${PREPUB_API_TOKEN}" \
         -F "repo=${REPO_NAME}" \
-        -F "path=test/stress/$job_num" \
+        -F "path=test/stress.$STRESS_RUN_ID/$job_num" \
         -F "tar=@${tar_file}" \
         -F "tag_name=${tag_name}" \
         "${PREPUB_URL}/api/v1/jobs") || response=""
