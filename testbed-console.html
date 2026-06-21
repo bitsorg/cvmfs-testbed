@@ -570,6 +570,31 @@
     </div>
   </div>
 
+  <!-- Timings -->
+  <div class="box" id="tests-timings-box" style="margin-bottom:16px">
+    <div class="box-header">
+      <span class="box-title">Timings</span>
+      <span id="tests-timings-sub" class="muted" style="font-size:12px;margin-left:8px"></span>
+      <div class="flex" style="margin-left:auto;gap:8px;align-items:center">
+        <label class="muted" style="font-size:12px">Runs
+          <select id="tests-timings-window" onchange="renderTimings()" style="font-size:12px;padding:2px 5px;border:1px solid var(--c-border);border-radius:var(--radius);background:var(--c-bg)">
+            <option value="20">20</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="0">All</option>
+          </select>
+        </label>
+        <button class="btn btn-outline btn-sm" onclick="refreshTestResults()">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="box-pad">
+      <div id="tests-timings-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
+      <div class="chart-wrap" style="height:300px"><canvas id="chart-test-timings"></canvas></div>
+      <div id="tests-timings-empty" class="empty muted" style="display:none;padding:24px 0">No timing data yet — run the suite to populate.</div>
+      <div id="tests-timings-summary" class="muted" style="font-size:12px;margin-top:10px"></div>
+    </div>
+  </div>
+
   <!-- History -->
   <div class="box">
     <div class="box-header">
@@ -1452,6 +1477,8 @@ async function submitJob(){
 // ═══════════════════════════ Monitoring ══════════════════════════════════════
 let _charts={}, _rawMetrics=[], _monRange=20;
 let _monSince=null; // if set, only jobs created at or after this Date are counted
+let _testRecords=[];       // raw per-test records (newest first) from /api/test-results
+let _timingsSel='__all__'; // current Timings selection: '__all__' or a test name
 
 function cycleRange(){ _monRange=[20,50,100,200][([20,50,100,200].indexOf(_monRange)+1)%4]; $('mon-range-btn').textContent=`Last ${_monRange} jobs`; refreshMonitoring(); }
 
@@ -2136,10 +2163,12 @@ async function refreshTestResults(){
   const hdrs = {'X-Testbed-Token': SERVER_TOKEN||''};
   let recs = [];
   try{
-    const r = await fetch('/api/test-results?limit=100',{headers:hdrs,signal:AbortSignal.timeout(5000)});
+    const r = await fetch('/api/test-results?limit=2000',{headers:hdrs,signal:AbortSignal.timeout(5000)});
     if(!r.ok) return;
     recs = await r.json();
   }catch(_){ return; }
+  _testRecords = recs;
+  renderTimings();
   const tb = $('tests-history-tbody'); if(!tb) return;
   const label = $('tests-history-count');
   if(label) label.textContent = `${recs.length} result${recs.length!==1?'s':''}`;
@@ -2147,7 +2176,8 @@ async function refreshTestResults(){
     tb.innerHTML = `<tr><td colspan="6" class="empty muted">No test results recorded yet — run the suite to see history.</td></tr>`;
     return;
   }
-  tb.innerHTML = recs.map(r=>{
+  // Table shows the most recent 100 rows; the Timings charts use the full set.
+  tb.innerHTML = recs.slice(0,100).map(r=>{
     const method = r.method||'bits';
     const mBadge = `<span class="badge" style="background:${method==='ingest'?'#6f42c1':'#0075ca'};color:#fff;font-size:10px">${esc(method)}</span>`;
     const dur = (r.duration_s!=null && r.duration_s>0) ? fmtSec(r.duration_s) : (r.status==='skip'?'–':'0s');
@@ -2160,6 +2190,166 @@ async function refreshTestResults(){
       <td>${_testMetricsSummary(r)}</td>
     </tr>`;
   }).join('');
+}
+
+// ── Timings: per-test duration history ───────────────────────────────────────
+// Canonical suite order (others appended alphabetically after these).
+const TIMING_ORDER  = ['bits','ingest','pull-wss','chunking','content','stress'];
+const TIMING_COLORS = ['#0075ca','#2ea44f','#8957e5','#e36209','#d73a49','#0550ae','#1a7f37','#b08800','#bf3989','#7d8590'];
+
+// Group raw per-test records (newest-first) into runs (oldest-first on the x-axis),
+// keyed by suite_run_id.  Each run: {sid, time, tests:{name:{status,dur,method}}}.
+function _timingRuns(records){
+  const order=[]; const map=new Map();
+  for(let i=records.length-1;i>=0;i--){          // walk oldest → newest
+    const r=records[i];
+    const sid=r.suite_run_id || r.start_time || ('r'+i);
+    if(!map.has(sid)){ map.set(sid,{sid,time:r.start_time||null,tests:{}}); order.push(sid); }
+    const run=map.get(sid);
+    if(r.start_time && (!run.time || r.start_time<run.time)) run.time=r.start_time;
+    run.tests[r.test]={ status:r.status, dur:(r.duration_s!=null?+r.duration_s:0), method:r.method||'bits' };
+  }
+  return order.map(s=>map.get(s));
+}
+function _timingNames(runs){
+  const names=[];
+  runs.forEach(run=>Object.keys(run.tests).forEach(n=>{ if(!names.includes(n)) names.push(n); }));
+  names.sort((a,b)=>{
+    const ia=TIMING_ORDER.indexOf(a), ib=TIMING_ORDER.indexOf(b);
+    if(ia!==-1 || ib!==-1) return (ia===-1?99:ia)-(ib===-1?99:ib);
+    return a<b?-1:a>b?1:0;
+  });
+  return names;
+}
+function _timingColor(name, names){ return TIMING_COLORS[names.indexOf(name) % TIMING_COLORS.length]; }
+// Mean duration across PASSING runs only (fail/skip excluded). null if none.
+function _timingAvg(runs, name){
+  let s=0,n=0;
+  runs.forEach(r=>{ const t=r.tests[name]; if(t && t.status==='pass' && t.dur>0){ s+=t.dur; n++; } });
+  return n ? s/n : null;
+}
+function _timingLabel(run){
+  if(!run.time) return run.sid;
+  const d=new Date(run.time);
+  if(isNaN(d)) return String(run.sid).slice(0,16);
+  const p=x=>String(x).padStart(2,'0');
+  return `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function selectTiming(name){ _timingsSel=name; renderTimings(); }
+
+function renderTimings(){
+  const empty=$('tests-timings-empty');
+  const wrap = $('chart-test-timings');
+  if(!wrap) return;
+  let runs=_timingRuns(_testRecords||[]);
+  const names=_timingNames(runs);
+  const winSel=$('tests-timings-window');
+  const win = winSel ? parseInt(winSel.value,10) : 50;
+  if(win>0 && runs.length>win) runs=runs.slice(-win);
+
+  const chipsEl=$('tests-timings-chips'), subEl=$('tests-timings-sub'), sumEl=$('tests-timings-summary');
+  if(!runs.length || !names.length){
+    if(_charts['chart-test-timings']){ _charts['chart-test-timings'].destroy(); delete _charts['chart-test-timings']; }
+    if(empty) empty.style.display='';
+    wrap.style.display='none';
+    if(chipsEl) chipsEl.innerHTML='';
+    if(subEl) subEl.textContent='';
+    if(sumEl) sumEl.textContent='';
+    return;
+  }
+  if(empty) empty.style.display='none';
+  wrap.style.display='';
+  if(subEl) subEl.textContent = `${runs.length} run${runs.length!==1?'s':''} · ${names.length} test${names.length!==1?'s':''}`;
+
+  // Selected test may have aged out of the window/data — fall back to stacked.
+  if(_timingsSel!=='__all__' && !names.includes(_timingsSel)) _timingsSel='__all__';
+
+  // Chips: All + one per test (with passing-run average).
+  if(chipsEl){
+    let html = `<button class="btn btn-sm ${_timingsSel==='__all__'?'btn-primary':'btn-outline'}" onclick="selectTiming('__all__')">All (stacked)</button>`;
+    html += names.map(n=>{
+      const a=_timingAvg(runs,n), col=_timingColor(n,names);
+      const lbl = a!=null ? `${n} · ${a.toFixed(1)}s` : `${n} · –`;
+      const active=_timingsSel===n;
+      const style = active ? '' : `border-left:4px solid ${col}`;
+      return `<button class="btn btn-sm ${active?'btn-primary':'btn-outline'}" style="${style}" onclick="selectTiming('${esc(n)}')">${esc(lbl)}</button>`;
+    }).join('');
+    chipsEl.innerHTML=html;
+  }
+
+  const ctx=$('chart-test-timings');
+  if(_charts['chart-test-timings']) _charts['chart-test-timings'].destroy();
+
+  if(_timingsSel==='__all__'){
+    // ── Cumulative stacked bar: one bar per run, each test a segment. ──────────
+    // Failed/skipped tests contribute 0 (never added to the stack).
+    const failedIdx=new Set();
+    runs.forEach((r,i)=>{ if(Object.values(r.tests).some(t=>t.status==='fail')) failedIdx.add(i); });
+    const labels=runs.map((r,i)=>_timingLabel(r)+(failedIdx.has(i)?' ✕':''));
+    const datasets=names.map(n=>{
+      const col=_timingColor(n,names);
+      return {
+        label:n,
+        data:runs.map(r=>{ const t=r.tests[n]; return (t && t.status==='pass') ? t.dur : 0; }),
+        backgroundColor:col+'cc', borderColor:col, borderWidth:1, stack:'suite',
+      };
+    });
+    _charts['chart-test-timings']=new Chart(ctx,{ type:'bar',
+      data:{labels,datasets},
+      options:{responsive:true,maintainAspectRatio:false,
+        plugins:{
+          legend:{position:'bottom',labels:{boxWidth:12,font:{size:11}}},
+          tooltip:{filter:i=>i.parsed.y>0,
+            callbacks:{
+              label:c=>`${c.dataset.label}: ${c.parsed.y.toFixed(1)}s`,
+              footer:items=>{ const tot=items.reduce((a,b)=>a+b.parsed.y,0); return `total ${tot.toFixed(1)}s`; },
+            }},
+        },
+        scales:{
+          x:{stacked:true,ticks:{maxTicksLimit:18,autoSkip:true,color:c=>failedIdx.has(c.index)?'#d73a49':'#57606a'}},
+          y:{stacked:true,beginAtZero:true,title:{display:true,text:'seconds'}},
+        }}});
+  } else {
+    // ── Single-test line: passing durations only; fails marked ✕ at the axis. ──
+    const name=_timingsSel, col=_timingColor(name,names);
+    const failedIdx=new Set();
+    runs.forEach((r,i)=>{ const t=r.tests[name]; if(t && t.status==='fail') failedIdx.add(i); });
+    const labels=runs.map((r,i)=>_timingLabel(r)+(failedIdx.has(i)?' ✕':''));
+    const passData=runs.map(r=>{ const t=r.tests[name]; return (t && t.status==='pass' && t.dur>0) ? t.dur : null; });
+    const failData=runs.map((r,i)=>failedIdx.has(i)?0:null);
+    const avg=_timingAvg(runs,name);
+    const datasets=[
+      {label:`${name} (s)`,data:passData,borderColor:col,backgroundColor:col+'22',fill:true,tension:.3,
+       pointRadius:3,pointHoverRadius:5,spanGaps:false},
+      {label:'failed',data:failData,borderColor:'#d73a49',backgroundColor:'#d73a49',
+       pointStyle:'crossRot',pointRadius:8,pointHoverRadius:9,borderWidth:2,showLine:false},
+    ];
+    if(avg!=null) datasets.push({label:`avg ${avg.toFixed(1)}s`,data:runs.map(()=>avg),
+       borderColor:col,borderDash:[6,4],borderWidth:1.5,pointRadius:0,fill:false});
+    _charts['chart-test-timings']=new Chart(ctx,{ type:'line',
+      data:{labels,datasets},
+      options:{responsive:true,maintainAspectRatio:false,
+        plugins:{
+          legend:{position:'bottom',labels:{boxWidth:12,font:{size:11},filter:i=>i.text!=='failed'||failedIdx.size>0}},
+          tooltip:{callbacks:{label:c=>c.dataset.label==='failed'?'failed (excluded)':`${c.parsed.y!=null?c.parsed.y.toFixed(1):'–'}s`}},
+        },
+        scales:{
+          x:{ticks:{maxTicksLimit:18,autoSkip:true,color:c=>failedIdx.has(c.index)?'#d73a49':'#57606a'}},
+          y:{beginAtZero:true,title:{display:true,text:'seconds'}},
+        }}});
+  }
+
+  // Summary: per-test average (passing only) + failure counts.
+  if(sumEl){
+    const parts=names.map(n=>{
+      const a=_timingAvg(runs,n);
+      let fails=0; runs.forEach(r=>{ const t=r.tests[n]; if(t && t.status==='fail') fails++; });
+      let s=`${esc(n)} ${a!=null?a.toFixed(1)+'s':'–'}`;
+      if(fails) s+=` (${fails} fail${fails!==1?'s':''})`;
+      return s;
+    });
+    sumEl.innerHTML='Averages (passing runs only): '+parts.join(' · ');
+  }
 }
 
 function renderTestProgress(status){
