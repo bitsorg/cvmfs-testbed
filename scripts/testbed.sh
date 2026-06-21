@@ -901,13 +901,13 @@ cmd_test() {
     _ensure_payload
     case "$PUBLISH_METHOD" in
         bits)
-            run_compose exec publisher /scripts/smoke-test.sh
+            run_compose exec -T publisher /scripts/smoke-test.sh
             # The bits pipeline is asynchronous but smoke-test.sh waits for the
             # SSE "published" event before returning, so by this point the new
             # manifest is live on stratum0.  Trigger a client remount and verify
             # the expected files are visible through the FUSE mount.
             # INGEST_BASE=test/smoke matches INGEST_PATH in smoke-test.sh.
-            run_compose exec -e INGEST_BASE=test/smoke cvmfs-client verify-ingest.sh
+            run_compose exec -T -e INGEST_BASE=test/smoke cvmfs-client verify-ingest.sh
             ;;
         ingest)
             # The nested-catalog structure (test/native/smoke) is pre-created by
@@ -915,12 +915,12 @@ cmd_test() {
             # cmd_start restores from the snapshot automatically, so by the time
             # this runs the nested catalog already exists in the repository.
             # See: ./testbed.sh bootstrap  or  make bootstrap
-            run_compose exec cvmfs-native-publisher /scripts/native-smoke.sh
+            run_compose exec -T cvmfs-native-publisher /scripts/native-smoke.sh
             # The native ingest is synchronous: the new manifest is signed and
             # served by stratum0 as soon as native-smoke.sh returns.  Tell the
             # CVMFS client to drop its cached catalog and re-read the manifest,
             # then verify the expected files are visible through the FUSE mount.
-            run_compose exec cvmfs-client verify-ingest.sh
+            run_compose exec -T cvmfs-client verify-ingest.sh
             ;;
         *)
             error "Unknown publish method: $PUBLISH_METHOD (expected bits|ingest)"
@@ -962,12 +962,12 @@ cmd_stresstest() {
         bits)
             local exec_env=(-e NUM_JOBS="$n")
             [[ -n "$concurrency" ]] && exec_env+=(-e CONCURRENCY="$concurrency")
-            run_compose exec "${exec_env[@]}" publisher /scripts/stress-test.sh
+            run_compose exec -T "${exec_env[@]}" publisher /scripts/stress-test.sh
             ;;
         ingest)
             # native-stress runs sequentially (cvmfs_server ingest is synchronous);
             # --concurrency is silently ignored for the ingest path.
-            run_compose exec -e NUM_JOBS="$n" cvmfs-native-publisher /scripts/native-stress.sh
+            run_compose exec -T -e NUM_JOBS="$n" cvmfs-native-publisher /scripts/native-stress.sh
             ;;
         *)
             error "Unknown publish method: $PUBLISH_METHOD (expected bits|ingest)"
@@ -1170,9 +1170,9 @@ cmd_verify() {
     fi
     load_env
     if [[ -n "$file_path" ]]; then
-        run_compose exec cvmfs-client verify-publish.sh "$job_id" "$file_path"
+        run_compose exec -T cvmfs-client verify-publish.sh "$job_id" "$file_path"
     else
-        run_compose exec cvmfs-client verify-publish.sh "$job_id"
+        run_compose exec -T cvmfs-client verify-publish.sh "$job_id"
     fi
 }
 
@@ -1405,7 +1405,7 @@ cmd_unittest() {
     # the Dockerfile.  We probe both candidates.
     local container_src=""
     for ws in /workspace /go/src/cvmfs.io/prepub; do
-        if run_compose exec cvmfs-prepub test -f "${ws}/go.mod" 2>/dev/null; then
+        if run_compose exec -T cvmfs-prepub test -f "${ws}/go.mod" 2>/dev/null; then
             container_src="$ws"
             break
         fi
@@ -1419,7 +1419,7 @@ cmd_unittest() {
     fi
 
     info "Running tests inside cvmfs-prepub container (src: ${container_src})"
-    run_compose exec cvmfs-prepub sh -c "
+    run_compose exec -T cvmfs-prepub sh -c "
         set -e
         cd '${container_src}'
         echo '── broker tests ──'
@@ -1612,8 +1612,8 @@ cmd_pulltest() {
     section "Step 3: running publish job (method: ${PUBLISH_METHOD})"
     local pub_ok=true
     case "$PUBLISH_METHOD" in
-        bits)   run_compose exec publisher /scripts/smoke-test.sh || pub_ok=false ;;
-        ingest) run_compose exec cvmfs-native-publisher /scripts/native-smoke.sh || pub_ok=false ;;
+        bits)   run_compose exec -T publisher /scripts/smoke-test.sh || pub_ok=false ;;
+        ingest) run_compose exec -T cvmfs-native-publisher /scripts/native-smoke.sh || pub_ok=false ;;
         *)      error "Unknown method: ${PUBLISH_METHOD}"; exit 1 ;;
     esac
     $pub_ok || { error "Publish job failed — aborting pull test."; exit 1; }
@@ -1983,7 +1983,7 @@ _suite_run_one() {
             if ! _stack_healthy; then
                 _RT_MSG="skipped: stack not running (run: make ensure)"; rm -f "$log"; return 2
             fi
-            timeout "$t" bash "$0" test --method bits >"$log" 2>&1 || rc=$?
+            timeout -k 15 "$t" bash "$0" test --method bits >"$log" 2>&1 || rc=$?
             _RT_METRICS="$(_suite_metrics_smoke "$log")"
             if [[ $rc -eq 0 ]]; then _RT_MSG="bits smoke published"; else
                 [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" || _RT_MSG="bits smoke failed (rc=$rc)"
@@ -2032,7 +2032,7 @@ _suite_run_one() {
             if ! _suite_have_wss; then
                 _RT_MSG="skipped: wss stack not running (start --wss)"; rm -f "$log"; return 2
             fi
-            timeout "$t" bash "$0" pulltest --wss --method bits >"$log" 2>&1 || rc=$?
+            timeout -k 15 "$t" bash "$0" pulltest --wss --method bits >"$log" 2>&1 || rc=$?
             _RT_METRICS="$(_suite_metrics_pull "$log")"
             if [[ $rc -eq 0 ]]; then _RT_MSG="pull quorum reached"; else
                 [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" || _RT_MSG="pull quorum not reached (rc=$rc)"
@@ -2047,7 +2047,7 @@ _suite_run_one() {
             # oracle. Chunk sizes come from config.yaml (not hard-coded) so they
             # cannot silently drift and report a false divergence.
             local _cz; _cz="$(_chunk_sizes)"   # "MIN AVG MAX"
-            if timeout "$t" bash -c '
+            if timeout -k 15 "$t" bash -c '
                 set -o pipefail
                 bash "'"$0"'" test --method bits || exit 1
                 r=$(basename "$(dirname "$(ls "'"${TESTBED_ROOT}"'"/repos/*/.cvmfspublished | head -1)")")
@@ -2077,7 +2077,7 @@ _suite_run_one() {
             # Publish a fresh bits smoke first so a STANDALONE `make test-content`
             # has a /test/smoke.N tree to compare (the suite ordering would
             # otherwise rely on the bits/chunking test running first).
-            if timeout "$t" bash -c '
+            if timeout -k 15 "$t" bash -c '
                 set -o pipefail
                 bash "'"$0"'" test --method bits || exit 1
                 r=$(basename "$(dirname "$(ls "'"${TESTBED_ROOT}"'"/repos/*/.cvmfspublished | head -1)")")
@@ -2094,7 +2094,7 @@ _suite_run_one() {
             if ! _stack_healthy; then
                 _RT_MSG="skipped: stack not running (run: make ensure)"; rm -f "$log"; return 2
             fi
-            timeout "$t" bash "$0" stresstest 10 --method bits >"$log" 2>&1 || rc=$?
+            timeout -k 15 "$t" bash "$0" stresstest 10 --method bits >"$log" 2>&1 || rc=$?
             _RT_METRICS="$(_suite_metrics_stress "$log")"
             if [[ $rc -eq 0 ]]; then _RT_MSG="stress N=10 completed"; else
                 [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" || _RT_MSG="stress failed (rc=$rc)"
@@ -2112,6 +2112,22 @@ _suite_run_one() {
 
 cmd_suite() {
     load_env
+
+    # Refuse to start if another suite is already running — stacked
+    # make-test runs whose hung container execs outlive the per-test
+    # timeout were a real hang source.
+    local _suite_lock="${TESTBED_ROOT}/data/.suite.lock"
+    if [[ -f "$_suite_lock" ]]; then
+        local _opid; _opid=$(cat "$_suite_lock" 2>/dev/null)
+        if [[ -n "$_opid" ]] && kill -0 "$_opid" 2>/dev/null; then
+            error "A test suite is already running (pid $_opid)."
+            error "Wait for it, or: kill $_opid; rm $_suite_lock"
+            exit 1
+        fi
+        rm -f "$_suite_lock"
+    fi
+    echo $$ > "$_suite_lock"
+    trap 'rm -f "$_suite_lock"' EXIT
 
     : "${REPO_NAME:?REPO_NAME not set — run: ./testbed.sh init}"
 
