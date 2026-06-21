@@ -2301,11 +2301,13 @@ function renderTimings(){
     _charts['chart-test-timings']=new Chart(ctx,{ type:'bar',
       data:{labels,datasets},
       options:{responsive:true,maintainAspectRatio:false,
-        // Click a bar segment → drill into that test's own graph.
-        onClick:(e,els)=>{ if(els && els.length) selectTiming(names[els[0].datasetIndex]); },
+        // Click a bar segment → drill into that test's own graph.  Defer with
+        // setTimeout so the chart is rebuilt AFTER Chart.js finishes dispatching
+        // this event (destroying the chart mid-dispatch throws "handleEvent").
+        onClick:(e,els)=>{ if(els && els.length){ const _n=names[els[0].datasetIndex]; setTimeout(()=>selectTiming(_n),0); } },
         plugins:{
           // Click a legend label → drill in (instead of the default show/hide toggle).
-          legend:{position:'bottom',onClick:(e,item)=>selectTiming(item.text),labels:{boxWidth:12,font:{size:11}}},
+          legend:{position:'bottom',onClick:(e,item)=>{ const _t=item.text; setTimeout(()=>selectTiming(_t),0); },labels:{boxWidth:12,font:{size:11}}},
           tooltip:{filter:i=>i.parsed.y>0,
             callbacks:{
               label:c=>`${c.dataset.label}: ${c.parsed.y.toFixed(1)}s`,
@@ -2338,8 +2340,9 @@ function renderTimings(){
       options:{responsive:true,maintainAspectRatio:false,
         plugins:{
           // In the single-test view, clicking any legend entry returns to the
-          // cumulative (All) chart rather than toggling a series.
-          legend:{position:'bottom',onClick:(e,item)=>selectTiming('__all__'),
+          // cumulative (All) chart rather than toggling a series.  Deferred with
+          // setTimeout so we don't destroy the chart mid event-dispatch.
+          legend:{position:'bottom',onClick:(e,item)=>setTimeout(()=>selectTiming('__all__'),0),
             labels:{boxWidth:12,font:{size:11},filter:i=>i.text!=='failed'||failedIdx.size>0}},
           tooltip:{callbacks:{label:c=>c.dataset.label==='failed'?'failed (excluded)':`${c.parsed.y!=null?c.parsed.y.toFixed(1):'–'}s`}},
         },
