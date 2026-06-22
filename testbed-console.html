@@ -824,6 +824,9 @@
         <label style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">
           <input id="ul-recursive" type="checkbox" checked> recursive
         </label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap" title="Clean CAS storage before run — uncheck to measure deduplication impact">
+          <input id="ul-clean-cas" type="checkbox" checked onchange="try{localStorage.setItem('ul-clean-cas',this.checked?'1':'0')}catch(_){}"> clean CAS
+        </label>
         <button class="btn btn-outline" onclick="scanUploadDir()">🔍 Scan</button>
       </div>
       <!-- Scan results -->
@@ -865,13 +868,6 @@
         </select>
         <div id="ul-method-hint" style="font-size:11px;color:var(--c-muted);margin-top:4px">cvmfs-prepub at :8080</div>
       </div>
-    </div>
-    <div style="padding:0 16px 8px;font-size:13px">
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-        <input id="ul-clean-cas" type="checkbox" checked onchange="try{localStorage.setItem('ul-clean-cas',this.checked?'1':'0')}catch(_){}">
-        Clean CAS storage before run
-        <span class="muted" style="font-size:11px">— start from a clean baseline; uncheck to measure deduplication impact</span>
-      </label>
     </div>
     <div style="padding:0 16px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <button id="ul-run-btn"   class="btn btn-primary" onclick="runUploadFilelist()">▶ Start Upload</button>
