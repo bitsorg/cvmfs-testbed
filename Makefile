@@ -108,7 +108,7 @@ _METHOD := $(if $(METHOD),--method $(METHOD),)
 # ── Default goal ──────────────────────────────────────────────────────────────
 .DEFAULT_GOAL := all
 
-.PHONY: all build install init start start-wss ensure bootstrap snapshot restore redeploy clean cleanall \
+.PHONY: all build install init start start-wss ensure bootstrap snapshot restore redeploy clean cleanall baseline \
         test test-suite test-ingest test-bits test-pull test-pull-wss pull-status \
         test-chunking test-content test-stress \
         stresstest stresstest-ingest \
@@ -283,6 +283,12 @@ cleanall:
 # TESTS is passed straight through to `testbed.sh suite`.
 test: | ensure
 	bash "$(TESTBED)" suite $(TESTS)
+
+# Native-ingest REFERENCE BASELINE (golden/smoke). bits is the default/monitored
+# path; this slow, occasional native reference feeds the content/ingest tests and
+# the bits-vs-ingest comparison. Captured in the snapshot. Run once after setup.
+baseline: | ensure
+	bash "$(TESTBED)" baseline
 
 # Individual smoke targets delegate to the suite so they ALSO log a
 # test-results.ndjson record (keeping history complete).
