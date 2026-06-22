@@ -209,7 +209,7 @@ while [[ $# -gt 0 ]]; do
         -f|--follow)   FOLLOW_LOGS=true;                shift ;;
         # Command-specific flags (e.g. upload-filelist, stresstest) — pass
         # them through to the subcommand handler via POSITIONAL_ARGS.
-        --dir|--filelist|--ingest-path|--concurrency|-j|--run-log|\
+        --dir|--filelist|--ingest-path|--concurrency|-j|--run-log|--label|\
         --prepub-url|--repo|--token)
             POSITIONAL_ARGS+=("$1" "${2:-}"); shift 2 ;;
         --no-recursive|--purge-snapshot|--purge-env|--purge-history)
@@ -1006,6 +1006,40 @@ cmd_stresstest() {
     esac
 }
 
+# Append one measurement row to data/measurements.ndjson, derived from the most
+# recent 'batch' record in runs.ndjson (written by upload-filelist.sh), enriched
+# with the clean/label context.  Consumed by the Measurements page comparison.
+_record_measurement() {
+    local method="$1" label="$2" cleaned="$3" start_iso="$4"
+    METHOD="$method" LABEL="$label" CLEANED="$cleaned" START_ISO="$start_iso" \
+    RUNLOG="${TESTBED_ROOT}/data/runs.ndjson" \
+    OUT="${TESTBED_ROOT}/data/measurements.ndjson" python3 - <<'PY' 2>/dev/null || true
+import json, os
+runlog=os.environ["RUNLOG"]; out=os.environ["OUT"]
+rec=None
+try:
+    for line in open(runlog):
+        line=line.strip()
+        if not line: continue
+        try: r=json.loads(line)
+        except Exception: continue
+        if r.get("test_type")=="batch": rec=r   # newest batch wins
+except FileNotFoundError:
+    pass
+rec=rec or {}
+m={"ts":os.environ["START_ISO"],"method":os.environ["METHOD"],
+   "n_files":int(rec.get("n_published",0)),
+   "bytes_raw":round(float(rec.get("total_size_mb",0))*1048576),
+   "bytes_stored":round(float(rec.get("cas_size_mb",0))*1048576),
+   "publish_s0_s":None,"s1_s":None,
+   "total_s":int(rec.get("duration_s",0)),
+   "cleaned":os.environ["CLEANED"]=="true",
+   "label":os.environ["LABEL"],"run_id":rec.get("run_id","")}
+os.makedirs(os.path.dirname(out),exist_ok=True)
+with open(out,"a") as f: f.write(json.dumps(m)+"\n")
+PY
+}
+
 cmd_upload_filelist() {
     # Upload tar.gz files to CVMFS via the bits API.
     # Runs upload-filelist.sh on the HOST (not inside a container) so it can
@@ -1023,6 +1057,8 @@ cmd_upload_filelist() {
     local filelist_arg=""
     local ingest_path="upload"
     local no_recursive=false
+    local label_arg=""
+    local clean_cas=false
     local method="$PUBLISH_METHOD"   # inherits top-level --method (bits|ingest)
 
     local i=0
@@ -1049,6 +1085,10 @@ cmd_upload_filelist() {
                 ;;
             --no-recursive)
                 no_recursive=true
+                ;;
+            --label)
+                i=$(( i + 1 ))
+                label_arg="${POSITIONAL_ARGS[$i]:-}"
                 ;;
             --method)
                 i=$(( i + 1 ))
@@ -1083,7 +1123,20 @@ cmd_upload_filelist() {
     [[ -n "$filelist_arg" ]] && args+=(--filelist "$filelist_arg")
     $no_recursive            && args+=(--no-recursive)
 
+    [[ -n "$label_arg" ]] || label_arg="$method"
+
+    local _meas_start_iso
+    _meas_start_iso="$(_iso_now)"
+
     bash "$upload_script" "${args[@]}"
+    local _rc=$?
+
+    # Record a measurement row derived from the batch record upload-filelist.sh
+    # just appended to runs.ndjson, enriched with clean/label context.  Kept
+    # across 'clean' like test-results.ndjson.  publish_s0_s/s1_s land in Phase 2.
+    _record_measurement "$method" "$label_arg" "$clean_cas" "$_meas_start_iso" || true
+
+    return $_rc
 }
 
 cmd_catdump() {
@@ -1260,6 +1313,14 @@ cmd_clean() {
             cp "$_hist" "$_hist_bak"
             info "Preserving performance history ($(wc -l < "$_hist" | tr -d ' ') records)"
         fi
+        # Measurements (bulk-upload comparison rows) preserved with history.
+        local _meas="${TESTBED_ROOT}/data/measurements.ndjson"
+        local _meas_bak=""
+        if [[ -f "$_meas" ]] && ! $_purge_history; then
+            _meas_bak=$(mktemp)
+            cp "$_meas" "$_meas_bak"
+            info "Preserving measurements ($(wc -l < "$_meas" | tr -d ' ') records)"
+        fi
 
         for subdir in data config repos; do
             if [[ -d "$TESTBED_ROOT/$subdir" ]]; then
@@ -1285,6 +1346,11 @@ cmd_clean() {
             mkdir -p "${TESTBED_ROOT}/data"
             mv "$_hist_bak" "$_hist"
             ok "Performance history preserved: data/test-results.ndjson"
+        fi
+        if [[ -n "$_meas_bak" ]]; then
+            mkdir -p "${TESTBED_ROOT}/data"
+            mv "$_meas_bak" "$_meas"
+            ok "Measurements preserved: data/measurements.ndjson"
         fi
         ok "State removed"
     else
