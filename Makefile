@@ -94,13 +94,16 @@ N ?= 10
 C ?=
 _CONCURRENCY := $(if $(C),--concurrency $(C),)
 
-# Set WSS=1 to enable the ADR-0001 pull distribution over the embedded
-# MQTT-over-WSS broker (no mosquitto).  Example:
-#   make WSS=1 start           # start testbed with the embedded-broker overlay
-#   make start-wss             # convenience alias (same as WSS=1 start)
-#   make test-pull-wss         # end-to-end pull test over wss
-WSS ?= 0
-_WSS := $(if $(filter 1 yes true,$(WSS)),--wss,)
+# The ADR-0001 pull distribution (embedded MQTT-over-WSS broker) is ON BY DEFAULT.
+# Set WSS=0 to start the bare base stack.
+#   make start          # pull overlay on (default)
+#   make WSS=0 start     # bare stack, no pull overlay
+WSS ?= 1
+_WSS := $(if $(filter 0 no false,$(WSS)),--no-wss,)
+
+# Publishing method (bits|ingest) passed to start/ensure for this invocation.
+METHOD ?= bits
+_METHOD := $(if $(METHOD),--method $(METHOD),)
 
 # ── Default goal ──────────────────────────────────────────────────────────────
 .DEFAULT_GOAL := all
@@ -161,11 +164,10 @@ init: $(MAKE_DIR)/init
 # Depends on init having run.  auto-restores snapshot if repo is absent.
 start: $(MAKE_DIR)/init
 	@echo "── Starting testbed ──────────────────────────────────────────────────"
-	bash "$(TESTBED)" start $(_WSS)
+	bash "$(TESTBED)" start $(_WSS) $(_METHOD)
 
-start-wss: $(MAKE_DIR)/init
-	@echo "── Starting testbed with the embedded MQTT-over-WSS broker overlay ────"
-	bash "$(TESTBED)" start --wss
+# Back-compat alias — the pull overlay is on by default, so this == start.
+start-wss: start
 
 # ── ensure ────────────────────────────────────────────────────────────────────
 # Idempotent readiness gate: bring up whatever is missing (init, canonical
@@ -185,7 +187,7 @@ start-wss: $(MAKE_DIR)/init
 # brought the live stack to that state).  Order-only dep on $(MAKE_DIR) so the
 # directory exists before we touch into it.
 ensure: | $(MAKE_DIR)
-	bash "$(TESTBED)" ensure --wss
+	bash "$(TESTBED)" ensure $(_WSS) $(_METHOD)
 	@touch $(MAKE_DIR)/init $(MAKE_DIR)/bootstrap
 
 # ── bootstrap ─────────────────────────────────────────────────────────────────

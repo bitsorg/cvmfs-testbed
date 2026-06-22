@@ -165,7 +165,8 @@ TESTBED_DIR="$(dirname "$SCRIPT_DIR")"   # root of cvmfs-testbed checkout
 
 # ── Default flags ─────────────────────────────────────────────────────────────
 USE_BITS=false
-USE_WSS=false           # ADR-0001 pull distribution over an embedded MQTT-over-WSS broker (no mosquitto)
+USE_WSS=true            # ADR-0001 pull distribution (embedded MQTT-over-WSS broker) — default;
+                        # disable with --no-wss for the bare base stack.
 SOFTWARE_ROOT_OVERRIDE=""
 TESTBED_ROOT_OVERRIDE=""
 PUBLISH_METHOD="bits"   # bits | ingest
@@ -185,12 +186,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --bits)                USE_BITS=true;                    shift ;;
         --wss)                 USE_WSS=true;                     shift ;;
-        # --bits-src is no longer needed: bits-console lives at $TESTBED_DIR/bits-console.
-        # Accept it silently for backward compatibility.
-        --bits-src)
-            warn "--bits-src is no longer needed; bits-console/ is expected at $TESTBED_DIR/bits-console"
-            [[ $# -ge 2 ]] && shift 2 || shift ;;
-        --bits-src=*)          warn "--bits-src is no longer needed; bits-console/ is expected at $TESTBED_DIR/bits-console"; shift ;;
+        --no-wss)              USE_WSS=false;                    shift ;;
         --software-root)
             [[ $# -ge 2 ]] || { error "--software-root requires a value"; exit 1; }
             SOFTWARE_ROOT_OVERRIDE="$2"; shift 2 ;;
