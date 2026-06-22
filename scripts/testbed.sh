@@ -883,20 +883,15 @@ cmd_ensure() {
     # nested catalog. Seed it if absent. Failures here MUST NOT fail ensure — the
     # affected tests skip cleanly when golden is missing.
     if ! _have_golden_catalog; then
-        info "ensuring: golden (golden/smoke nested catalog absent)"
+        info "ensuring: bootstrap (nested-catalog structure absent)"
         did_work=true
-        if bash "$0" bootstrap; then
-            # Native-ingest the canonical payload into golden/smoke so the content
-            # test has real content to compare against. Best effort.
-            if [[ -s "$payload" ]]; then
-                run_compose exec -T -e INGEST_BASE=golden/smoke \
-                    cvmfs-native-publisher /scripts/native-smoke.sh \
-                    >/dev/null 2>&1 \
-                    || warn "golden native-ingest failed - content/ingest tests will skip"
-            fi
-        else
-            warn "bootstrap failed — golden tree unavailable; ingest/content tests will skip"
-        fi
+        # bits is the default/monitored path and creates its own parent chain, so
+        # this is fast. The native-ingest GOLDEN BASELINE is deliberately NOT run
+        # here — it is slow (gateway commit ~minutes) and would wedge the gateway in
+        # the routine path. Generate it explicitly + occasionally with 'make baseline'.
+        # content/ingest tests skip cleanly without a baseline.
+        bash "$0" bootstrap \
+            || warn "bootstrap failed — ingest/content tests will skip until 'make baseline'"
     fi
 
     ok "testbed ready"
@@ -2047,10 +2042,12 @@ _suite_run_one() {
                 "$_gn" "$([[ $_gn -gt 100 ]] && echo true || echo false)")"
             if [[ "$_gn" -gt 100 ]]; then
                 rc=0
-                _RT_MSG="native ingest golden verified (golden/smoke, ${_gn} entries)"
+                _RT_MSG="native ingest baseline verified (golden/smoke, ${_gn} entries)"
             else
-                rc=1
-                _RT_MSG="golden/smoke under-populated (${_gn} entries) — ensure golden setup ran"
+                # bits is the default path; the native-ingest baseline is optional and
+                # occasional (slow). A missing baseline is NOT a routine failure — skip.
+                _RT_MSG="skipped: no native-ingest baseline (run: make baseline)"
+                rm -f "$log"; return 2
             fi
             rm -f "$log"
             ;;
@@ -2135,6 +2132,33 @@ _suite_run_one() {
     _RT_METHOD="$method"
     rm -f "$log"
     [[ $rc -eq 0 ]] && return 0 || return 1
+}
+
+cmd_baseline() {
+    section "Generating native-ingest baseline (golden/smoke)"
+    load_env
+    if ! _stack_healthy; then error "stack not running — run: make ensure"; exit 1; fi
+    local _gn; _gn="$(_golden_entry_count)"; _gn="${_gn//[^0-9]/}"; _gn="${_gn:-0}"
+    if [[ "$_gn" -gt 100 ]]; then
+        ok "Baseline already present (golden/smoke, ${_gn} entries)."
+        info "To regenerate, run 'clean' first (the snapshot keeps it across restarts)."
+        return 0
+    fi
+    _ensure_payload
+    warn "Native cvmfs_server ingest is the SLOW reference path (commit may take minutes)."
+    info "Ingesting the canonical payload into golden/smoke ..."
+    if run_compose exec -T -e INGEST_BASE=golden/smoke cvmfs-native-publisher /scripts/native-smoke.sh; then
+        local _n; _n="$(_golden_entry_count)"; _n="${_n//[^0-9]/}"; _n="${_n:-0}"
+        if [[ "$_n" -gt 100 ]]; then
+            ok "Baseline generated (golden/smoke, ${_n} entries)."
+            info "Snapshotting so the baseline persists ..."
+            cmd_snapshot
+        else
+            error "Baseline ingest ran but golden/smoke is still under-populated (${_n} entries)."; exit 1
+        fi
+    else
+        error "Native ingest baseline failed."; exit 1
+    fi
 }
 
 cmd_suite() {
@@ -2257,6 +2281,7 @@ case "$CMD" in
     restore)        cmd_restore ;;
     test)           cmd_test ;;
     suite)          cmd_suite ;;
+    baseline)       cmd_baseline ;;
     stresstest)     cmd_stresstest ;;
     upload-filelist) cmd_upload_filelist ;;
     catdump)        cmd_catdump ;;
