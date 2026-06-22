@@ -398,35 +398,34 @@
   <div class="page-title">Testbed</div>
   <div class="page-sub">Run <code>./testbed.sh</code> commands from the browser. Output streams live via SSE. <span id="cmd-server-warn" class="muted" style="display:none">⚠️ Server mode required — start <code>./testbed.sh server</code> on the testbed host.</span></div>
 
-  <!-- Global flags -->
+  <!-- Active configuration (read-only) + command parameters -->
   <div class="box box-pad" style="margin-bottom:16px">
-    <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-end">
-      <label style="display:flex;gap:6px;align-items:center;font-size:13px;cursor:pointer" title="ADR-0001 pull-distribution overlay (embedded MQTT-over-WSS broker)">
-        <input type="checkbox" id="flag-wss"> <code>--wss</code>
-      </label>
-      <label style="display:flex;gap:6px;align-items:center;font-size:13px;cursor:pointer">
-        <input type="checkbox" id="flag-bits"> <code>--bits</code>
-      </label>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end">
       <div>
-        <span style="font-size:12px;color:var(--c-muted);margin-right:6px">--method</span>
-        <select id="flag-method" style="padding:4px 8px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px">
-          <option value="bits">bits</option>
-          <option value="ingest">ingest</option>
-        </select>
+        <div style="font-size:11px;color:var(--c-muted);margin-bottom:4px">Active configuration <span class="muted" title="Set at start time via testbed.sh / make arguments (e.g. make start METHOD=ingest WSS=0). Read-only here.">ⓘ</span></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap" id="tb-config">
+          <span class="badge" id="tb-cfg-method" style="background:#0075ca;color:#fff;font-size:11px">method: …</span>
+          <span class="badge" id="tb-cfg-wss" style="background:#57606a;color:#fff;font-size:11px">pull(wss): …</span>
+          <span class="badge" id="tb-cfg-bits" style="background:#57606a;color:#fff;font-size:11px">bits-console: …</span>
+          <span class="muted" id="tb-cfg-started" style="font-size:11px"></span>
+        </div>
       </div>
-      <div>
-        <span style="font-size:12px;color:var(--c-muted);margin-right:6px">n (stresstest jobs)</span>
-        <input type="number" id="flag-n" value="10" min="1" max="500" style="width:70px;padding:4px 8px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px">
-      </div>
-      <div>
-        <span style="font-size:12px;color:var(--c-muted);margin-right:6px">concurrency</span>
-        <input type="number" id="flag-concurrency" placeholder="default" min="1" max="100" style="width:90px;padding:4px 8px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px">
-      </div>
-      <div>
-        <span style="font-size:12px;color:var(--c-muted);margin-right:6px">service (logs)</span>
-        <input type="text" id="flag-svc" placeholder="e.g. stratum1-a" style="width:130px;padding:4px 8px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px">
+      <div style="border-left:1px solid var(--c-border);padding-left:24px;display:flex;gap:20px;flex-wrap:wrap;align-items:flex-end">
+        <div>
+          <span style="font-size:12px;color:var(--c-muted);margin-right:6px">n (stresstest jobs)</span>
+          <input type="number" id="flag-n" value="10" min="1" max="500" style="width:70px;padding:4px 8px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px">
+        </div>
+        <div>
+          <span style="font-size:12px;color:var(--c-muted);margin-right:6px">concurrency</span>
+          <input type="number" id="flag-concurrency" placeholder="default" min="1" max="100" style="width:90px;padding:4px 8px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px">
+        </div>
+        <div>
+          <span style="font-size:12px;color:var(--c-muted);margin-right:6px">service (logs)</span>
+          <input type="text" id="flag-svc" placeholder="e.g. stratum1-a" style="width:130px;padding:4px 8px;border:1px solid var(--c-border);border-radius:var(--radius);font-size:12px">
+        </div>
       </div>
     </div>
+    <div class="muted" style="font-size:11px;margin-top:8px">Publishing method &amp; overlays are chosen at start time (<code>make start METHOD=ingest</code>, <code>make WSS=0 start</code>) — commands here run in the active mode shown above.</div>
   </div>
 
   <!-- Command groups -->
@@ -1176,6 +1175,7 @@ function showTab(name){
   if(name==='monitoring'){ refreshMonitoring(); }
   if(name==='upload')     refreshUploadFilelist();
   if(name==='tests')      refreshTests();
+  if(name==='testbed')    refreshTestbedConfig();
 }
 
 // ═══════════════════════════ Services health ═════════════════════════════════
@@ -2176,7 +2176,7 @@ function renderTimings(){
   if(empty) empty.style.display='none';
   wrap.style.display='';
   // Selected test may have aged out of the window/data — fall back to stacked.
-  if(_timingsSel!=='__all__' && !names.includes(_timingsSel)) _timingsSel='__all__';
+  if(_timingsSel!=='__all__' && _timingsSel!=='__compare__' && !names.includes(_timingsSel)) _timingsSel='__all__';
 
   const _hint = _timingsSel==='__all__' ? 'click a test for its own graph' : 'click the legend or “All” to go back';
   if(subEl) subEl.textContent = `${runs.length} run${runs.length!==1?'s':''} · ${names.length} test${names.length!==1?'s':''} · ${_hint}`;
@@ -2192,6 +2192,11 @@ function renderTimings(){
       const style = active ? '' : `border-left:4px solid ${col}`;
       return `<button class="btn btn-sm ${active?'btn-primary':'btn-outline'}" style="${style}" onclick="selectTiming('${esc(n)}')">${esc(lbl)}</button>`;
     }).join('');
+    // Direct bits-vs-ingest publish comparison (only when both publish tests exist).
+    if(names.includes('bits') && names.includes('ingest')){
+      const a=_timingsSel==='__compare__';
+      html += `<button class="btn btn-sm ${a?'btn-primary':'btn-outline'}" style="${a?'':'border-left:4px solid #6f42c1'}" onclick="selectTiming('__compare__')">bits vs ingest</button>`;
+    }
     chipsEl.innerHTML=html;
   }
 
@@ -2232,6 +2237,24 @@ function renderTimings(){
           x:{stacked:true,ticks:{maxTicksLimit:18,autoSkip:true,color:c=>failedIdx.has(c.index)?'#d73a49':'#57606a'}},
           y:{stacked:true,beginAtZero:true,title:{display:true,text:'seconds'}},
         }}});
+  } else if(_timingsSel==='__compare__'){
+    // ── bits vs ingest: overlay the two publish-method durations + averages. ──
+    const labels=runs.map(r=>_timingLabel(r));
+    const mk=(name,col)=>({label:`${name} (s)`,
+      data:runs.map(r=>{ const t=r.tests[name]; return (t && t.status==='pass') ? t.dur : null; }),
+      borderColor:col, backgroundColor:col+'18', fill:false, tension:.3, pointRadius:3, pointHoverRadius:5, spanGaps:false});
+    const ab=_timingAvg(runs,'bits'), ai=_timingAvg(runs,'ingest');
+    const datasets=[ mk('bits','#0075ca'), mk('ingest','#6f42c1') ];
+    if(ab!=null) datasets.push({label:`bits avg ${ab.toFixed(1)}s`,data:runs.map(()=>ab),borderColor:'#0075ca',borderDash:[6,4],borderWidth:1.5,pointRadius:0,fill:false});
+    if(ai!=null) datasets.push({label:`ingest avg ${ai.toFixed(1)}s`,data:runs.map(()=>ai),borderColor:'#6f42c1',borderDash:[6,4],borderWidth:1.5,pointRadius:0,fill:false});
+    _charts['chart-test-timings']=new Chart(ctx,{ type:'line',
+      data:{labels,datasets},
+      options:{responsive:true,maintainAspectRatio:false,
+        plugins:{
+          legend:{position:'bottom',onClick:(e,item)=>setTimeout(()=>selectTiming('__all__'),0),labels:{boxWidth:12,font:{size:11}}},
+          tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.parsed.y!=null?c.parsed.y.toFixed(1):'–'}s`}},
+        },
+        scales:{ x:{ticks:{maxTicksLimit:18,autoSkip:true}}, y:{beginAtZero:true,title:{display:true,text:'seconds (publish)'}} }}});
   } else {
     // ── Single-test line: passing durations only; fails marked ✕ at the axis. ──
     const name=_timingsSel, col=_timingColor(name,names);
@@ -2277,6 +2300,29 @@ function renderTimings(){
     });
     sumEl.innerHTML='Averages (passing runs only): '+parts.join(' · ');
   }
+}
+
+// Fetch + display the active start-time testbed configuration (read-only).
+async function refreshTestbedConfig(){
+  if(!SERVER_MODE) return;
+  let c=null;
+  try{
+    const r=await fetch('/api/testbed-config',{headers:{'X-Testbed-Token':SERVER_TOKEN||''},signal:AbortSignal.timeout(5000)});
+    if(r.ok) c=await r.json();
+  }catch(_){ return; }
+  if(!c) return;
+  const set=(id,label,val,onColor)=>{
+    const el=$(id); if(!el) return;
+    const known = val!==null && val!==undefined;
+    const txt = !known ? '—' : (val===true?'on':val===false?'off':String(val));
+    el.textContent = `${label}: ${txt}`;
+    el.style.background = (!known || val===false) ? '#57606a' : onColor;
+  };
+  set('tb-cfg-method','method', c.method, c.method==='ingest' ? '#6f42c1' : '#0075ca');
+  set('tb-cfg-wss','pull(wss)', c.wss, '#1a7f37');
+  set('tb-cfg-bits','bits-console', c.bits, '#1a7f37');
+  const st=$('tb-cfg-started');
+  if(st) st.textContent = c.started_at ? `· started ${relTime(c.started_at)}` : '';
 }
 
 function renderTestProgress(status){
@@ -3452,24 +3498,16 @@ let _activeSSE=null, _activePid=null;
 
 function buildFlags(opts={}){
   const flags=[], args=[];
-  // A scenario is a one-word preset for --method/--pull; it overrides the
-  // individual flag checkboxes, so return early with just the scenario arg.
   if(opts.scenario){ return {flags:[], args:['--scenario', opts.scenario]}; }
-  if($('flag-wss')?.checked) flags.push('--wss');
-  if($('flag-bits')?.checked) flags.push('--bits');
-  if(opts.method!==false){
-    const m=$('flag-method')?.value;
-    if(m&&m!=='bits'){ args.push('--method'); args.push(m); }
-  }
+  // Publishing method + overlays are START-TIME config (chosen via testbed.sh /
+  // make args and persisted); testbed.sh resolves the active method, so commands
+  // here carry no per-command method/overlay flags — they run in the active mode.
   if(opts.n){
     args.push($('flag-n')?.value||'10');
-    // Append --concurrency only for the bits path (ingest runs sequentially)
     const conc = $('flag-concurrency')?.value?.trim();
-    const method = $('flag-method')?.value || 'bits';
-    if(conc && method !== 'ingest'){ args.push('--concurrency'); args.push(conc); }
+    if(conc){ args.push('--concurrency'); args.push(conc); }
   }
   if(opts.svc){ const s=$('flag-svc')?.value?.trim(); if(s) args.push(s); }
-  if(opts.wss && !$('flag-wss')?.checked) flags.push('--wss');
   return {flags,args};
 }
 
@@ -3743,7 +3781,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     refreshS1Backlog, refreshCASStats, refreshHostMetrics,
     // Tests / suite runner
     refreshTests, refreshTestResults, runSuite, testToggle, testsSelectAll,
-    selectTiming, renderTimings,
+    selectTiming, renderTimings, refreshTestbedConfig,
     showMetricHistory, closeMetricHistory, toggleRunSelection, clearRunComparison,
     // Upload
     scanUploadDir, runUploadFilelist, abortUpload, retryFailedUploads,

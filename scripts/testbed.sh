@@ -165,10 +165,12 @@ TESTBED_DIR="$(dirname "$SCRIPT_DIR")"   # root of cvmfs-testbed checkout
 
 # ── Default flags ─────────────────────────────────────────────────────────────
 USE_BITS=false
-USE_WSS=false           # ADR-0001 pull distribution over an embedded MQTT-over-WSS broker (no mosquitto)
+USE_WSS=true            # ADR-0001 pull distribution (embedded MQTT-over-WSS broker) — now the
+                        # default; the testbed relies on it. Disable with --no-wss for the bare stack.
 SOFTWARE_ROOT_OVERRIDE=""
 TESTBED_ROOT_OVERRIDE=""
-PUBLISH_METHOD="bits"   # bits | ingest
+PUBLISH_METHOD="bits"   # bits | ingest — default publishing path; persisted at start time
+METHOD_EXPLICIT=false   # true once --method is given on the command line
 AUTO_YES=false          # skip interactive confirmation prompts (e.g. for make)
 FOLLOW_LOGS=false       # set by -f/--follow; makes 'logs' stream continuously
 
@@ -185,12 +187,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --bits)                USE_BITS=true;                    shift ;;
         --wss)                 USE_WSS=true;                     shift ;;
-        # --bits-src is no longer needed: bits-console lives at $TESTBED_DIR/bits-console.
-        # Accept it silently for backward compatibility.
-        --bits-src)
-            warn "--bits-src is no longer needed; bits-console/ is expected at $TESTBED_DIR/bits-console"
-            [[ $# -ge 2 ]] && shift 2 || shift ;;
-        --bits-src=*)          warn "--bits-src is no longer needed; bits-console/ is expected at $TESTBED_DIR/bits-console"; shift ;;
+        --no-wss)              USE_WSS=false;                    shift ;;
         --software-root)
             [[ $# -ge 2 ]] || { error "--software-root requires a value"; exit 1; }
             SOFTWARE_ROOT_OVERRIDE="$2"; shift 2 ;;
@@ -201,11 +198,11 @@ while [[ $# -gt 0 ]]; do
         --testbed-root=*)      TESTBED_ROOT_OVERRIDE="${1#*=}";  shift ;;
         --method)
             [[ $# -ge 2 ]] || { error "--method requires a value (bits|ingest)"; exit 1; }
-            PUBLISH_METHOD="$2"; shift 2
+            PUBLISH_METHOD="$2"; METHOD_EXPLICIT=true; shift 2
             [[ "$PUBLISH_METHOD" == "bits" || "$PUBLISH_METHOD" == "ingest" ]] \
                 || { error "--method must be 'bits' or 'ingest'"; exit 1; } ;;
         --method=*)
-            PUBLISH_METHOD="${1#*=}"; shift
+            PUBLISH_METHOD="${1#*=}"; METHOD_EXPLICIT=true; shift
             [[ "$PUBLISH_METHOD" == "bits" || "$PUBLISH_METHOD" == "ingest" ]] \
                 || { error "--method must be 'bits' or 'ingest'"; exit 1; } ;;
         -y|--yes)      AUTO_YES=true;                    shift ;;
@@ -215,7 +212,7 @@ while [[ $# -gt 0 ]]; do
         --dir|--filelist|--ingest-path|--concurrency|-j|--run-log|\
         --prepub-url|--repo|--token)
             POSITIONAL_ARGS+=("$1" "${2:-}"); shift 2 ;;
-        --no-recursive)
+        --no-recursive|--purge-snapshot|--purge-env|--purge-history)
             POSITIONAL_ARGS+=("$1"); shift ;;
         --*)  error "Unknown option: $1"; exit 1 ;;
         *)    POSITIONAL_ARGS+=("$1");                           shift ;;
@@ -282,18 +279,7 @@ compose_files() {
 
 run_compose() {
     compose_files
-    # For `exec`, always detach stdin (</dev/null).  With `-T` the CLI still
-    # attaches the caller's stdin; when invoked from an interactive terminal
-    # (e.g. `make test`) that stdin never reaches EOF, so `docker compose exec`
-    # blocks on its stdin-copy goroutine and does NOT return even after the
-    # in-container command has exited — making the suite appear to hang until
-    # the per-test `timeout` kills it.  All our exec uses run non-interactive
-    # baked scripts, so EOF-on-stdin is the correct behaviour.
-    if [[ "${1:-}" == "exec" ]]; then
-        docker compose "${_COMPOSE_FILES[@]}" "$@" </dev/null
-    else
-        docker compose "${_COMPOSE_FILES[@]}" "$@"
-    fi
+    docker compose "${_COMPOSE_FILES[@]}" "$@"
 }
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -435,6 +421,10 @@ cmd_start() {
     if ! $all_up; then
         warn "Some services did not respond within 60 s — check logs: ./testbed.sh logs"
     fi
+    # Record the start-time configuration so the console can display it and
+    # test/stresstest can default to the chosen publishing method.
+    _write_testbed_config
+    info "Active config: method=${PUBLISH_METHOD} wss=${USE_WSS} bits=${USE_BITS}"
     _cmd_status_inner  # status without re-running load_env
 }
 
@@ -450,6 +440,30 @@ _snapshot_path() {
     # Keep the snapshot in TESTBED_ROOT so it is co-located with the repo data
     # it captures.  load_env must have been called before this function.
     echo "${TESTBED_ROOT}/repo-seed.tar.gz"
+}
+
+# ── Start-time configuration (single source of truth for the active testbed) ────
+# Persisted by cmd_start to data/testbed-config.json; read by the web console
+# (GET /api/testbed-config) to DISPLAY the active config, and by _resolve_method
+# so test/stresstest default to the publishing method chosen at start time.
+_testbed_config_path() { echo "${TESTBED_ROOT}/data/testbed-config.json"; }
+
+_write_testbed_config() {
+    mkdir -p "${TESTBED_ROOT}/data"
+    printf '{"method":"%s","wss":%s,"bits":%s,"started_at":"%s"}\n' \
+        "$PUBLISH_METHOD" "$USE_WSS" "$USE_BITS" "$(_iso_now)" \
+        > "$(_testbed_config_path)"
+}
+
+# If --method was NOT given explicitly, inherit the method persisted at start.
+_resolve_method() {
+    if ! $METHOD_EXPLICIT; then
+        local cf; cf="$(_testbed_config_path)"
+        if [[ -f "$cf" ]]; then
+            local m; m="$(sed -n 's/.*"method"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$cf" | head -1)"
+            [[ "$m" == "bits" || "$m" == "ingest" ]] && PUBLISH_METHOD="$m"
+        fi
+    fi
 }
 
 # ── cmd_bootstrap ─────────────────────────────────────────────────────────────
@@ -610,7 +624,9 @@ cmd_restore() {
 
     # Restore broad write permissions so container services (running as non-root)
     # can write to the CAS and spool.  Matches what init.sh sets after mkfs.
-    chmod -R 777 "${TESTBED_ROOT}/repos/${REPO_NAME}"
+    # Skip upstream-scratch (gateway-owned, possibly an active bind mount) — a
+    # recursive chmod there fails with EPERM.
+    find "${TESTBED_ROOT}/repos/${REPO_NAME}" -path '*/upstream-scratch*' -prune -o -exec chmod 777 {} + 2>/dev/null || true
 
     ok "Repository restored from snapshot."
 }
@@ -866,14 +882,11 @@ cmd_ensure() {
     fi
 
     # ── c. START ────────────────────────────────────────────────────────────────
+    local _wssflag; if $USE_WSS; then _wssflag=--wss; else _wssflag=--no-wss; fi
     if ! _stack_healthy; then
         info "ensuring: start (stack not healthy)"
         did_work=true
-        if $USE_WSS; then
-            bash "$0" start --wss
-        else
-            bash "$0" start
-        fi
+        bash "$0" start "$_wssflag" --method "$PUBLISH_METHOD"
     elif $regenerated_payload; then
         # The stack was already running when we (re)generated the payload — the
         # publisher/native-publisher captured an empty bind mount at boot. Restart
@@ -882,33 +895,30 @@ cmd_ensure() {
         run_compose restart publisher cvmfs-native-publisher >/dev/null 2>&1 || true
     fi
 
-    # ── d. GOLDEN (best effort) ─────────────────────────────────────────────────
-    # The ingest/content tests compare a bits publish against the golden/smoke
-    # nested catalog. Seed it if absent. Failures here MUST NOT fail ensure — the
-    # affected tests skip cleanly when golden is missing.
+    # ── d. STRUCTURE (best effort) ──────────────────────────────────────────────
+    # Seed the nested-catalog structure (creates the empty golden/smoke catalog).
+    # bits is the default/monitored path and publishes into its own parent chain,
+    # so this is fast. The native-ingest GOLDEN BASELINE is deliberately NOT
+    # generated here — native ingest is slow (gateway commit ~minutes) and would
+    # wedge the gateway in the routine path. Generate it explicitly + occasionally
+    # with `make baseline`. content/ingest tests skip cleanly without a baseline.
     if ! _have_golden_catalog; then
-        info "ensuring: golden (golden/smoke nested catalog absent)"
+        info "ensuring: bootstrap (nested-catalog structure absent)"
         did_work=true
-        if bash "$0" bootstrap; then
-            # Native-ingest the canonical payload into golden/smoke so the content
-            # test has real content to compare against. Best effort.
-            if [[ -s "$payload" ]]; then
-                run_compose exec -T -e INGEST_BASE=golden/smoke \
-                    cvmfs-native-publisher /scripts/native-smoke.sh \
-                    >/dev/null 2>&1 \
-                    || warn "golden native-ingest failed - content/ingest tests will skip"
-            fi
-        else
-            warn "bootstrap failed — golden tree unavailable; ingest/content tests will skip"
-        fi
+        bash "$0" bootstrap \
+            || warn "bootstrap failed — ingest/content tests will skip until 'make baseline'"
     fi
 
-    ok "testbed ready"
+    # Record/refresh the active config so the console reflects the current method
+    # even when the stack was already up (no start call this run).
+    _write_testbed_config
+    ok "testbed ready (method=${PUBLISH_METHOD} wss=${USE_WSS})"
 }
 
 cmd_test() {
-    section "Running smoke test (method: ${PUBLISH_METHOD})"
     load_env
+    _resolve_method   # inherit start-time method unless --method was given
+    section "Running smoke test (method: ${PUBLISH_METHOD})"
     _ensure_payload
     case "$PUBLISH_METHOD" in
         bits)
@@ -1196,6 +1206,8 @@ cmd_clean() {
     warn "Run 'clean --purge-snapshot' to also delete it."
     warn ".env is PRESERVED so services can restart with the same credentials."
     warn "Run 'clean --purge-env' (or 'make cleanall') to also delete .env."
+    warn "Performance history (data/test-results.ndjson) is ALWAYS PRESERVED."
+    warn "Run 'clean --purge-history' to also wipe past performance measurements."
     local _purge_snapshot=false
     local _purge_env=false
     # Check POSITIONAL_ARGS (set by top-level arg parsing) AND function arguments
@@ -1227,6 +1239,21 @@ cmd_clean() {
             info "Preserving snapshot: $(basename "$_snap")"
         fi
 
+        # Preserve the performance history (test metrics) across clean so the
+        # console can still present past measurements after a wipe + rebuild.
+        # Always preserved unless --purge-history is given.
+        local _purge_history=false
+        for _arg in "${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}" "$@"; do
+            [[ "$_arg" == "--purge-history" ]] && _purge_history=true
+        done
+        local _hist="${TESTBED_ROOT}/data/test-results.ndjson"
+        local _hist_bak=""
+        if [[ -f "$_hist" ]] && ! $_purge_history; then
+            _hist_bak=$(mktemp)
+            cp "$_hist" "$_hist_bak"
+            info "Preserving performance history ($(wc -l < "$_hist" | tr -d ' ') records)"
+        fi
+
         for subdir in data config repos; do
             if [[ -d "$TESTBED_ROOT/$subdir" ]]; then
                 info "Removing $TESTBED_ROOT/$subdir ..."
@@ -1246,6 +1273,12 @@ cmd_clean() {
             mkdir -p "$(dirname "$_snap")"
             mv "$_snap_bak" "$_snap"
             ok "Snapshot preserved at: $_snap"
+        fi
+        # Restore the preserved performance history into a fresh data/ dir.
+        if [[ -n "$_hist_bak" ]]; then
+            mkdir -p "${TESTBED_ROOT}/data"
+            mv "$_hist_bak" "$_hist"
+            ok "Performance history preserved: data/test-results.ndjson"
         fi
         ok "State removed"
     else
@@ -2005,36 +2038,28 @@ _suite_run_one() {
             # VERIFY (do not re-run) the native cvmfs_server ingest. cmd_ensure is
             # the SINGLE place that native-ingests the canonical payload into the
             # golden/smoke nested catalog — exactly once. cvmfs_swissknife ingest
-            # is NOT idempotent: ingesting again into the already-populated golden
-            # nested catalog aborts with
-            #   WritableCatalog::AddEntry ... Assertion 'retval' failed (catalog_rw.cc:186)
-            # (the exact failure seen with `cvmfs_swissknife ingest ... -B golden/smoke`).
-            # So this test instead confirms that the golden ensure produced via the
-            # native ingest path is a valid, readable publish: golden/smoke present,
-            # populated, and its catalog has a reasonable entry count.
-            #
-            # Uses the SAME golden-presence detection as the content test
-            # (_suite_have_golden → _have_golden_catalog) for consistency.
+            # is NOT idempotent (re-ingest aborts at catalog_rw.cc:186), and unlike
+            # bits it cannot create a fresh nested-catalog path on the fly (a
+            # brand-new top-level path hangs waiting on catalog setup). So this
+            # test confirms the golden ingest produced a valid, populated publish.
             if ! _stack_healthy; then
                 _RT_MSG="skipped: stack not running (run: make ensure)"; rm -f "$log"; return 2
             fi
             if ! _suite_have_golden; then
                 _RT_MSG="skipped: golden/smoke nested catalog absent (bootstrap)"; rm -f "$log"; return 2
             fi
-            # Read the entry count of the golden/smoke nested catalog out of the
-            # CAS (no re-ingest, no client-mount dependency). The canonical
-            # payload yields well over 100 catalog entries; a populated golden
-            # therefore has count > 100, while an empty/absent one yields 0.
             local _gn; _gn="$(_golden_entry_count)"
             _gn="${_gn//[^0-9]/}"; _gn="${_gn:-0}"
             _RT_METRICS="$(printf '{"path":"golden/smoke","entries":%d,"verified":%s}' \
                 "$_gn" "$([[ $_gn -gt 100 ]] && echo true || echo false)")"
             if [[ "$_gn" -gt 100 ]]; then
-                rc=0
-                _RT_MSG="native ingest golden verified (golden/smoke, ${_gn} entries)"
+                rc=0; _RT_MSG="native ingest baseline verified (golden/smoke, ${_gn} entries)"
             else
-                rc=1
-                _RT_MSG="golden/smoke under-populated (${_gn} entries) — ensure golden setup ran"
+                # bits is the default/monitored path; the native-ingest baseline is
+                # an OPTIONAL, occasional reference (it's slow). A missing baseline
+                # is NOT a routine failure — skip cleanly. Generate via: make baseline
+                _RT_MSG="skipped: no native-ingest baseline (run: make baseline)"
+                rm -f "$log"; return 2
             fi
             rm -f "$log"
             ;;
@@ -2119,6 +2144,34 @@ _suite_run_one() {
     _RT_METHOD="$method"
     rm -f "$log"
     [[ $rc -eq 0 ]] && return 0 || return 1
+}
+
+cmd_baseline() {
+    section "Generating native-ingest baseline (golden/smoke)"
+    load_env
+    if ! _stack_healthy; then error "stack not running — run: make ensure"; exit 1; fi
+    local _gn; _gn="$(_golden_entry_count)"; _gn="${_gn//[^0-9]/}"; _gn="${_gn:-0}"
+    if [[ "$_gn" -gt 100 ]]; then
+        ok "Baseline already present (golden/smoke, ${_gn} entries)."
+        info "To regenerate, run 'clean' first (the snapshot keeps it across restarts)."
+        return 0
+    fi
+    _ensure_payload
+    warn "Native cvmfs_server ingest is the SLOW reference path (commit may take minutes)."
+    info "Ingesting the canonical payload into golden/smoke ..."
+    if run_compose exec -T -e INGEST_BASE=golden/smoke cvmfs-native-publisher /scripts/native-smoke.sh; then
+        local _n; _n="$(_golden_entry_count)"; _n="${_n//[^0-9]/}"; _n="${_n:-0}"
+        if [[ "$_n" -gt 100 ]]; then
+            ok "Baseline generated (golden/smoke, ${_n} entries)."
+            info "Snapshotting so the baseline persists ..."
+            cmd_snapshot
+        else
+            error "Baseline ingest ran but golden/smoke is still under-populated (${_n} entries)."
+            exit 1
+        fi
+    else
+        error "Native ingest baseline failed."; exit 1
+    fi
 }
 
 cmd_suite() {
@@ -2241,6 +2294,7 @@ case "$CMD" in
     restore)        cmd_restore ;;
     test)           cmd_test ;;
     suite)          cmd_suite ;;
+    baseline)       cmd_baseline ;;
     stresstest)     cmd_stresstest ;;
     upload-filelist) cmd_upload_filelist ;;
     catdump)        cmd_catdump ;;

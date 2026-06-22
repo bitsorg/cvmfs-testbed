@@ -94,18 +94,23 @@ N ?= 10
 C ?=
 _CONCURRENCY := $(if $(C),--concurrency $(C),)
 
-# Set WSS=1 to enable the ADR-0001 pull distribution over the embedded
-# MQTT-over-WSS broker (no mosquitto).  Example:
-#   make WSS=1 start           # start testbed with the embedded-broker overlay
-#   make start-wss             # convenience alias (same as WSS=1 start)
-#   make test-pull-wss         # end-to-end pull test over wss
-WSS ?= 0
-_WSS := $(if $(filter 1 yes true,$(WSS)),--wss,)
+# The ADR-0001 pull distribution (embedded MQTT-over-WSS broker) is ON BY
+# DEFAULT — the testbed relies on it.  Set WSS=0 to start the bare base stack.
+#   make start                 # pull overlay on (default)
+#   make WSS=0 start           # bare stack, no pull overlay
+WSS ?= 1
+_WSS := $(if $(filter 0 no false,$(WSS)),--no-wss,)
+
+# Publishing method recorded at start time (bits|ingest).  test/stresstest default
+# to it, and the web console shows it read-only.  Switch modes to compare perf:
+#   make start METHOD=ingest   # run the testbed in ingest publishing mode
+METHOD ?= bits
+_METHOD := $(if $(METHOD),--method $(METHOD),)
 
 # ── Default goal ──────────────────────────────────────────────────────────────
 .DEFAULT_GOAL := all
 
-.PHONY: all build install init start start-wss ensure bootstrap snapshot restore redeploy clean cleanall \
+.PHONY: all build install init start start-wss ensure bootstrap snapshot restore redeploy clean cleanall baseline \
         test test-suite test-ingest test-bits test-pull test-pull-wss pull-status \
         test-chunking test-content test-stress \
         stresstest stresstest-ingest \
@@ -161,11 +166,10 @@ init: $(MAKE_DIR)/init
 # Depends on init having run.  auto-restores snapshot if repo is absent.
 start: $(MAKE_DIR)/init
 	@echo "── Starting testbed ──────────────────────────────────────────────────"
-	bash "$(TESTBED)" start $(_WSS)
+	bash "$(TESTBED)" start $(_WSS) $(_METHOD)
 
-start-wss: $(MAKE_DIR)/init
-	@echo "── Starting testbed with the embedded MQTT-over-WSS broker overlay ────"
-	bash "$(TESTBED)" start --wss
+# Back-compat alias — the pull overlay is now on by default, so this == start.
+start-wss: start
 
 # ── ensure ────────────────────────────────────────────────────────────────────
 # Idempotent readiness gate: bring up whatever is missing (init, canonical
@@ -185,7 +189,7 @@ start-wss: $(MAKE_DIR)/init
 # brought the live stack to that state).  Order-only dep on $(MAKE_DIR) so the
 # directory exists before we touch into it.
 ensure: | $(MAKE_DIR)
-	bash "$(TESTBED)" ensure --wss
+	bash "$(TESTBED)" ensure $(_WSS) $(_METHOD)
 	@touch $(MAKE_DIR)/init $(MAKE_DIR)/bootstrap
 
 # ── bootstrap ─────────────────────────────────────────────────────────────────
@@ -281,6 +285,14 @@ cleanall:
 # TESTS is passed straight through to `testbed.sh suite`.
 test: | ensure
 	bash "$(TESTBED)" suite $(TESTS)
+
+# Generate the native-ingest REFERENCE BASELINE (golden/smoke).  bits is the
+# default/monitored publishing path; this is the slow, occasional native path used
+# only to create the reference the content/ingest tests + bits-vs-ingest chart
+# measure against.  Run once after setup; it is captured in the snapshot.
+#   make baseline
+baseline: | ensure
+	bash "$(TESTBED)" baseline
 
 # Individual smoke targets delegate to the suite so they ALSO log a
 # test-results.ndjson record (keeping history complete).
