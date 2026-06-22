@@ -866,6 +866,13 @@
         <div id="ul-method-hint" style="font-size:11px;color:var(--c-muted);margin-top:4px">cvmfs-prepub at :8080</div>
       </div>
     </div>
+    <div style="padding:0 16px 8px;font-size:13px">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input id="ul-clean-cas" type="checkbox" checked onchange="try{localStorage.setItem('ul-clean-cas',this.checked?'1':'0')}catch(_){}">
+        Clean CAS storage before run
+        <span class="muted" style="font-size:11px">— start from a clean baseline; uncheck to measure deduplication impact</span>
+      </label>
+    </div>
     <div style="padding:0 16px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <button id="ul-run-btn"   class="btn btn-primary" onclick="runUploadFilelist()">▶ Start Upload</button>
       <button id="ul-abort-btn" class="btn btn-danger"  onclick="abortUpload()" style="display:none">⏹ Stop</button>
@@ -2753,6 +2760,10 @@ function onUlMethodChange(){
 // Called on tab open — pre-scan with the default/saved directory
 async function refreshUploadFilelist(){
   const dirInput = $('ul-dir-input');
+  if(dirInput && !dirInput.value.trim()){
+    try{ const d=localStorage.getItem('ul-dir'); if(d) dirInput.value=d; }catch(_){}
+  }
+  try{ const cc=localStorage.getItem('ul-clean-cas'); const el=$('ul-clean-cas'); if(el && cc!==null) el.checked = cc!=='0'; }catch(_){}
   if(dirInput && dirInput.value.trim()) await scanUploadDir();
 }
 
@@ -2767,6 +2778,7 @@ async function scanUploadDir(){
   const recursive = $('ul-recursive')?.checked !== false;
   const dir       = (dirInput?.value || '').trim();
   if(!dir) return;
+  try{ localStorage.setItem('ul-dir', dir); }catch(_){}
 
   const msg    = $('ul-scan-msg');
   const wrap   = $('ul-filelist-table-wrap');
