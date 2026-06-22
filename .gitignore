@@ -16,3 +16,13 @@ cvmfs-testbed/
 *.swp
 *~
 data/payload/
+repo-seed.tar.gz
+/data/
+/repos/
+/software/
+/scripts/software/
+/bits-console/
+__pycache__/
+*.pyc
+/scripts/testbed-console-cert.pem
+/scripts/testbed-console-key.pem
