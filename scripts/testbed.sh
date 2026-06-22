@@ -211,7 +211,7 @@ while [[ $# -gt 0 ]]; do
         --dir|--filelist|--ingest-path|--concurrency|-j|--run-log|\
         --prepub-url|--repo|--token)
             POSITIONAL_ARGS+=("$1" "${2:-}"); shift 2 ;;
-        --no-recursive)
+        --no-recursive|--purge-snapshot|--purge-env|--purge-history)
             POSITIONAL_ARGS+=("$1"); shift ;;
         --*)  error "Unknown option: $1"; exit 1 ;;
         *)    POSITIONAL_ARGS+=("$1");                           shift ;;
@@ -1192,6 +1192,8 @@ cmd_clean() {
     warn "Run 'clean --purge-snapshot' to also delete it."
     warn ".env is PRESERVED so services can restart with the same credentials."
     warn "Run 'clean --purge-env' (or 'make cleanall') to also delete .env."
+    warn "Performance history (data/test-results.ndjson) is ALWAYS PRESERVED."
+    warn "Run 'clean --purge-history' to also wipe past performance measurements."
     local _purge_snapshot=false
     local _purge_env=false
     # Check POSITIONAL_ARGS (set by top-level arg parsing) AND function arguments
@@ -1223,6 +1225,19 @@ cmd_clean() {
             info "Preserving snapshot: $(basename "$_snap")"
         fi
 
+        # Preserve performance history across clean (always, unless --purge-history).
+        local _purge_history=false
+        for _arg in "${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}" "$@"; do
+            [[ "$_arg" == "--purge-history" ]] && _purge_history=true
+        done
+        local _hist="${TESTBED_ROOT}/data/test-results.ndjson"
+        local _hist_bak=""
+        if [[ -f "$_hist" ]] && ! $_purge_history; then
+            _hist_bak=$(mktemp)
+            cp "$_hist" "$_hist_bak"
+            info "Preserving performance history ($(wc -l < "$_hist" | tr -d ' ') records)"
+        fi
+
         for subdir in data config repos; do
             if [[ -d "$TESTBED_ROOT/$subdir" ]]; then
                 info "Removing $TESTBED_ROOT/$subdir ..."
@@ -1242,6 +1257,11 @@ cmd_clean() {
             mkdir -p "$(dirname "$_snap")"
             mv "$_snap_bak" "$_snap"
             ok "Snapshot preserved at: $_snap"
+        fi
+        if [[ -n "$_hist_bak" ]]; then
+            mkdir -p "${TESTBED_ROOT}/data"
+            mv "$_hist_bak" "$_hist"
+            ok "Performance history preserved: data/test-results.ndjson"
         fi
         ok "State removed"
     else
