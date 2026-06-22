@@ -606,7 +606,9 @@ cmd_restore() {
 
     # Restore broad write permissions so container services (running as non-root)
     # can write to the CAS and spool.  Matches what init.sh sets after mkfs.
-    chmod -R 777 "${TESTBED_ROOT}/repos/${REPO_NAME}"
+    # Skip upstream-scratch (gateway-owned, possibly an active bind mount) — a
+    # recursive chmod there fails with EPERM.
+    find "${TESTBED_ROOT}/repos/${REPO_NAME}" -path '*/upstream-scratch*' -prune -o -exec chmod 777 {} + 2>/dev/null || true
 
     ok "Repository restored from snapshot."
 }

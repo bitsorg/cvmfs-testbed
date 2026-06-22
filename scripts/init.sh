@@ -810,10 +810,13 @@ else
                     esac
                 fi
             done
-            sudo chown -R "$USER:$(id -gn)" "$TESTBED_ROOT/repos/$REPO_NAME"
+            sudo chown -R "$USER:$(id -gn)" "$TESTBED_ROOT/repos/$REPO_NAME" 2>/dev/null || true
             # Make repo tree world-writable so container services (cvmfs-prepub,
             # gateway) running as non-root users can write to the CAS and spool.
-            chmod -R 777 "$TESTBED_ROOT/repos/$REPO_NAME"
+            # SKIP upstream-scratch — the gateway owns it (root) and it may be an
+            # active bind mount, so a recursive chmod there fails with EPERM and
+            # aborts init. It is set to 755 separately where it is (re)created.
+            find "$TESTBED_ROOT/repos/$REPO_NAME" -path '*/upstream-scratch*' -prune -o -exec chmod 777 {} + 2>/dev/null || true
 
             # Copy server.conf so cvmfs_receiver can read it inside the gateway
             # container.  cvmfs_receiver::GetParamsFromFile() reads:
