@@ -38,7 +38,6 @@
   <div class="nav-item" onclick="showTab('tests')" id="nav-tests"><span class="icon"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span> Tests<span class="nav-badge info" id="badge-tests" style="display:none"></span></div>
   <div class="nav-item" onclick="showTab('jobs')" id="nav-jobs"><span class="icon"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></span> Jobs<span class="nav-badge info" id="badge-jobs"></span></div>
   <div class="nav-item" onclick="showTab('upload')" id="nav-upload"><span class="icon"><svg viewBox="0 0 24 24"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg></span> Upload<span class="nav-badge info" id="badge-upload" style="display:none"></span></div>
-  <div class="nav-item" onclick="showTab('stratum0')" id="nav-stratum0"><span class="icon"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span> Status</div>
 
   <div class="nav-section">Config</div>
   <div class="nav-item" onclick="showTab('settings')" id="nav-settings"><span class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span> Settings</div>
@@ -57,11 +56,169 @@
   <div class="page-title">Dashboard</div>
   <div class="page-sub" id="dash-sub">Loading…</div>
 
-  <div class="box" style="padding:20px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <span class="box-title">Architecture</span>
-      <span class="page-sub" id="topology-sub" style="margin:0;font-size:11px">Testbed architecture. MQTT elements (greyed) are not configured — start with --mqtt to enable.</span>
+  <!-- Catalog (collapsed) — repo state + S1 replication lag (moved from Status) -->
+  <div class="box">
+    <div class="box-header" style="cursor:pointer" onclick="toggleCollapse('dash-catalog-body','dash-catalog-chevron')">
+      <span class="box-title">Catalog</span>
+      <span class="muted" style="font-size:11px;margin-left:8px">Repository state &amp; Stratum-1 replication lag</span>
+      <span id="dash-catalog-chevron" style="margin-left:auto;font-size:13px;color:var(--c-muted);transition:transform .2s;transform:rotate(-90deg)">▼</span>
     </div>
+    <div id="dash-catalog-body" class="box-pad" style="display:none">
+      <table style="border-collapse:collapse;font-size:12px;max-width:780px;width:100%">
+    <thead>
+      <tr style="color:var(--c-muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px">
+        <th style="text-align:left;padding:4px 10px 4px 0;font-weight:600">Node</th>
+        <th style="text-align:left;padding:4px 10px;font-weight:600">Root hash</th>
+        <th style="text-align:right;padding:4px 10px;font-weight:600">Rev</th>
+        <th style="text-align:left;padding:4px 10px;font-weight:600">Published at</th>
+        <th style="text-align:right;padding:4px 0;font-weight:600">Lag vs s0</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="padding:5px 10px 5px 0;font-weight:700;white-space:nowrap">stratum0</td>
+        <td style="padding:5px 10px"><div class="mono" id="s0-hash" style="font-size:10px;word-break:break-all;max-width:200px">–</div></td>
+        <td style="padding:5px 10px;text-align:right;font-weight:600;color:var(--c-info)" id="s0-rev">–</td>
+        <td style="padding:5px 10px;white-space:nowrap" id="s0-ts">–</td>
+        <td style="padding:5px 0;text-align:right;color:var(--c-muted);font-size:11px">—</td>
+      </tr>
+      <tr style="border-top:1px solid var(--c-border)">
+        <td style="padding:5px 10px 5px 0;font-weight:700;white-space:nowrap;color:#1a7f37">stratum1-a</td>
+        <td style="padding:5px 10px"><div id="s1a-hash-icon" style="font-size:11px;color:var(--c-muted)">–</div></td>
+        <td style="padding:5px 10px;text-align:right;font-weight:600;color:var(--c-info)" id="s1a-rev">–</td>
+        <td style="padding:5px 10px;white-space:nowrap" id="s1a-ts">–</td>
+        <td style="padding:5px 0;text-align:right;font-weight:600" id="s1a-lag">–</td>
+      </tr>
+      <tr style="border-top:1px solid var(--c-border)">
+        <td style="padding:5px 10px 5px 0;font-weight:700;white-space:nowrap;color:#1a7f37">stratum1-b</td>
+        <td style="padding:5px 10px"><div id="s1b-hash-icon" style="font-size:11px;color:var(--c-muted)">–</div></td>
+        <td style="padding:5px 10px;text-align:right;font-weight:600;color:var(--c-info)" id="s1b-rev">–</td>
+        <td style="padding:5px 10px;white-space:nowrap" id="s1b-ts">–</td>
+        <td style="padding:5px 0;text-align:right;font-weight:600" id="s1b-lag">–</td>
+      </tr>
+    </tbody>
+  </table>
+    </div>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="card-label">Services up</div><div class="card-value blue" id="c-svc">–</div></div>
+    <div class="card"><div class="card-label">Active jobs</div><div class="card-value orange" id="c-active">–</div></div>
+    <div class="card"><div class="card-label">Jobs today</div><div class="card-value blue" id="c-today">–</div></div>
+    <div class="card"><div class="card-label">Avg publish</div><div class="card-value green" id="c-avg-pub">–</div><div class="card-sub">seconds</div></div>
+    <div class="card"><div class="card-label">Last root hash</div><div class="card-value mono" id="c-hash" style="font-size:12px;word-break:break-all">–</div><div class="card-sub" id="c-hash-age"></div></div>
+    <div class="card"><div class="card-label">S1 peers</div><div class="card-value" id="c-s1">–</div></div>
+  </div>
+
+  <!-- ── Publish-chain diagram ────────────────────────────────────── -->
+  <div class="box" style="overflow-x:auto">
+    <div class="box-header">
+      <span class="box-title">Publish chain</span>
+      <span id="sd-last-update" style="font-size:11px;color:var(--c-muted);margin-left:auto"></span>
+    </div>
+    <div class="box-pad" style="padding:16px 12px">
+      <svg id="status-diagram" viewBox="0 0 860 305"
+           style="width:100%;min-width:600px;display:block;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12px">
+        <defs>
+          <marker id="sd-ar" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
+            <polygon points="0 0,8 3,0 6" fill="#586069"/>
+          </marker>
+        </defs>
+
+        <!-- ── cvmfs-prepub node ─────────────────────────────────── -->
+        <rect id="sd-rect-prepub" x="10" y="88" width="152" height="96" rx="6"
+              fill="#ddf4ff" stroke="#a3c8f5" stroke-width="2"/>
+        <text x="86" y="109" text-anchor="middle" font-weight="700" font-size="13" fill="#0550ae">cvmfs-prepub</text>
+        <text x="86" y="125" text-anchor="middle" font-size="10" fill="#6a737d">Publisher · :8080</text>
+        <text id="sd-health-prepub" x="86" y="147" text-anchor="middle" font-size="12" font-weight="600" fill="#8b949e">● checking…</text>
+        <text id="sd-ms-prepub"     x="86" y="162" text-anchor="middle" font-size="10" fill="#6a737d"></text>
+
+        <!-- ── arrow: prepub → gateway ─────────────────────────── -->
+        <line x1="162" y1="136" x2="208" y2="136" stroke="#586069" stroke-width="1.5" marker-end="url(#sd-ar)"/>
+
+        <!-- ── gateway node ─────────────────────────────────────── -->
+        <rect id="sd-rect-gateway" x="210" y="88" width="152" height="96" rx="6"
+              fill="#fff" stroke="#e1e4e8" stroke-width="2"/>
+        <text x="286" y="109" text-anchor="middle" font-weight="700" font-size="13" fill="#24292e">gateway</text>
+        <text x="286" y="125" text-anchor="middle" font-size="10" fill="#6a737d">Lease manager · :4929</text>
+        <text id="sd-health-gateway" x="286" y="147" text-anchor="middle" font-size="12" font-weight="600" fill="#8b949e">● checking…</text>
+        <text id="sd-ms-gateway"     x="286" y="162" text-anchor="middle" font-size="10" fill="#6a737d"></text>
+
+        <!-- ── arrow: gateway → stratum0 ─────────────────────── -->
+        <line x1="362" y1="136" x2="408" y2="136" stroke="#586069" stroke-width="1.5" marker-end="url(#sd-ar)"/>
+
+        <!-- ── stratum0 node (taller — carries host metrics) ──── -->
+        <rect id="sd-rect-stratum0" x="410" y="60" width="158" height="190" rx="6"
+              fill="#fff3cd" stroke="#fcd34d" stroke-width="2"/>
+        <text x="489" y="82"  text-anchor="middle" font-weight="700" font-size="13" fill="#854d0e">stratum0</text>
+        <text x="489" y="98"  text-anchor="middle" font-size="10" fill="#6a737d">Content server · :8090</text>
+        <text id="sd-health-stratum0" x="489" y="119" text-anchor="middle" font-size="12" font-weight="600" fill="#8b949e">● checking…</text>
+        <text id="sd-ms-stratum0"     x="489" y="134" text-anchor="middle" font-size="10" fill="#6a737d"></text>
+        <!-- host-metrics sub-section inside node -->
+        <line x1="422" y1="142" x2="556" y2="142" stroke="#f0d060" stroke-width="1"/>
+        <text x="425" y="155" font-size="9" fill="#9a7a30" font-weight="600">HOST METRICS</text>
+        <text id="sd-m-cpu"  x="425" y="169" font-size="10" fill="#24292e">CPU: –</text>
+        <text id="sd-m-temp" x="425" y="182" font-size="10" fill="#24292e">Temp: –</text>
+        <text id="sd-m-mem"  x="425" y="195" font-size="10" fill="#24292e">Mem: –</text>
+        <text id="sd-m-disk" x="425" y="208" font-size="10" fill="#24292e">Disk: –</text>
+        <text id="sd-m-dio"  x="425" y="221" font-size="10" fill="#24292e">Disk I/O: –</text>
+        <text id="sd-m-net"  x="425" y="234" font-size="10" fill="#24292e">Net: –</text>
+
+        <!-- ── arrow: stratum0 → s1a ────────────────────────── -->
+        <line id="sd-arrow-s1a" x1="568" y1="100" x2="628" y2="68" stroke="#586069" stroke-width="1.5" marker-end="url(#sd-ar)"/>
+        <!-- net I/O label on replication link s1a -->
+        <text id="sd-net-link-label" x="596" y="74" text-anchor="middle" font-size="9" fill="#586069"></text>
+
+        <!-- ── arrow: stratum0 → s1b ────────────────────────── -->
+        <line id="sd-arrow-s1b" x1="568" y1="200" x2="628" y2="210" stroke="#586069" stroke-width="1.5" marker-end="url(#sd-ar)"/>
+        <!-- net I/O label on replication link s1b -->
+        <text id="sd-net-link-s1b-label" x="596" y="198" text-anchor="middle" font-size="9" fill="#586069"></text>
+
+        <!-- ── stratum1-a node ──────────────────────────────── -->
+        <rect id="sd-rect-s1a" x="630" y="18" width="155" height="114" rx="6"
+              fill="#dcffe4" stroke="#a3d9a5" stroke-width="2"/>
+        <text x="707" y="40"  text-anchor="middle" font-weight="700" font-size="13" fill="#1a7f37">stratum1-a</text>
+        <text x="707" y="56"  text-anchor="middle" font-size="10" fill="#6a737d">Replica · :9101</text>
+        <text id="sd-health-s1a" x="707" y="77" text-anchor="middle" font-size="12" font-weight="600" fill="#8b949e">● checking…</text>
+        <text id="sd-ms-s1a"     x="707" y="92" text-anchor="middle" font-size="10" fill="#6a737d"></text>
+        <text id="sd-disk-s1a"   x="707" y="108" text-anchor="middle" font-size="9" fill="#6a737d">Disk: –</text>
+
+        <!-- ── stratum1-b node ──────────────────────────────── -->
+        <rect id="sd-rect-s1b" x="630" y="160" width="155" height="114" rx="6"
+              fill="#dcffe4" stroke="#a3d9a5" stroke-width="2"/>
+        <text x="707" y="182" text-anchor="middle" font-weight="700" font-size="13" fill="#1a7f37">stratum1-b</text>
+        <text x="707" y="198" text-anchor="middle" font-size="10" fill="#6a737d">Replica · :9102</text>
+        <text id="sd-health-s1b" x="707" y="219" text-anchor="middle" font-size="12" font-weight="600" fill="#8b949e">● checking…</text>
+        <text id="sd-ms-s1b"     x="707" y="234" text-anchor="middle" font-size="10" fill="#6a737d"></text>
+        <text id="sd-disk-s1b"   x="707" y="250" text-anchor="middle" font-size="9" fill="#6a737d">Disk: –</text>
+
+        <!-- ── legend ─────────────────────────────────────────── -->
+        <text x="10" y="292" font-size="10" fill="#6a737d">● green = HTTP OK  ● orange = HTTP error  ● red = critical  · host metrics shown on stratum0 node (all services share the same host)</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ── S1 Distribution Backlog ────────────────────────────────────────── -->
+  <div class="box" id="box-s1-backlog">
+    <div class="box-header">
+      <span class="box-title">S1 Distribution Backlog</span>
+      <span class="muted" style="font-size:11px;margin-left:8px">Objects pending push to Stratum 1 replicas</span>
+      <button class="btn btn-outline btn-sm" onclick="refreshS1Backlog()" style="margin-left:auto">↻</button>
+    </div>
+    <div class="box-pad">
+      <div id="s1-backlog-content">
+        <div style="color:var(--c-muted);font-size:12px">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="box">
+    <div class="box-header" style="cursor:pointer" onclick="toggleCollapse('dash-arch-body','dash-arch-chevron')">
+      <span class="box-title">Architecture</span>
+      <span class="page-sub" id="topology-sub" style="margin:0 0 0 8px;font-size:11px">Testbed architecture.</span>
+      <span id="dash-arch-chevron" style="margin-left:auto;font-size:13px;color:var(--c-muted);transition:transform .2s;transform:rotate(-90deg)">▼</span>
+    </div>
+    <div id="dash-arch-body" style="display:none;padding:8px 0 0">
     <svg viewBox="0 0 860 540" xmlns="http://www.w3.org/2000/svg"
          style="width:100%;max-width:900px;display:block;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12px">
       <rect width="860" height="540" fill="#f6f8fa" rx="8"/>
@@ -156,24 +313,24 @@
       <text x="126" y="511" font-size="10" fill="#586069">publish flow</text>
     </svg>
   </div>
-
-  <div class="cards">
-    <div class="card"><div class="card-label">Services up</div><div class="card-value blue" id="c-svc">–</div></div>
-    <div class="card"><div class="card-label">Active jobs</div><div class="card-value orange" id="c-active">–</div></div>
-    <div class="card"><div class="card-label">Jobs today</div><div class="card-value blue" id="c-today">–</div></div>
-    <div class="card"><div class="card-label">Avg publish</div><div class="card-value green" id="c-avg-pub">–</div><div class="card-sub">seconds</div></div>
-    <div class="card"><div class="card-label">Last root hash</div><div class="card-value mono" id="c-hash" style="font-size:12px;word-break:break-all">–</div><div class="card-sub" id="c-hash-age"></div></div>
-    <div class="card"><div class="card-label">S1 peers</div><div class="card-value" id="c-s1">–</div></div>
   </div>
 
   <div class="box">
-    <div class="box-header"><span class="box-title">Services</span>
-      <button class="btn btn-outline btn-sm" onclick="refreshServices()">↻ Recheck</button>
+    <div class="box-header" style="cursor:pointer" onclick="toggleCollapse('dash-services-body','dash-services-chevron')">
+      <span class="box-title">Services</span>
+      <button class="btn btn-outline btn-sm" onclick="event.stopPropagation();refreshServices()">↻ Recheck</button>
+      <span id="dash-services-chevron" style="margin-left:auto;font-size:13px;color:var(--c-muted);transition:transform .2s;transform:rotate(-90deg)">▼</span>
     </div>
+    <div id="dash-services-body" style="display:none">
     <table><thead><tr><th>Service</th><th>Role</th><th>Proxy path</th><th>Status</th><th>ms</th><th></th></tr></thead>
     <tbody id="svc-tbody"><tr><td colspan="6" class="loading"><span class="spinner"></span></td></tr></tbody></table>
   </div>
+  </div>
 
+  <!-- hidden: keep s0-url-label for MQTT polling compatibility -->
+  <code id="s0-url-label" style="display:none"></code>
+  <!-- hidden: keep s0-raw for any legacy references -->
+  <div id="s0-raw" style="display:none"></div>
 </div>
 
 <!-- ═══════════════════════════ MONITORING ══════════════════════════════ -->
@@ -731,156 +888,6 @@
 </div>
 
 <!-- ═══════════════════════════ STATUS ════════════════════════════════ -->
-<div id="tab-stratum0" class="tab-content">
-  <div class="page-title">Status</div>
-  <div class="page-sub">Publish-chain health — live status of each service and host metrics. <button class="btn btn-outline btn-sm" onclick="refreshStatusDiagram()" style="margin-left:8px">↻ Refresh</button></div>
-
-  <!-- ── Repo state + stratum1 replication lag ───────────────────── -->
-  <table style="border-collapse:collapse;font-size:12px;max-width:780px;width:100%">
-    <thead>
-      <tr style="color:var(--c-muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px">
-        <th style="text-align:left;padding:4px 10px 4px 0;font-weight:600">Node</th>
-        <th style="text-align:left;padding:4px 10px;font-weight:600">Root hash</th>
-        <th style="text-align:right;padding:4px 10px;font-weight:600">Rev</th>
-        <th style="text-align:left;padding:4px 10px;font-weight:600">Published at</th>
-        <th style="text-align:right;padding:4px 0;font-weight:600">Lag vs s0</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td style="padding:5px 10px 5px 0;font-weight:700;white-space:nowrap">stratum0</td>
-        <td style="padding:5px 10px"><div class="mono" id="s0-hash" style="font-size:10px;word-break:break-all;max-width:200px">–</div></td>
-        <td style="padding:5px 10px;text-align:right;font-weight:600;color:var(--c-info)" id="s0-rev">–</td>
-        <td style="padding:5px 10px;white-space:nowrap" id="s0-ts">–</td>
-        <td style="padding:5px 0;text-align:right;color:var(--c-muted);font-size:11px">—</td>
-      </tr>
-      <tr style="border-top:1px solid var(--c-border)">
-        <td style="padding:5px 10px 5px 0;font-weight:700;white-space:nowrap;color:#1a7f37">stratum1-a</td>
-        <td style="padding:5px 10px"><div id="s1a-hash-icon" style="font-size:11px;color:var(--c-muted)">–</div></td>
-        <td style="padding:5px 10px;text-align:right;font-weight:600;color:var(--c-info)" id="s1a-rev">–</td>
-        <td style="padding:5px 10px;white-space:nowrap" id="s1a-ts">–</td>
-        <td style="padding:5px 0;text-align:right;font-weight:600" id="s1a-lag">–</td>
-      </tr>
-      <tr style="border-top:1px solid var(--c-border)">
-        <td style="padding:5px 10px 5px 0;font-weight:700;white-space:nowrap;color:#1a7f37">stratum1-b</td>
-        <td style="padding:5px 10px"><div id="s1b-hash-icon" style="font-size:11px;color:var(--c-muted)">–</div></td>
-        <td style="padding:5px 10px;text-align:right;font-weight:600;color:var(--c-info)" id="s1b-rev">–</td>
-        <td style="padding:5px 10px;white-space:nowrap" id="s1b-ts">–</td>
-        <td style="padding:5px 0;text-align:right;font-weight:600" id="s1b-lag">–</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <!-- ── Publish-chain diagram ────────────────────────────────────── -->
-  <div class="box" style="overflow-x:auto">
-    <div class="box-header">
-      <span class="box-title">Publish chain</span>
-      <span id="sd-last-update" style="font-size:11px;color:var(--c-muted);margin-left:auto"></span>
-    </div>
-    <div class="box-pad" style="padding:16px 12px">
-      <svg id="status-diagram" viewBox="0 0 860 305"
-           style="width:100%;min-width:600px;display:block;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12px">
-        <defs>
-          <marker id="sd-ar" markerWidth="8" markerHeight="6" refX="6" refY="3" orient="auto">
-            <polygon points="0 0,8 3,0 6" fill="#586069"/>
-          </marker>
-        </defs>
-
-        <!-- ── cvmfs-prepub node ─────────────────────────────────── -->
-        <rect id="sd-rect-prepub" x="10" y="88" width="152" height="96" rx="6"
-              fill="#ddf4ff" stroke="#a3c8f5" stroke-width="2"/>
-        <text x="86" y="109" text-anchor="middle" font-weight="700" font-size="13" fill="#0550ae">cvmfs-prepub</text>
-        <text x="86" y="125" text-anchor="middle" font-size="10" fill="#6a737d">Publisher · :8080</text>
-        <text id="sd-health-prepub" x="86" y="147" text-anchor="middle" font-size="12" font-weight="600" fill="#8b949e">● checking…</text>
-        <text id="sd-ms-prepub"     x="86" y="162" text-anchor="middle" font-size="10" fill="#6a737d"></text>
-
-        <!-- ── arrow: prepub → gateway ─────────────────────────── -->
-        <line x1="162" y1="136" x2="208" y2="136" stroke="#586069" stroke-width="1.5" marker-end="url(#sd-ar)"/>
-
-        <!-- ── gateway node ─────────────────────────────────────── -->
-        <rect id="sd-rect-gateway" x="210" y="88" width="152" height="96" rx="6"
-              fill="#fff" stroke="#e1e4e8" stroke-width="2"/>
-        <text x="286" y="109" text-anchor="middle" font-weight="700" font-size="13" fill="#24292e">gateway</text>
-        <text x="286" y="125" text-anchor="middle" font-size="10" fill="#6a737d">Lease manager · :4929</text>
-        <text id="sd-health-gateway" x="286" y="147" text-anchor="middle" font-size="12" font-weight="600" fill="#8b949e">● checking…</text>
-        <text id="sd-ms-gateway"     x="286" y="162" text-anchor="middle" font-size="10" fill="#6a737d"></text>
-
-        <!-- ── arrow: gateway → stratum0 ─────────────────────── -->
-        <line x1="362" y1="136" x2="408" y2="136" stroke="#586069" stroke-width="1.5" marker-end="url(#sd-ar)"/>
-
-        <!-- ── stratum0 node (taller — carries host metrics) ──── -->
-        <rect id="sd-rect-stratum0" x="410" y="60" width="158" height="190" rx="6"
-              fill="#fff3cd" stroke="#fcd34d" stroke-width="2"/>
-        <text x="489" y="82"  text-anchor="middle" font-weight="700" font-size="13" fill="#854d0e">stratum0</text>
-        <text x="489" y="98"  text-anchor="middle" font-size="10" fill="#6a737d">Content server · :8090</text>
-        <text id="sd-health-stratum0" x="489" y="119" text-anchor="middle" font-size="12" font-weight="600" fill="#8b949e">● checking…</text>
-        <text id="sd-ms-stratum0"     x="489" y="134" text-anchor="middle" font-size="10" fill="#6a737d"></text>
-        <!-- host-metrics sub-section inside node -->
-        <line x1="422" y1="142" x2="556" y2="142" stroke="#f0d060" stroke-width="1"/>
-        <text x="425" y="155" font-size="9" fill="#9a7a30" font-weight="600">HOST METRICS</text>
-        <text id="sd-m-cpu"  x="425" y="169" font-size="10" fill="#24292e">CPU: –</text>
-        <text id="sd-m-temp" x="425" y="182" font-size="10" fill="#24292e">Temp: –</text>
-        <text id="sd-m-mem"  x="425" y="195" font-size="10" fill="#24292e">Mem: –</text>
-        <text id="sd-m-disk" x="425" y="208" font-size="10" fill="#24292e">Disk: –</text>
-        <text id="sd-m-dio"  x="425" y="221" font-size="10" fill="#24292e">Disk I/O: –</text>
-        <text id="sd-m-net"  x="425" y="234" font-size="10" fill="#24292e">Net: –</text>
-
-        <!-- ── arrow: stratum0 → s1a ────────────────────────── -->
-        <line id="sd-arrow-s1a" x1="568" y1="100" x2="628" y2="68" stroke="#586069" stroke-width="1.5" marker-end="url(#sd-ar)"/>
-        <!-- net I/O label on replication link s1a -->
-        <text id="sd-net-link-label" x="596" y="74" text-anchor="middle" font-size="9" fill="#586069"></text>
-
-        <!-- ── arrow: stratum0 → s1b ────────────────────────── -->
-        <line id="sd-arrow-s1b" x1="568" y1="200" x2="628" y2="210" stroke="#586069" stroke-width="1.5" marker-end="url(#sd-ar)"/>
-        <!-- net I/O label on replication link s1b -->
-        <text id="sd-net-link-s1b-label" x="596" y="198" text-anchor="middle" font-size="9" fill="#586069"></text>
-
-        <!-- ── stratum1-a node ──────────────────────────────── -->
-        <rect id="sd-rect-s1a" x="630" y="18" width="155" height="114" rx="6"
-              fill="#dcffe4" stroke="#a3d9a5" stroke-width="2"/>
-        <text x="707" y="40"  text-anchor="middle" font-weight="700" font-size="13" fill="#1a7f37">stratum1-a</text>
-        <text x="707" y="56"  text-anchor="middle" font-size="10" fill="#6a737d">Replica · :9101</text>
-        <text id="sd-health-s1a" x="707" y="77" text-anchor="middle" font-size="12" font-weight="600" fill="#8b949e">● checking…</text>
-        <text id="sd-ms-s1a"     x="707" y="92" text-anchor="middle" font-size="10" fill="#6a737d"></text>
-        <text id="sd-disk-s1a"   x="707" y="108" text-anchor="middle" font-size="9" fill="#6a737d">Disk: –</text>
-
-        <!-- ── stratum1-b node ──────────────────────────────── -->
-        <rect id="sd-rect-s1b" x="630" y="160" width="155" height="114" rx="6"
-              fill="#dcffe4" stroke="#a3d9a5" stroke-width="2"/>
-        <text x="707" y="182" text-anchor="middle" font-weight="700" font-size="13" fill="#1a7f37">stratum1-b</text>
-        <text x="707" y="198" text-anchor="middle" font-size="10" fill="#6a737d">Replica · :9102</text>
-        <text id="sd-health-s1b" x="707" y="219" text-anchor="middle" font-size="12" font-weight="600" fill="#8b949e">● checking…</text>
-        <text id="sd-ms-s1b"     x="707" y="234" text-anchor="middle" font-size="10" fill="#6a737d"></text>
-        <text id="sd-disk-s1b"   x="707" y="250" text-anchor="middle" font-size="9" fill="#6a737d">Disk: –</text>
-
-        <!-- ── legend ─────────────────────────────────────────── -->
-        <text x="10" y="292" font-size="10" fill="#6a737d">● green = HTTP OK  ● orange = HTTP error  ● red = critical  · host metrics shown on stratum0 node (all services share the same host)</text>
-      </svg>
-    </div>
-  </div>
-
-  <!-- hidden: keep s0-url-label for MQTT polling compatibility -->
-  <code id="s0-url-label" style="display:none"></code>
-  <!-- hidden: keep s0-raw for any legacy references -->
-  <div id="s0-raw" style="display:none"></div>
-
-  <!-- ── S1 Distribution Backlog ────────────────────────────────────────── -->
-  <div class="box" id="box-s1-backlog">
-    <div class="box-header">
-      <span class="box-title">S1 Distribution Backlog</span>
-      <span class="muted" style="font-size:11px;margin-left:8px">Objects pending push to Stratum 1 replicas</span>
-      <button class="btn btn-outline btn-sm" onclick="refreshS1Backlog()" style="margin-left:auto">↻</button>
-    </div>
-    <div class="box-pad">
-      <div id="s1-backlog-content">
-        <div style="color:var(--c-muted);font-size:12px">Loading…</div>
-      </div>
-    </div>
-  </div>
-
-
-</div>
-
 <!-- ═══════════════════════════ SETTINGS ════════════════════════════════ -->
 <div id="tab-settings" class="tab-content">
   <div class="page-title">Settings</div>
@@ -997,6 +1004,9 @@ const COLLAPSE_MAP = {
   'metrics-body':          'metrics-chevron',
   'stages-body':           'stages-chevron',
   'container-console-body':'container-console-chevron',
+  'dash-catalog-body':     'dash-catalog-chevron',
+  'dash-arch-body':        'dash-arch-chevron',
+  'dash-services-body':    'dash-services-chevron',
 };
 
 // ═══════════════════════════ URL routing ═════════════════════════════════════
@@ -1171,7 +1181,7 @@ function showTab(name){
   if(nav) nav.classList.add('active');
   if(name==='services')   refreshServices();
   if(name==='jobs')       refreshJobs();
-  if(name==='stratum0')   refreshStatusDiagram();
+  if(name==='dashboard'){ refreshServices(); refreshStatusDiagram(); }
   if(name==='monitoring'){ refreshMonitoring(); }
   if(name==='upload')     refreshUploadFilelist();
   if(name==='tests')      refreshTests();
