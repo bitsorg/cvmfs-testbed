@@ -38,6 +38,7 @@
   <div class="nav-item" onclick="showTab('tests')" id="nav-tests"><span class="icon"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span> Tests<span class="nav-badge info" id="badge-tests" style="display:none"></span></div>
   <div class="nav-item" onclick="showTab('jobs')" id="nav-jobs"><span class="icon"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></span> Jobs<span class="nav-badge info" id="badge-jobs"></span></div>
   <div class="nav-item" onclick="showTab('upload')" id="nav-upload"><span class="icon"><svg viewBox="0 0 24 24"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg></span> Upload<span class="nav-badge info" id="badge-upload" style="display:none"></span></div>
+  <div class="nav-item" onclick="showTab('measurements')" id="nav-measurements"><span class="icon"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span> Measurements</div>
 
   <div class="nav-section">Config</div>
   <div class="nav-item" onclick="showTab('settings')" id="nav-settings"><span class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span> Settings</div>
@@ -892,6 +893,38 @@
 
 <!-- ═══════════════════════════ STATUS ════════════════════════════════ -->
 <!-- ═══════════════════════════ SETTINGS ════════════════════════════════ -->
+<div id="tab-measurements" class="tab-content">
+  <div class="page-title">Measurements</div>
+  <div class="page-sub">Recorded bulk-upload runs (bits vs ingest). Tick rows to compare; delete to prune. Recorded by the Upload tab.</div>
+  <div class="box" style="margin-bottom:16px">
+    <div class="box-header">
+      <span class="box-title">Recorded runs</span>
+      <span style="display:flex;gap:8px">
+        <button class="btn btn-outline" onclick="refreshMeasurements()">&#8635; Refresh</button>
+        <button class="btn btn-danger" onclick="deleteMeasurements()">&#128465; Delete selected</button>
+      </span>
+    </div>
+    <div class="box-pad" style="padding:0">
+      <table>
+        <thead><tr>
+          <th style="width:28px"><input type="checkbox" onchange="toggleMeasAll(this)"></th>
+          <th>When (UTC)</th><th>Method</th><th>Label</th>
+          <th style="text-align:right">Files</th><th style="text-align:right">Raw</th>
+          <th style="text-align:right">Stored</th><th style="text-align:right">Total</th><th>Clean</th>
+        </tr></thead>
+        <tbody id="meas-tbody"><tr><td colspan="9" class="muted" style="padding:12px">Loading&#8230;</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="box">
+    <div class="box-header"><span class="box-title">Comparison</span></div>
+    <div class="box-pad">
+      <div id="meas-plot-hint" class="muted" style="font-size:13px">Select one or more runs above to plot a comparison.</div>
+      <div style="position:relative;height:320px"><canvas id="chart-meas-cmp"></canvas></div>
+    </div>
+  </div>
+</div>
+
 <div id="tab-settings" class="tab-content">
   <div class="page-title">Settings</div>
   <div class="page-sub">Endpoint configuration — persisted in localStorage.</div>
@@ -1187,6 +1220,7 @@ function showTab(name){
   if(name==='dashboard'){ refreshServices(); refreshStatusDiagram(); }
   if(name==='monitoring'){ refreshMonitoring(); }
   if(name==='upload')     refreshUploadFilelist();
+  if(name==='measurements') refreshMeasurements();
   if(name==='tests')      refreshTests();
   if(name==='testbed')    refreshTestbedConfig();
 }
@@ -3758,6 +3792,75 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   // Expose module-scoped functions used by inline HTML onclick/onkeydown attributes.
   // ES modules are scoped and don't bleed into window — this bridge is required for
   // all functions referenced from HTML attribute event handlers.
+// ── Measurements page ─────────────────────────────
+let _measRows = [];
+async function refreshMeasurements(){
+  const tb = $('meas-tbody'); if(!tb) return;
+  if(!SERVER_MODE){ tb.innerHTML='<tr><td colspan="9" class="muted" style="padding:12px">Server mode required.</td></tr>'; return; }
+  let rows=[];
+  try{
+    const r = await fetch('/api/measurements',{headers:{'X-Testbed-Token':SERVER_TOKEN||''},signal:AbortSignal.timeout(8000)});
+    if(r.ok) rows = await r.json();
+  }catch(_){}
+  _measRows = Array.isArray(rows)?rows:[];
+  renderMeasurements();
+}
+function _measKey(r){ return `${r.ts||''}|${r.run_id||''}`; }
+function _measBytes(n){ n=+n||0; if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(1)+' KB'; if(n<1073741824) return (n/1048576).toFixed(1)+' MB'; return (n/1073741824).toFixed(2)+' GB'; }
+function renderMeasurements(){
+  const tb=$('meas-tbody'); if(!tb) return;
+  if(!_measRows.length){ tb.innerHTML='<tr><td colspan="9" class="muted" style="padding:12px">No measurements yet. Run a bulk upload from the Upload tab.</td></tr>'; return; }
+  tb.innerHTML = _measRows.map(r=>{
+    const k=_measKey(r);
+    const dt=(r.ts||'').replace('T',' ').replace('Z','');
+    return `<tr>
+      <td><input type="checkbox" class="meas-cb" data-k="${k}" onchange="plotMeasurements()"></td>
+      <td>${dt}</td>
+      <td><span class="badge ${r.method==='ingest'?'warn':'info'}">${r.method||''}</span></td>
+      <td>${r.label||''}</td>
+      <td style="text-align:right">${r.n_files||0}</td>
+      <td style="text-align:right">${_measBytes(r.bytes_raw)}</td>
+      <td style="text-align:right">${_measBytes(r.bytes_stored)}</td>
+      <td style="text-align:right">${r.total_s||0}s</td>
+      <td>${r.cleaned?'✓':'—'}</td>
+    </tr>`;
+  }).join('');
+  plotMeasurements();
+}
+function _measSelected(){
+  const ks=new Set([...document.querySelectorAll('.meas-cb:checked')].map(c=>c.dataset.k));
+  return _measRows.filter(r=>ks.has(_measKey(r)));
+}
+function toggleMeasAll(cb){
+  document.querySelectorAll('.meas-cb').forEach(c=>{c.checked=cb.checked;});
+  plotMeasurements();
+}
+async function deleteMeasurements(){
+  const sel=_measSelected();
+  if(!sel.length){ alert('Select measurements to delete.'); return; }
+  if(!confirm(`Delete ${sel.length} measurement(s)? This cannot be undone.`)) return;
+  try{
+    const r=await fetch('/api/measurements/delete',{method:'POST',headers:{'Content-Type':'application/json','X-Testbed-Token':SERVER_TOKEN||''},body:JSON.stringify({keys:sel.map(_measKey)})});
+    if(!r.ok){ alert('Delete failed: '+r.status); return; }
+  }catch(e){ alert('Delete failed: '+e); return; }
+  refreshMeasurements();
+}
+function plotMeasurements(){
+  const canvas=$('chart-meas-cmp'); if(!canvas||typeof Chart==='undefined') return;
+  const sel=_measSelected();
+  if(_charts['chart-meas-cmp']){ _charts['chart-meas-cmp'].destroy(); delete _charts['chart-meas-cmp']; }
+  const hint=$('meas-plot-hint');
+  if(sel.length<1){ if(hint) hint.style.display=''; return; }
+  if(hint) hint.style.display='none';
+  const labels=sel.map(r=>((r.label||r.method||'')+' '+((r.ts||'').slice(11,19))).trim());
+  const col=r=>r.method==='ingest'?'#fb8500':'#3a86ff';
+  const ctx=canvas.getContext('2d');
+  _charts['chart-meas-cmp']=new Chart(ctx,{type:'bar',
+    data:{labels,datasets:[{label:'total time (s)',data:sel.map(r=>r.total_s||0),backgroundColor:sel.map(col)}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},title:{display:true,text:'Selected runs — total time (s)'}},scales:{y:{beginAtZero:true,title:{display:true,text:'seconds'}}}}});
+}
+Object.assign(window,{refreshMeasurements,deleteMeasurements,toggleMeasAll,plotMeasurements});
+
   Object.assign(window, {
     // Navigation / UI
     showTab, toggleCollapse,

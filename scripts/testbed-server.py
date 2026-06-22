@@ -438,6 +438,8 @@ class Handler(BaseHTTPRequestHandler):
             self._test_run()
         elif path == '/api/exec-container':
             self._exec_container()
+        elif path == '/api/measurements/delete':
+            self._measurements_delete()
         elif path.startswith('/api/proxy/'):
             self._proxy(path[len('/api/proxy/'):], parsed.query, method='POST')
         else:
@@ -637,6 +639,41 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     # ── Ingest job list ───────────────────────────────────────────────────────
+    def _measurements_delete(self):
+        """POST /api/measurements/delete  body {keys:["ts|run_id",...]} — drop matching rows."""
+        cl = int(self.headers.get('Content-Length', 0) or 0)
+        raw = self.rfile.read(cl) if cl else b'{}'
+        try:
+            req = json.loads(raw)
+        except Exception:
+            self._json({'error': 'Invalid JSON body'}, 400); return
+        keys = set(req.get('keys', []) or [])
+        log_path = self.server.testbed_root / 'data' / 'measurements.ndjson'
+        kept, deleted = [], 0
+        try:
+            with open(log_path, 'r', encoding='utf-8') as fh:
+                for line in fh:
+                    t = line.strip()
+                    if not t:
+                        continue
+                    try:
+                        r = json.loads(t)
+                    except json.JSONDecodeError:
+                        continue
+                    k = f"{r.get('ts','')}|{r.get('run_id','')}"
+                    if k in keys:
+                        deleted += 1
+                    else:
+                        kept.append(t)
+        except FileNotFoundError:
+            self._json({'deleted': 0, 'remaining': 0}); return
+        tmp = str(log_path) + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            for t in kept:
+                fh.write(t + '\n')
+        os.replace(tmp, str(log_path))
+        self._json({'deleted': deleted, 'remaining': len(kept)})
+
     def _measurements(self):
         """
         GET /api/measurements
