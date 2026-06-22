@@ -37,7 +37,6 @@
   <div class="nav-item" onclick="showTab('testbed')" id="nav-testbed"><span class="icon"><svg viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span> Testbed</div>
   <div class="nav-item" onclick="showTab('tests')" id="nav-tests"><span class="icon"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span> Tests<span class="nav-badge info" id="badge-tests" style="display:none"></span></div>
   <div class="nav-item" onclick="showTab('jobs')" id="nav-jobs"><span class="icon"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></span> Jobs<span class="nav-badge info" id="badge-jobs"></span></div>
-  <div class="nav-item" onclick="showTab('mqtt')" id="nav-mqtt"><span class="icon"><svg viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg></span> MQTT Monitor</div>
   <div class="nav-item" onclick="showTab('upload')" id="nav-upload"><span class="icon"><svg viewBox="0 0 24 24"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg></span> Upload<span class="nav-badge info" id="badge-upload" style="display:none"></span></div>
   <div class="nav-item" onclick="showTab('stratum0')" id="nav-stratum0"><span class="icon"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span> Status</div>
 
@@ -47,7 +46,6 @@
   <div id="sidebar-footer">
     <div id="sf-repo" style="margin-bottom:4px"></div>
     <div id="sf-server" style="display:none"><span style="color:var(--c-accent)">●</span> server mode</div>
-    <div id="sf-mqtt" style="display:none"><span style="color:var(--c-accent)">●</span> MQTT active</div>
   </div>
 </div>
 
@@ -403,8 +401,8 @@
   <!-- Global flags -->
   <div class="box box-pad" style="margin-bottom:16px">
     <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-end">
-      <label style="display:flex;gap:6px;align-items:center;font-size:13px;cursor:pointer">
-        <input type="checkbox" id="flag-mqtt"> <code>--mqtt</code>
+      <label style="display:flex;gap:6px;align-items:center;font-size:13px;cursor:pointer" title="ADR-0001 pull-distribution overlay (embedded MQTT-over-WSS broker)">
+        <input type="checkbox" id="flag-wss"> <code>--wss</code>
       </label>
       <label style="display:flex;gap:6px;align-items:center;font-size:13px;cursor:pointer">
         <input type="checkbox" id="flag-bits"> <code>--bits</code>
@@ -459,7 +457,7 @@
       <div class="cmd-buttons">
         <button class="btn btn-primary" onclick="runCmd('test')">test</button>
         <button class="btn btn-primary" onclick="runCmd('stresstest',{n:true})">stresstest</button>
-        <button class="btn btn-primary" id="btn-mqtttest" onclick="runCmd('mqtttest',{mqtt:true})">mqtttest</button>
+        <button class="btn btn-primary" onclick="runCmd('pulltest',{wss:true})">pulltest</button>
         <button class="btn btn-outline" onclick="runCmd('unittest')">unittest</button>
         <button class="btn btn-outline" onclick="runCmd('catdump')">catdump</button>
         <button class="btn btn-outline" onclick="runCmd('catdiff')">catdiff</button>
@@ -652,39 +650,6 @@
 </div>
 
 <!-- ═══════════════════════════ MQTT MONITOR ════════════════════════════ -->
-<div id="tab-mqtt" class="tab-content">
-  <div class="page-title">MQTT Monitor</div>
-  <div class="page-sub">Detects publish events by polling Stratum 0's <code>.cvmfspublished</code> every 5 s. Each new root hash = one commit.</div>
-
-  <!-- Shown when MQTT is not configured -->
-  <div id="mqtt-unavailable" class="alert alert-warn" style="display:none">
-    <strong>MQTT is not active on this testbed.</strong>
-    The MQTT control-plane is not configured — restart the testbed with
-    <code>./testbed.sh server --mqtt</code> (or <code>make MQTT=1 start</code>) to enable it.
-    Monitoring via S0 polling below will still work for detecting root-hash changes.
-  </div>
-
-  <div class="alert alert-info">The browser cannot connect to the raw MQTT socket. This page tracks hash changes via S0 polling; the MQTT broker delivers them to receivers. Start polling to see live events.</div>
-
-  <div class="box">
-    <div class="box-header"><span class="box-title">Publish Events</span>
-      <span style="font-size:11px;color:var(--c-muted)" id="mqtt-status">Idle</span>
-      <button class="btn btn-outline btn-sm" id="mqtt-btn" onclick="toggleMQTT()" style="margin-left:8px">▶ Start</button>
-      <button class="btn btn-outline btn-sm" onclick="clearMQTT()" style="margin-left:4px">🗑</button>
-    </div>
-    <div class="box-pad" style="padding-bottom:0">
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
-        <div><div class="card-label">Events</div><strong id="mqtt-count">0</strong></div>
-        <div><div class="card-label">Last hash</div><code id="mqtt-hash" style="font-size:11px">–</code></div>
-        <div><div class="card-label">Last detected</div><span id="mqtt-ts" style="font-size:12px">–</span></div>
-      </div>
-    </div>
-    <div class="term" id="mqtt-stream" style="height:280px;border-radius:0;border-left:none;border-right:none;border-bottom:none">
-      <span class="muted">Start polling to see events.</span>
-    </div>
-  </div>
-</div>
-
 <!-- ═══════════════════════════ UPLOAD ════════════════════════════════ -->
 <div id="tab-upload" class="tab-content">
   <div class="page-title">Bulk Upload</div>
@@ -1180,72 +1145,21 @@ async function detectMode(){
 
 }
 
-// ═══════════════════════════ MQTT / bits overlay ══════════════════════════════
-// Called after detectMode() resolves USE_MQTT / USE_BITS from /api/health.
-// Also safe to call in direct mode (both flags remain false).
+// ═══════════════════════════ Topology overlay state ═══════════════════════════
+// Called after detectMode() resolves USE_BITS from /api/health. Dims the MQTT
+// elements of the dashboard architecture diagram when the pull overlay is off.
 function applyOverlayState(){
-  // ── Sidebar MQTT footer indicator ────────────────────────────────────────
-  const sfMqtt = $('sf-mqtt');
-  if(sfMqtt) sfMqtt.style.display = USE_MQTT ? '' : 'none';
-
-  // ── Sidebar nav-mqtt item ─────────────────────────────────────────────────
-  const navMqtt = $('nav-mqtt');
-  if(navMqtt){
-    navMqtt.style.opacity = USE_MQTT ? '1' : '0.45';
-    navMqtt.title = USE_MQTT ? '' : 'MQTT not configured — start testbed with --mqtt';
-    navMqtt.style.pointerEvents = USE_MQTT ? '' : 'auto'; // still clickable to see the "unavailable" overlay
-  }
-
-  // ── Topology SVG MQTT group (and legend) ─────────────────────────────────
   const mqttGroup = $('mqtt-topology');
   if(mqttGroup) mqttGroup.style.opacity = USE_MQTT ? '1' : '0.2';
   document.querySelectorAll('[data-mqtt-legend]').forEach(g=>{
     g.style.opacity = USE_MQTT ? '1' : '0.2';
   });
-
-  // ── Topology subtitle ─────────────────────────────────────────────────────
   const topoSub = $('topology-sub');
   if(topoSub){
-    if(USE_MQTT && USE_BITS)
-      topoSub.textContent = 'Active: bits overlay + MQTT control-plane.';
-    else if(USE_MQTT)
-      topoSub.textContent = 'Active: MQTT control-plane. Dashed blue elements show the live MQTT path.';
-    else if(USE_BITS)
-      topoSub.textContent = 'Active: bits overlay. MQTT elements (greyed) are not configured.';
-    else
-      topoSub.textContent = 'Testbed architecture. MQTT elements (greyed) are not configured — start with --mqtt to enable.';
+    topoSub.textContent = USE_BITS
+      ? 'Active: bits overlay.'
+      : 'Testbed architecture.';
   }
-
-  // ── mqtttest button ───────────────────────────────────────────────────────
-  const mqttTestBtn = $('btn-mqtttest');
-  if(mqttTestBtn){
-    mqttTestBtn.disabled = !USE_MQTT;
-    mqttTestBtn.title = USE_MQTT ? '' : 'MQTT not configured — start testbed with --mqtt';
-    mqttTestBtn.style.opacity = USE_MQTT ? '' : '0.45';
-  }
-
-  // ── --mqtt flag checkbox ──────────────────────────────────────────────────
-  // When MQTT is active: force-checked and locked.
-  // When inactive: disable so user doesn't send --mqtt to a testbed without it.
-  const flagMqtt = $('flag-mqtt');
-  if(flagMqtt){
-    if(USE_MQTT){
-      flagMqtt.checked  = true;
-      flagMqtt.disabled = true;
-      flagMqtt.title    = 'MQTT is active on this testbed — always included';
-    } else {
-      flagMqtt.checked  = false;
-      flagMqtt.disabled = true;
-      flagMqtt.title    = 'MQTT not configured — restart testbed with --mqtt to enable';
-    }
-    // Dim the label too
-    const label = flagMqtt.closest('label');
-    if(label) label.style.opacity = USE_MQTT ? '1' : '0.45';
-  }
-
-  // ── MQTT Monitor tab unavailable overlay ──────────────────────────────────
-  const mqttOverlay = $('mqtt-unavailable');
-  if(mqttOverlay) mqttOverlay.style.display = USE_MQTT ? 'none' : '';
 }
 
 // ═══════════════════════════ Tab navigation ═══════════════════════════════════
@@ -3533,52 +3447,15 @@ function _sdText(id, text, color){
   if(color) el.setAttribute('fill', color);
 }
 
-// ═══════════════════════════ MQTT Monitor ════════════════════════════════════
-let _mqttOn=false, _mqttTimer=null, _mqttEvs=[];
-function toggleMQTT(){
-  _mqttOn=!_mqttOn;
-  const btn=$('mqtt-btn');
-  btn.textContent=_mqttOn?'⏹ Stop':'▶ Start';
-  btn.className='btn btn-sm '+ (_mqttOn?'btn-danger':'btn-outline');
-  if(_mqttOn) pollMQTT(); else clearTimeout(_mqttTimer);
-}
-async function pollMQTT(){
-  if(!_mqttOn) return;
-  $('mqtt-status').textContent=`Polling… ${new Date().toLocaleTimeString()}`;
-  const hash=await refreshStratum0();
-  if(hash&&hash!==_lastHash){
-    if(_lastHash){
-      const ev={ts:new Date(),hash,repo:cfg.repo};
-      _mqttEvs.unshift(ev);
-      if(_mqttEvs.length>200) _mqttEvs.length=200;
-      renderMQTT();
-      $('mqtt-count').textContent=_mqttEvs.length;
-      $('mqtt-hash').textContent=hash.slice(0,20)+'…';
-      $('mqtt-ts').textContent=ev.ts.toLocaleTimeString();
-    }
-    _lastHash=hash;
-  }
-  _mqttTimer=setTimeout(pollMQTT,5000);
-}
-function renderMQTT(){
-  const s=$('mqtt-stream');
-  s.innerHTML=_mqttEvs.map(e=>`<div style="border-bottom:1px solid #21262d;padding:6px 0">
-    <span class="ts">${e.ts.toLocaleTimeString()}</span>
-    <span class="info" style="margin-left:8px">cvmfs/repos/${esc(e.repo)}/published</span>
-    <div style="margin-top:3px"><span class="ok">new_root_hash=</span><span class="warn">${esc(e.hash.slice(0,32))}…</span></div>
-  </div>`).join('');
-}
-function clearMQTT(){ _mqttEvs=[]; _lastHash=''; $('mqtt-stream').innerHTML='<span class="muted">Cleared.</span>'; $('mqtt-count').textContent='0'; }
-
 // ═══════════════════════════ Command runner ═══════════════════════════════════
 let _activeSSE=null, _activePid=null;
 
 function buildFlags(opts={}){
   const flags=[], args=[];
-  // A scenario is a one-word preset for --method/--mqtt/--pull; it overrides the
+  // A scenario is a one-word preset for --method/--pull; it overrides the
   // individual flag checkboxes, so return early with just the scenario arg.
   if(opts.scenario){ return {flags:[], args:['--scenario', opts.scenario]}; }
-  if($('flag-mqtt')?.checked) flags.push('--mqtt');
+  if($('flag-wss')?.checked) flags.push('--wss');
   if($('flag-bits')?.checked) flags.push('--bits');
   if(opts.method!==false){
     const m=$('flag-method')?.value;
@@ -3592,7 +3469,7 @@ function buildFlags(opts={}){
     if(conc && method !== 'ingest'){ args.push('--concurrency'); args.push(conc); }
   }
   if(opts.svc){ const s=$('flag-svc')?.value?.trim(); if(s) args.push(s); }
-  if(opts.mqtt && !$('flag-mqtt')?.checked) flags.push('--mqtt');
+  if(opts.wss && !$('flag-wss')?.checked) flags.push('--wss');
   return {flags,args};
 }
 
@@ -3872,8 +3749,6 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     scanUploadDir, runUploadFilelist, abortUpload, retryFailedUploads,
     // Commands / terminal
     runCmd, killCmd, clearTerm, copyTerm, execContainerCmd, clearContainerOutput, ccQuick,
-    // MQTT
-    toggleMQTT, clearMQTT,
     // Settings / auth
     saveSettings, resetSettings, applyDialogToken, showTokenDialog,
   });
