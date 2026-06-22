@@ -212,7 +212,7 @@ while [[ $# -gt 0 ]]; do
         --dir|--filelist|--ingest-path|--concurrency|-j|--run-log|--label|\
         --prepub-url|--repo|--token)
             POSITIONAL_ARGS+=("$1" "${2:-}"); shift 2 ;;
-        --no-recursive|--purge-snapshot|--purge-env|--purge-history)
+        --no-recursive|--clean-cas|--purge-snapshot|--purge-env|--purge-history)
             POSITIONAL_ARGS+=("$1"); shift ;;
         --*)  error "Unknown option: $1"; exit 1 ;;
         *)    POSITIONAL_ARGS+=("$1");                           shift ;;
@@ -1006,6 +1006,45 @@ cmd_stresstest() {
     esac
 }
 
+# Re-initialise the repository CAS to the empty bootstrapped baseline, used by
+# --clean-cas to remove deduplication bias before a measured bulk run.  GC is
+# disabled on this gateway-mode repo, so instead of garbage-collecting we restore
+# ONLY the CAS tree (repos/<repo>) and the gateway-spool reflog from the seed
+# snapshot — the two pieces that must stay consistent — then force-recreate the
+# gateway to clear lease state.  Keys, configs, performance history and
+# measurements.ndjson are left untouched (this is NOT the full 'restore' command,
+# which also rolls back keys/configs).
+_clean_cas_reinit() {
+    load_env
+    local snap; snap="$(_snapshot_path)"
+    if [[ ! -f "$snap" ]]; then
+        error "--clean-cas: no seed snapshot at $snap (run: ./testbed.sh bootstrap)"
+        return 1
+    fi
+    section "Re-initialising CAS to empty baseline (--clean-cas)"
+    # Replace only the CAS tree and the gateway-spool reflog for this repo.
+    sudo rm -rf "${TESTBED_ROOT}/repos/${REPO_NAME}" \
+                "${TESTBED_ROOT}/data/gateway-spool/${REPO_NAME}"
+    mkdir -p "${TESTBED_ROOT}/repos/${REPO_NAME}" \
+             "${TESTBED_ROOT}/data/gateway-spool/${REPO_NAME}"
+    info "Extracting empty CAS + spool from seed ..."
+    tar --extract --gzip --file="$snap" --directory="$TESTBED_ROOT" \
+        "repos/${REPO_NAME}" "data/gateway-spool/${REPO_NAME}" 2>/dev/null \
+        || { error "--clean-cas: tar extract failed"; return 1; }
+    # Restore broad write perms for the non-root container services (matches
+    # cmd_restore); skip the gateway-owned upstream-scratch bind mount.
+    find "${TESTBED_ROOT}/repos/${REPO_NAME}" -path '*/upstream-scratch*' -prune -o -exec chmod 777 {} + 2>/dev/null || true
+    # Clear stale gateway leases (leasedb lives in the container overlay).
+    info "Recreating gateway to clear lease state ..."
+    run_compose up -d --force-recreate gateway >/dev/null 2>&1 || true
+    local _deadline=$(( $(date +%s) + 30 ))
+    while [[ $(date +%s) -lt $_deadline ]]; do
+        curl -sf --max-time 2 "http://localhost:4929/api/v1/repos" >/dev/null 2>&1 && break
+        sleep 2
+    done
+    ok "CAS re-initialised to empty baseline."
+}
+
 # Append one measurement row to data/measurements.ndjson, derived from the most
 # recent 'batch' record in runs.ndjson (written by upload-filelist.sh), enriched
 # with the clean/label context.  Consumed by the Measurements page comparison.
@@ -1090,6 +1129,9 @@ cmd_upload_filelist() {
                 i=$(( i + 1 ))
                 label_arg="${POSITIONAL_ARGS[$i]:-}"
                 ;;
+            --clean-cas)
+                clean_cas=true
+                ;;
             --method)
                 i=$(( i + 1 ))
                 method="${POSITIONAL_ARGS[$i]:-bits}"
@@ -1124,6 +1166,10 @@ cmd_upload_filelist() {
     $no_recursive            && args+=(--no-recursive)
 
     [[ -n "$label_arg" ]] || label_arg="$method"
+
+    if $clean_cas; then
+        _clean_cas_reinit || { error "--clean-cas: re-init failed; aborting upload"; exit 1; }
+    fi
 
     local _meas_start_iso
     _meas_start_iso="$(_iso_now)"
