@@ -1042,6 +1042,13 @@ _clean_cas_reinit() {
         curl -sf --max-time 2 "http://localhost:4929/api/v1/repos" >/dev/null 2>&1 && break
         sleep 2
     done
+    # The publisher services bind-mount the CAS (repos/<repo> -> /data/cas); after
+    # the dir was wiped + re-extracted their open handles point at stale inodes, so
+    # restart them to pick up the fresh tree (otherwise publishes fail ENOENT on
+    # "cas put ...: no such file or directory").
+    info "Restarting publisher services to pick up the reset CAS ..."
+    run_compose restart cvmfs-prepub stratum0 >/dev/null 2>&1 || true
+    sleep 5
     ok "CAS re-initialised to empty baseline."
 }
 
