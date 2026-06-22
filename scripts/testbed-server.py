@@ -361,6 +361,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._test_status()
                 return
 
+            if path == '/api/testbed-config':
+                self._testbed_config()
+                return
+
             if path == '/api/manifest':
                 self._manifest()
                 return
@@ -739,6 +743,22 @@ class Handler(BaseHTTPRequestHandler):
         records = records[-limit:]
         records.reverse()
         self._json(records)
+
+    def _testbed_config(self):
+        """
+        GET /api/testbed-config
+        Returns the start-time config persisted by testbed.sh to
+        data/testbed-config.json so the console can DISPLAY the active config.
+        """
+        default = {'method': None, 'wss': None, 'bits': None, 'started_at': None}
+        cfg_path = self.server.testbed_root / 'data' / 'testbed-config.json'
+        try:
+            obj = json.loads(cfg_path.read_text(encoding='utf-8'))
+            if not isinstance(obj, dict):
+                obj = default
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            obj = default
+        self._json(obj)
 
     def _test_status(self):
         """

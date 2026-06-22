@@ -169,7 +169,8 @@ USE_WSS=true            # ADR-0001 pull distribution (embedded MQTT-over-WSS bro
                         # disable with --no-wss for the bare base stack.
 SOFTWARE_ROOT_OVERRIDE=""
 TESTBED_ROOT_OVERRIDE=""
-PUBLISH_METHOD="bits"   # bits | ingest
+PUBLISH_METHOD="bits"   # bits | ingest — default publishing path; persisted at start
+METHOD_EXPLICIT=false   # true once --method is given on the command line
 AUTO_YES=false          # skip interactive confirmation prompts (e.g. for make)
 FOLLOW_LOGS=false       # set by -f/--follow; makes 'logs' stream continuously
 
@@ -197,11 +198,11 @@ while [[ $# -gt 0 ]]; do
         --testbed-root=*)      TESTBED_ROOT_OVERRIDE="${1#*=}";  shift ;;
         --method)
             [[ $# -ge 2 ]] || { error "--method requires a value (bits|ingest)"; exit 1; }
-            PUBLISH_METHOD="$2"; shift 2
+            PUBLISH_METHOD="$2"; METHOD_EXPLICIT=true; shift 2
             [[ "$PUBLISH_METHOD" == "bits" || "$PUBLISH_METHOD" == "ingest" ]] \
                 || { error "--method must be 'bits' or 'ingest'"; exit 1; } ;;
         --method=*)
-            PUBLISH_METHOD="${1#*=}"; shift
+            PUBLISH_METHOD="${1#*=}"; METHOD_EXPLICIT=true; shift
             [[ "$PUBLISH_METHOD" == "bits" || "$PUBLISH_METHOD" == "ingest" ]] \
                 || { error "--method must be 'bits' or 'ingest'"; exit 1; } ;;
         -y|--yes)      AUTO_YES=true;                    shift ;;
@@ -431,6 +432,8 @@ cmd_start() {
     if ! $all_up; then
         warn "Some services did not respond within 60 s — check logs: ./testbed.sh logs"
     fi
+    _write_testbed_config
+    info "Active config: method=${PUBLISH_METHOD} wss=${USE_WSS} bits=${USE_BITS}"
     _cmd_status_inner  # status without re-running load_env
 }
 
@@ -446,6 +449,30 @@ _snapshot_path() {
     # Keep the snapshot in TESTBED_ROOT so it is co-located with the repo data
     # it captures.  load_env must have been called before this function.
     echo "${TESTBED_ROOT}/repo-seed.tar.gz"
+}
+
+# ── Start-time configuration (single source of truth for the active testbed) ────
+# Persisted by cmd_start/cmd_ensure to data/testbed-config.json; read by the web
+# console (GET /api/testbed-config) to DISPLAY the active config, and by
+# _resolve_method so test/stresstest default to the method chosen at start time.
+_testbed_config_path() { echo "${TESTBED_ROOT}/data/testbed-config.json"; }
+
+_write_testbed_config() {
+    mkdir -p "${TESTBED_ROOT}/data"
+    printf '{"method":"%s","wss":%s,"bits":%s,"started_at":"%s"}\n' \
+        "$PUBLISH_METHOD" "$USE_WSS" "$USE_BITS" "$(_iso_now)" \
+        > "$(_testbed_config_path)"
+}
+
+# If --method was NOT given explicitly, inherit the method persisted at start.
+_resolve_method() {
+    if ! $METHOD_EXPLICIT; then
+        local cf; cf="$(_testbed_config_path)"
+        if [[ -f "$cf" ]]; then
+            local m; m="$(sed -n 's/.*"method"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$cf" | head -1)"
+            [[ "$m" == "bits" || "$m" == "ingest" ]] && PUBLISH_METHOD="$m"
+        fi
+    fi
 }
 
 # ── cmd_bootstrap ─────────────────────────────────────────────────────────────
@@ -864,14 +891,11 @@ cmd_ensure() {
     fi
 
     # ── c. START ────────────────────────────────────────────────────────────────
+    local _wssflag; if $USE_WSS; then _wssflag=--wss; else _wssflag=--no-wss; fi
     if ! _stack_healthy; then
         info "ensuring: start (stack not healthy)"
         did_work=true
-        if $USE_WSS; then
-            bash "$0" start --wss
-        else
-            bash "$0" start
-        fi
+        bash "$0" start "$_wssflag" --method "$PUBLISH_METHOD"
     elif $regenerated_payload; then
         # The stack was already running when we (re)generated the payload — the
         # publisher/native-publisher captured an empty bind mount at boot. Restart
@@ -896,12 +920,14 @@ cmd_ensure() {
             || warn "bootstrap failed — ingest/content tests will skip until 'make baseline'"
     fi
 
-    ok "testbed ready"
+    _write_testbed_config
+    ok "testbed ready (method=${PUBLISH_METHOD} wss=${USE_WSS})"
 }
 
 cmd_test() {
-    section "Running smoke test (method: ${PUBLISH_METHOD})"
     load_env
+    _resolve_method   # inherit start-time method unless --method was given
+    section "Running smoke test (method: ${PUBLISH_METHOD})"
     _ensure_payload
     case "$PUBLISH_METHOD" in
         bits)
