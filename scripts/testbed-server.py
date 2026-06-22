@@ -365,6 +365,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._testbed_config()
                 return
 
+            if path == '/api/measurements':
+                self._measurements()
+                return
+
             if path == '/api/manifest':
                 self._manifest()
                 return
@@ -633,6 +637,30 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     # ── Ingest job list ───────────────────────────────────────────────────────
+    def _measurements(self):
+        """
+        GET /api/measurements
+        Reads TESTBED_ROOT/data/measurements.ndjson (bulk-upload comparison rows
+        written by cmd_upload_filelist) and returns a JSON array newest-first.
+        Returns [] when absent/empty — never an error.
+        """
+        log_path = self.server.testbed_root / 'data' / 'measurements.ndjson'
+        rows = []
+        try:
+            with open(log_path, 'r', encoding='utf-8') as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        except FileNotFoundError:
+            pass
+        rows.sort(key=lambda r: r.get('ts', ''), reverse=True)
+        self._json(rows)
+
     def _ingest_jobs(self):
         """
         GET /api/ingest-jobs

@@ -3107,6 +3107,7 @@ function runUploadFilelist(){
   // Only pass --ingest-path if user explicitly set it (non-empty)
   if(ingestPath) args.push('--ingest-path', ingestPath);
   if(!recursive) args.push('--no-recursive');
+  if($('ul-clean-cas')?.checked !== false) args.push('--clean-cas');
 
   fetch('/api/run', {
     method:  'POST',
