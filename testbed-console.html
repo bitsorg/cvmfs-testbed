@@ -2186,7 +2186,7 @@ function renderTimings(){
   if(empty) empty.style.display='none';
   wrap.style.display='';
   // Selected test may have aged out of the window/data — fall back to stacked.
-  if(_timingsSel!=='__all__' && _timingsSel!=='__compare__' && !names.includes(_timingsSel)) _timingsSel='__all__';
+  if(_timingsSel!=='__all__' && !names.includes(_timingsSel)) _timingsSel='__all__';
 
   const _hint = _timingsSel==='__all__' ? 'click a test for its own graph' : 'click the legend or “All” to go back';
   if(subEl) subEl.textContent = `${runs.length} run${runs.length!==1?'s':''} · ${names.length} test${names.length!==1?'s':''} · ${_hint}`;
@@ -2202,11 +2202,6 @@ function renderTimings(){
       const style = active ? '' : `border-left:4px solid ${col}`;
       return `<button class="btn btn-sm ${active?'btn-primary':'btn-outline'}" style="${style}" onclick="selectTiming('${esc(n)}')">${esc(lbl)}</button>`;
     }).join('');
-    // Direct bits-vs-ingest publish comparison (only when both publish tests exist).
-    if(names.includes('bits') && names.includes('ingest')){
-      const a=_timingsSel==='__compare__';
-      html += `<button class="btn btn-sm ${a?'btn-primary':'btn-outline'}" style="${a?'':'border-left:4px solid #6f42c1'}" onclick="selectTiming('__compare__')">bits vs ingest</button>`;
-    }
     chipsEl.innerHTML=html;
   }
 
@@ -2216,9 +2211,7 @@ function renderTimings(){
   if(_timingsSel==='__all__'){
     // ── Cumulative stacked bar: one bar per run, each test a segment. ──────────
     // Failed/skipped tests contribute 0 (never added to the stack).
-    const failedIdx=new Set();
-    runs.forEach((r,i)=>{ if(Object.values(r.tests).some(t=>t.status==='fail')) failedIdx.add(i); });
-    const labels=runs.map((r,i)=>_timingLabel(r)+(failedIdx.has(i)?' ✕':''));
+    const labels=runs.map(r=>_timingLabel(r));
     const datasets=names.map(n=>{
       const col=_timingColor(n,names);
       return {
@@ -2244,43 +2237,21 @@ function renderTimings(){
             }},
         },
         scales:{
-          x:{stacked:true,ticks:{maxTicksLimit:18,autoSkip:true,color:c=>failedIdx.has(c.index)?'#d73a49':'#57606a'}},
+          x:{stacked:true,ticks:{maxTicksLimit:18,autoSkip:true,color:'#57606a'}},
           y:{stacked:true,beginAtZero:true,title:{display:true,text:'seconds'}},
         }}});
-  } else if(_timingsSel==='__compare__'){
-    // ── bits vs ingest: overlay the two publish-method durations + averages. ──
-    const labels=runs.map(r=>_timingLabel(r));
-    const mk=(name,col)=>({label:`${name} (s)`,
-      data:runs.map(r=>{ const t=r.tests[name]; return (t && t.status==='pass') ? t.dur : null; }),
-      borderColor:col, backgroundColor:col+'18', fill:false, tension:.3, pointRadius:3, pointHoverRadius:5, spanGaps:false});
-    const ab=_timingAvg(runs,'bits'), ai=_timingAvg(runs,'ingest');
-    const datasets=[ mk('bits','#0075ca'), mk('ingest','#6f42c1') ];
-    if(ab!=null) datasets.push({label:`bits avg ${ab.toFixed(1)}s`,data:runs.map(()=>ab),borderColor:'#0075ca',borderDash:[6,4],borderWidth:1.5,pointRadius:0,fill:false});
-    if(ai!=null) datasets.push({label:`ingest avg ${ai.toFixed(1)}s`,data:runs.map(()=>ai),borderColor:'#6f42c1',borderDash:[6,4],borderWidth:1.5,pointRadius:0,fill:false});
-    _charts['chart-test-timings']=new Chart(ctx,{ type:'line',
-      data:{labels,datasets},
-      options:{responsive:true,maintainAspectRatio:false,
-        plugins:{
-          legend:{position:'bottom',onClick:(e,item)=>setTimeout(()=>selectTiming('__all__'),0),labels:{boxWidth:12,font:{size:11}}},
-          tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.parsed.y!=null?c.parsed.y.toFixed(1):'–'}s`}},
-        },
-        scales:{ x:{ticks:{maxTicksLimit:18,autoSkip:true}}, y:{beginAtZero:true,title:{display:true,text:'seconds (publish)'}} }}});
   } else {
-    // ── Single-test line: passing durations only; fails marked ✕ at the axis. ──
+    // ── Single-test line: only runs where this test passed (failed runs hidden). ──
     const name=_timingsSel, col=_timingColor(name,names);
-    const failedIdx=new Set();
-    runs.forEach((r,i)=>{ const t=r.tests[name]; if(t && t.status==='fail') failedIdx.add(i); });
-    const labels=runs.map((r,i)=>_timingLabel(r)+(failedIdx.has(i)?' ✕':''));
-    const passData=runs.map(r=>{ const t=r.tests[name]; return (t && t.status==='pass') ? t.dur : null; });
-    const failData=runs.map((r,i)=>failedIdx.has(i)?0:null);
+    const pruns=runs.filter(r=>{ const t=r.tests[name]; return t && t.status==='pass'; });
+    const labels=pruns.map(r=>_timingLabel(r));
+    const passData=pruns.map(r=>r.tests[name].dur);
     const avg=_timingAvg(runs,name);
     const datasets=[
       {label:`${name} (s)`,data:passData,borderColor:col,backgroundColor:col+'22',fill:true,tension:.3,
        pointRadius:3,pointHoverRadius:5,spanGaps:false},
-      {label:'failed',data:failData,borderColor:'#d73a49',backgroundColor:'#d73a49',
-       pointStyle:'crossRot',pointRadius:8,pointHoverRadius:9,borderWidth:2,showLine:false},
     ];
-    if(avg!=null) datasets.push({label:`avg ${avg.toFixed(1)}s`,data:runs.map(()=>avg),
+    if(avg!=null) datasets.push({label:`avg ${avg.toFixed(1)}s`,data:pruns.map(()=>avg),
        borderColor:col,borderDash:[6,4],borderWidth:1.5,pointRadius:0,fill:false});
     _charts['chart-test-timings']=new Chart(ctx,{ type:'line',
       data:{labels,datasets},
@@ -2290,11 +2261,11 @@ function renderTimings(){
           // cumulative (All) chart rather than toggling a series.  Deferred with
           // setTimeout so we don't destroy the chart mid event-dispatch.
           legend:{position:'bottom',onClick:(e,item)=>setTimeout(()=>selectTiming('__all__'),0),
-            labels:{boxWidth:12,font:{size:11},filter:i=>i.text!=='failed'||failedIdx.size>0}},
-          tooltip:{callbacks:{label:c=>c.dataset.label==='failed'?'failed (excluded)':`${c.parsed.y!=null?c.parsed.y.toFixed(1):'–'}s`}},
+            labels:{boxWidth:12,font:{size:11}}},
+          tooltip:{callbacks:{label:c=>`${c.parsed.y!=null?c.parsed.y.toFixed(1):'–'}s`}},
         },
         scales:{
-          x:{ticks:{maxTicksLimit:18,autoSkip:true,color:c=>failedIdx.has(c.index)?'#d73a49':'#57606a'}},
+          x:{ticks:{maxTicksLimit:18,autoSkip:true,color:'#57606a'}},
           y:{beginAtZero:true,title:{display:true,text:'seconds'}},
         }}});
   }
