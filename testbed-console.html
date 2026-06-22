@@ -3856,8 +3856,8 @@ function plotMeasurements(){
   const col=r=>r.method==='ingest'?'#fb8500':'#3a86ff';
   const ctx=canvas.getContext('2d');
   _charts['chart-meas-cmp']=new Chart(ctx,{type:'bar',
-    data:{labels,datasets:[{label:'total time (s)',data:sel.map(r=>r.total_s||0),backgroundColor:sel.map(col)}]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},title:{display:true,text:'Selected runs — total time (s)'}},scales:{y:{beginAtZero:true,title:{display:true,text:'seconds'}}}}});
+    data:{labels,datasets:[{label:'publish-to-Stratum-0 (s)',data:sel.map(r=>r.publish_s0_s!=null?r.publish_s0_s:(r.total_s||0)),backgroundColor:sel.map(col)}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},title:{display:true,text:'Selected runs — publish-to-Stratum-0 time (s; bits S1 distribution is async/excluded)'}},scales:{y:{beginAtZero:true,title:{display:true,text:'seconds'}}}}});
 }
 Object.assign(window,{refreshMeasurements,deleteMeasurements,toggleMeasAll,plotMeasurements});
 

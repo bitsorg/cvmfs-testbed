@@ -1073,11 +1073,14 @@ try:
 except FileNotFoundError:
     pass
 rec=rec or {}
+def _f(v):
+    try: return float(v)
+    except Exception: return None
 m={"ts":os.environ["START_ISO"],"method":os.environ["METHOD"],
    "n_files":int(rec.get("n_published",0)),
    "bytes_raw":round(float(rec.get("total_size_mb",0))*1048576),
    "bytes_stored":round(float(rec.get("cas_size_mb",0))*1048576),
-   "publish_s0_s":None,"s1_s":None,
+   "publish_s0_s":_f(rec.get("publish_s0_s")),"s1_s":_f(rec.get("s1_s")),
    "total_s":int(rec.get("duration_s",0)),
    "cleaned":os.environ["CLEANED"]=="true",
    "label":os.environ["LABEL"],"run_id":rec.get("run_id","")}

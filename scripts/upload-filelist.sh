@@ -226,6 +226,7 @@ log_run() {
     local start_ts="$5" end_ts="$6"
     local total_input_bytes="${7:-0}" total_cas_bytes="${8:-0}"
     local avg_s="${9:-0}" min_s="${10:-0}" max_s="${11:-0}" p50_s="${12:-0}" p95_s="${13:-0}"
+    local publish_s0_s="${14:-0}" s1_s="${15:-0}"
     [[ -n "${RUN_LOG_FILE:-}" ]] || return 0
     local start_time end_time duration_s throughput
     local total_size_mb cas_size_mb
@@ -240,11 +241,12 @@ log_run() {
     fi
     total_size_mb="$(awk "BEGIN{printf \"%.3f\", ${total_input_bytes} / 1048576}")"
     cas_size_mb="$(awk "BEGIN{printf \"%.3f\", ${total_cas_bytes} / 1048576}")"
-    printf '{"run_id":"%s","batch_id":"%s","method":"%s","test_type":"batch","n_requested":%d,"n_published":%d,"n_failed":%d,"start_time":"%s","end_time":"%s","duration_s":%d,"avg_s":%d,"min_s":%d,"max_s":%d,"p50_s":%d,"p95_s":%d,"throughput_per_min":%s,"total_size_mb":%s,"cas_size_mb":%s}\n' \
+    printf '{"run_id":"%s","batch_id":"%s","method":"%s","test_type":"batch","n_requested":%d,"n_published":%d,"n_failed":%d,"start_time":"%s","end_time":"%s","duration_s":%d,"avg_s":%d,"min_s":%d,"max_s":%d,"p50_s":%d,"p95_s":%d,"throughput_per_min":%s,"total_size_mb":%s,"cas_size_mb":%s,"publish_s0_s":%s,"s1_s":%s}\n' \
         "$run_id" "${BATCH_ID:-}" "$PUBLISH_METHOD" "$n_req" "$n_pub" "$n_fail" \
         "$start_time" "$end_time" "$duration_s" \
         "$avg_s" "$min_s" "$max_s" "$p50_s" "$p95_s" \
         "$throughput" "$total_size_mb" "$cas_size_mb" \
+        "$publish_s0_s" "$s1_s" \
         >> "$RUN_LOG_FILE" 2>/dev/null || true
 }
 
@@ -462,7 +464,23 @@ upload_one() {
         local cas_bytes input_bytes
         cas_bytes="$(echo "$final_job_json" | jq -r '.cas_bytes_written // .cas_size_bytes // 0' 2>/dev/null || echo 0)"
         input_bytes="$(stat -c%s "$src_file" 2>/dev/null || stat -f%z "$src_file" 2>/dev/null || echo 0)"
-        echo "OK $job_id $input_bytes $cas_bytes"
+        # Equivalent-phase timing from the prepub job record: publish-to-Stratum-0
+        # = published_at − created_at (pipeline+lease+commit).  S1 distribution is
+        # async (distributing_ended_at unset → 0), so it is NOT part of S0.
+        local _cre _pub _ds _de _s0ms=0 _s1ms=0
+        _cre="$(echo "$final_job_json" | jq -r '.created_at // empty' 2>/dev/null)"
+        _pub="$(echo "$final_job_json" | jq -r '(.published_at // .updated_at) // empty' 2>/dev/null)"
+        _ds="$(echo "$final_job_json"  | jq -r '.distributing_started_at // empty' 2>/dev/null)"
+        _de="$(echo "$final_job_json"  | jq -r '.distributing_ended_at // empty' 2>/dev/null)"
+        if [[ -n "$_cre" && -n "$_pub" ]]; then
+            _s0ms=$(( $(date -d "$_pub" +%s%3N 2>/dev/null || echo 0) - $(date -d "$_cre" +%s%3N 2>/dev/null || echo 0) ))
+            (( _s0ms < 0 )) && _s0ms=0
+        fi
+        if [[ -n "$_ds" && -n "$_de" && "${_de:0:4}" != "0001" ]]; then
+            _s1ms=$(( $(date -d "$_de" +%s%3N 2>/dev/null || echo 0) - $(date -d "$_ds" +%s%3N 2>/dev/null || echo 0) ))
+            (( _s1ms < 0 )) && _s1ms=0
+        fi
+        echo "OK $job_id $input_bytes $cas_bytes $_s0ms $_s1ms"
     else
         echo -e "[${file_idx}/${total}] ${RED}✗ ${final_state:-unknown}${NC}  $(basename "$src_file")" >&2
         # Extract server-side error message so the caller sees the real reason.
@@ -642,6 +660,9 @@ FAILED=0
 TOTAL_INPUT_BYTES=0
 TOTAL_CAS_BYTES=0
 declare -a PKG_DURATIONS=()   # per-package duration_s values for stats at end
+SUM_S0_MS=0   # Σ per-package publish-to-Stratum-0 (ms) — equivalent-phase metric
+SUM_S1_MS=0   # Σ per-package S1 distribution (ms); 0 when async/non-blocking
+N_S0=0
 START_TS=$(date +%s)
 TOTAL=${#FILES[@]}
 BATCH_ID="${PUBLISH_METHOD}-$(date -u -d "@${START_TS}" +%Y%m%dT%H%M%SZ 2>/dev/null || date -u -r "${START_TS}" +%Y%m%dT%H%M%SZ)"
@@ -708,6 +729,16 @@ reap_completed() {
                 _cas="$(echo "$result" | awk '{print $4+0}')"
                 TOTAL_INPUT_BYTES=$(( TOTAL_INPUT_BYTES + _in ))
                 TOTAL_CAS_BYTES=$(( TOTAL_CAS_BYTES + _cas ))
+                # Equivalent-phase: OK fields 5/6 = publish-to-S0 / S1 (ms).  Bits
+                # emits them; ingest (and any legacy OK line without them) falls
+                # back to the whole-package wall time as the S0 measure, S1=0.
+                local _s0ms _s1ms
+                _s0ms="$(echo "$result" | awk '{print ($5==""?-1:$5)+0}')"
+                _s1ms="$(echo "$result" | awk '{print ($6==""?0:$6)+0}')"
+                (( _s0ms < 0 )) && _s0ms=$(( _pkg_dur * 1000 ))
+                SUM_S0_MS=$(( SUM_S0_MS + _s0ms ))
+                SUM_S1_MS=$(( SUM_S1_MS + _s1ms ))
+                N_S0=$(( N_S0 + 1 ))
                 local _effective_id="${_job_id:-pkg-${_base_name}-${pkg_end}}"
                 # Immediately write a per-package entry so the chart updates live
                 log_package "${_effective_id}" \
@@ -785,8 +816,15 @@ if [[ ${#PKG_DURATIONS[@]} -gt 0 ]]; then
     [[ -z "$P95_S" ]] && P95_S=$MAX_S
 fi
 
+PUBLISH_S0_S="0"; S1_S="0"
+if (( N_S0 > 0 )); then
+    PUBLISH_S0_S="$(awk "BEGIN{printf \"%.3f\", ${SUM_S0_MS}/${N_S0}/1000}")"
+    S1_S="$(awk "BEGIN{printf \"%.3f\", ${SUM_S1_MS}/${N_S0}/1000}")"
+fi
+
 log_run "$RUN_ID" "$TOTAL" "$PUBLISHED" "$FAILED" "$START_TS" "$END_TS" \
     "$TOTAL_INPUT_BYTES" "$TOTAL_CAS_BYTES" \
-    "$AVG_S" "$MIN_S" "$MAX_S" "$P50_S" "$P95_S"
+    "$AVG_S" "$MIN_S" "$MAX_S" "$P50_S" "$P95_S" \
+    "$PUBLISH_S0_S" "$S1_S"
 
 [[ $FAILED -eq 0 ]]
