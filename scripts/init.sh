@@ -460,8 +460,12 @@ CVMFS_HTTP_PROXY=DIRECT
 CVMFS_UPSTREAM_STORAGE=local,/data/cas/data/txn,/data/cas
 EOF
 # gatewaykey: same plain_text format as the gateway .gw key (id + secret).
+# 644, not 600: cvmfs_swissknife runs as the container's non-root `prepub` user,
+# whose UID differs from the host owner, so a 600 file would be unreadable and
+# ingestsql aborts ("gatewaykey is not readable"). Acceptable for the testbed;
+# a real deployment should provision this secret with matching ownership.
 printf 'plain_text prepub-key %s\n' "$CVMFS_GATEWAY_SECRET" > "$INGEST_DIR/gatewaykey"
-chmod 600 "$INGEST_DIR/gatewaykey"
+chmod 644 "$INGEST_DIR/gatewaykey"
 if [[ -f "$TESTBED_ROOT/config/keys/$REPO_NAME.pub" ]]; then
     cp -f "$TESTBED_ROOT/config/keys/$REPO_NAME.pub" "$INGEST_DIR/pubkey"
 else
