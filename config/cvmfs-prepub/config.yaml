@@ -23,10 +23,3 @@ gateway:
 # Prevents jobs from hanging indefinitely when a remote endpoint stalls.
 # 30m is generous for typical payloads; increase for very large repos.
 job_timeout: 30m
-
-# CVMFS content-defined chunking (xor32). Match native cvmfs_server
-# CVMFS_MIN/AVG/MAX_CHUNK_SIZE so bits chunks at identical boundaries.
-chunking:
-  min: 4194304
-  avg: 8388608
-  max: 16777216
