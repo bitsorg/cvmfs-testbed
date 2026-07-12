@@ -266,6 +266,9 @@ success "Directory structure created."
 # Idempotent: if CVMFS_GATEWAY_SECRET is already set (loaded from .env above),
 # the existing secrets are reused and .env is not rewritten.
 info "Handling secrets..."
+# Gateway key id: reused from .env if present, else the conventional default.
+# The gatewaykey/.gw files below are built from this id + CVMFS_GATEWAY_SECRET.
+CVMFS_GATEWAY_KEY_ID="${CVMFS_GATEWAY_KEY_ID:-prepub-key}"
 if [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
     CVMFS_GATEWAY_SECRET=$(openssl rand -hex 32)
     PREPUB_API_TOKEN=$(openssl rand -hex 24)
@@ -409,7 +412,7 @@ EOF
 # Mounted into the gateway container at /etc/cvmfs/keys/${REPO_NAME}.gw (read-only via
 # the same ${TESTBED_ROOT}/config/keys volume used for signing keys).
 cat > "$TESTBED_ROOT/config/keys/$REPO_NAME.gw" <<EOF
-plain_text prepub-key $CVMFS_GATEWAY_SECRET
+plain_text $CVMFS_GATEWAY_KEY_ID $CVMFS_GATEWAY_SECRET
 EOF
 chmod 600 "$TESTBED_ROOT/config/keys/$REPO_NAME.gw"
 
@@ -432,7 +435,7 @@ cat > "$TESTBED_ROOT/config/gateway/repo.json" <<EOF
       "domain": "$REPO_NAME",
       "keys": [
         {
-          "id": "prepub-key",
+          "id": "$CVMFS_GATEWAY_KEY_ID",
           "path": "/"
         }
       ]
@@ -448,9 +451,11 @@ success "Gateway config written."
 # this dir at /etc/cvmfs-prepub/gateway-client and is launched with
 # --ingest-config-prefix /etc/cvmfs-prepub/gateway-client/ (see the compose file).
 # All three are real files (a file bind-mount into this :ro dir cannot create its
-# mountpoint); pubkey is copied from the repository key, which mkfs writes later
-# in this script — so a fresh init populates it on its second run (init.sh is
-# re-runnable and always overwrites config from templates).
+# mountpoint). No new credentials are minted here: gatewaykey is the SAME gateway
+# key as config/keys/<repo>.gw (built from CVMFS_GATEWAY_KEY_ID + CVMFS_GATEWAY_SECRET
+# in .env), and pubkey is the repository public key /etc/cvmfs/keys/<repo>.pub that
+# mkfs writes. mkfs runs later in this script, so on a fresh install the pubkey is
+# (re)provisioned by the post-mkfs step below — a single init run suffices.
 INGEST_DIR="$TESTBED_ROOT/config/cvmfs-prepub/gateway-client/$REPO_NAME"
 mkdir -p "$INGEST_DIR"
 cat > "$INGEST_DIR/config" <<EOF
@@ -464,12 +469,20 @@ EOF
 # whose UID differs from the host owner, so a 600 file would be unreadable and
 # ingestsql aborts ("gatewaykey is not readable"). Acceptable for the testbed;
 # a real deployment should provision this secret with matching ownership.
-printf 'plain_text prepub-key %s\n' "$CVMFS_GATEWAY_SECRET" > "$INGEST_DIR/gatewaykey"
+printf 'plain_text %s %s\n' "$CVMFS_GATEWAY_KEY_ID" "$CVMFS_GATEWAY_SECRET" > "$INGEST_DIR/gatewaykey"
 chmod 644 "$INGEST_DIR/gatewaykey"
-if [[ -f "$TESTBED_ROOT/config/keys/$REPO_NAME.pub" ]]; then
+# pubkey: the repository public key. Canonical source is /etc/cvmfs/keys/<repo>.pub
+# (written by mkfs). On a re-init the repo already exists so it is present now; on a
+# fresh install it does not exist until mkfs runs later — the post-mkfs step below
+# then provisions it. config/keys/<repo>.pub is a fallback (our own copy).
+if [[ -f "/etc/cvmfs/keys/$REPO_NAME.pub" ]]; then
+    cp -f "/etc/cvmfs/keys/$REPO_NAME.pub" "$INGEST_DIR/pubkey"
+    chmod 644 "$INGEST_DIR/pubkey"
+elif [[ -f "$TESTBED_ROOT/config/keys/$REPO_NAME.pub" ]]; then
     cp -f "$TESTBED_ROOT/config/keys/$REPO_NAME.pub" "$INGEST_DIR/pubkey"
+    chmod 644 "$INGEST_DIR/pubkey"
 else
-    warn "repo pubkey not present yet — re-run init.sh after the repository is initialised (mkfs) to populate $INGEST_DIR/pubkey"
+    warn "repo pubkey not present yet — it will be provisioned by the post-mkfs step in this run"
 fi
 success "Ingest (coarse-publish finalize) config written."
 
@@ -841,6 +854,15 @@ else
                     esac
                 fi
             done
+            # Provision the ingestsql gateway-client pubkey from the canonical repo
+            # public key mkfs just wrote (single-run reliability: the gateway-client
+            # block above runs before mkfs, when this key does not yet exist).
+            if [[ -f "/etc/cvmfs/keys/$REPO_NAME.pub" && -d "$INGEST_DIR" ]]; then
+                sudo cp -f "/etc/cvmfs/keys/$REPO_NAME.pub" "$INGEST_DIR/pubkey"
+                sudo chown "$USER:$(id -gn)" "$INGEST_DIR/pubkey"
+                chmod 644 "$INGEST_DIR/pubkey"
+                info "Provisioned ingestsql gateway-client pubkey from /etc/cvmfs/keys/$REPO_NAME.pub"
+            fi
             sudo chown -R "$USER:$(id -gn)" "$TESTBED_ROOT/repos/$REPO_NAME" 2>/dev/null || true
             # Make repo tree world-writable so container services (cvmfs-prepub,
             # gateway) running as non-root users can write to the CAS and spool.
