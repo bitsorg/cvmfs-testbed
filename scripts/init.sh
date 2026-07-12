@@ -447,8 +447,10 @@ success "Gateway config written."
 # the -C prefix: <prefix>/<repo>/{config,gatewaykey,pubkey}. The prepub mounts
 # this dir at /etc/cvmfs-prepub/gateway-client and is launched with
 # --ingest-config-prefix /etc/cvmfs-prepub/gateway-client/ (see the compose file).
-# pubkey is supplied by mounting config/keys/${REPO_NAME}.pub over it in compose,
-# so it always tracks the repository key (which mkfs writes later in this script).
+# All three are real files (a file bind-mount into this :ro dir cannot create its
+# mountpoint); pubkey is copied from the repository key, which mkfs writes later
+# in this script — so a fresh init populates it on its second run (init.sh is
+# re-runnable and always overwrites config from templates).
 INGEST_DIR="$TESTBED_ROOT/config/cvmfs-prepub/gateway-client/$REPO_NAME"
 mkdir -p "$INGEST_DIR"
 cat > "$INGEST_DIR/config" <<EOF
@@ -460,6 +462,11 @@ EOF
 # gatewaykey: same plain_text format as the gateway .gw key (id + secret).
 printf 'plain_text prepub-key %s\n' "$CVMFS_GATEWAY_SECRET" > "$INGEST_DIR/gatewaykey"
 chmod 600 "$INGEST_DIR/gatewaykey"
+if [[ -f "$TESTBED_ROOT/config/keys/$REPO_NAME.pub" ]]; then
+    cp -f "$TESTBED_ROOT/config/keys/$REPO_NAME.pub" "$INGEST_DIR/pubkey"
+else
+    warn "repo pubkey not present yet — re-run init.sh after the repository is initialised (mkfs) to populate $INGEST_DIR/pubkey"
+fi
 success "Ingest (coarse-publish finalize) config written."
 
 info "Writing cvmfs-prepub config..."

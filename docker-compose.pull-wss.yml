@@ -24,11 +24,11 @@ services:
       - ${TESTBED_ROOT}/config/broker-tls:/etc/cvmfs-prepub/tls:ro
       - ${TESTBED_ROOT}/config/discovery-keys:/etc/cvmfs-prepub/discovery-keys:ro
       # Coarse-publish finalize (ADR-0007): cvmfs_swissknife + its shared libs,
-      # the ingestsql gateway-client config, and the repo pubkey (mounted so it
-      # tracks the repository key written by mkfs).
+      # and the ingestsql gateway-client config (config, gatewaykey, pubkey — all
+      # real files written by init.sh; a file bind-mount into this :ro dir would
+      # fail to create its mountpoint).
       - ${SOFTWARE_ROOT}:/opt/cvmfs-software:ro
       - ${TESTBED_ROOT}/config/cvmfs-prepub/gateway-client:/etc/cvmfs-prepub/gateway-client:ro
-      - ${TESTBED_ROOT}/config/keys/${REPO_NAME}.pub:/etc/cvmfs-prepub/gateway-client/${REPO_NAME}/pubkey:ro
     command: >
       /usr/local/bin/cvmfs-prepub
       --config /etc/cvmfs-prepub/config.yaml
