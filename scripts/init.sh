@@ -442,6 +442,26 @@ cat > "$TESTBED_ROOT/config/gateway/repo.json" <<EOF
 EOF
 success "Gateway config written."
 
+# ── Coarse-publish (ADR-0007) ingest config for cvmfs-prepub finalize ─────────
+# cvmfs_swissknife ingestsql (invoked by the finalize job) reads its config from
+# the -C prefix: <prefix>/<repo>/{config,gatewaykey,pubkey}. The prepub mounts
+# this dir at /etc/cvmfs-prepub/gateway-client and is launched with
+# --ingest-config-prefix /etc/cvmfs-prepub/gateway-client/ (see the compose file).
+# pubkey is supplied by mounting config/keys/${REPO_NAME}.pub over it in compose,
+# so it always tracks the repository key (which mkfs writes later in this script).
+INGEST_DIR="$TESTBED_ROOT/config/cvmfs-prepub/gateway-client/$REPO_NAME"
+mkdir -p "$INGEST_DIR"
+cat > "$INGEST_DIR/config" <<EOF
+CVMFS_GATEWAY=http://gateway:4929/api/v1
+CVMFS_STRATUM0=http://stratum0/cvmfs/$REPO_NAME
+CVMFS_HTTP_PROXY=DIRECT
+CVMFS_UPSTREAM_STORAGE=local,/data/cas/data/txn,/data/cas
+EOF
+# gatewaykey: same plain_text format as the gateway .gw key (id + secret).
+printf 'plain_text prepub-key %s\n' "$CVMFS_GATEWAY_SECRET" > "$INGEST_DIR/gatewaykey"
+chmod 600 "$INGEST_DIR/gatewaykey"
+success "Ingest (coarse-publish finalize) config written."
+
 info "Writing cvmfs-prepub config..."
 cat > "$TESTBED_ROOT/config/cvmfs-prepub/config.yaml" <<'EOFCONFIG'
 dev: true

@@ -23,6 +23,12 @@ services:
     volumes:
       - ${TESTBED_ROOT}/config/broker-tls:/etc/cvmfs-prepub/tls:ro
       - ${TESTBED_ROOT}/config/discovery-keys:/etc/cvmfs-prepub/discovery-keys:ro
+      # Coarse-publish finalize (ADR-0007): cvmfs_swissknife + its shared libs,
+      # the ingestsql gateway-client config, and the repo pubkey (mounted so it
+      # tracks the repository key written by mkfs).
+      - ${SOFTWARE_ROOT}:/opt/cvmfs-software:ro
+      - ${TESTBED_ROOT}/config/cvmfs-prepub/gateway-client:/etc/cvmfs-prepub/gateway-client:ro
+      - ${TESTBED_ROOT}/config/keys/${REPO_NAME}.pub:/etc/cvmfs-prepub/gateway-client/${REPO_NAME}/pubkey:ro
     command: >
       /usr/local/bin/cvmfs-prepub
       --config /etc/cvmfs-prepub/config.yaml
@@ -36,6 +42,9 @@ services:
       --enroll-url https://cvmfs-prepub:8443
       --discovery-signing-key /etc/cvmfs-prepub/discovery-keys/discovery.key
       --pull-object-base-url http://cvmfs-prepub:8080
+      --ingest-swissknife /opt/cvmfs-software/cvmfs_swissknife
+      --ingest-config-prefix /etc/cvmfs-prepub/gateway-client/
+      --ingest-env LD_LIBRARY_PATH=/opt/cvmfs-software
 
   stratum1-a:
     depends_on:
