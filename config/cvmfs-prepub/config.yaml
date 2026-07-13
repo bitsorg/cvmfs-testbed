@@ -13,6 +13,16 @@ server:
   listen: ":8080"
 gateway:
   url: http://gateway:4929
+# Coarse publish (ADR-0007) requires FIXED 24 MiB chunk boundaries: ingestsql
+# reconstructs chunk offsets as k*24MiB and the descriptor emitter enforces
+# chunk-count == ceil(size/24MiB). min==avg==max makes the xor32 chunker cut at
+# exactly 24 MiB (it forces the boundary at max), so every file yields
+# ceil(size/24MiB) chunks. Content-defined sizes (e.g. 4/8/16 MiB) break coarse
+# finalize with "hash count N != ceil(size/24MiB)".
+chunking:
+  min: 25165824
+  avg: 25165824
+  max: 25165824
 # Stratum 1 distribution is now driven by the embedded MQTT-over-WSS pull
 # broker: receivers learn of new commits over the control plane and pull the
 # objects from Stratum 0 themselves. The cvmfs-prepub binary no longer reads
