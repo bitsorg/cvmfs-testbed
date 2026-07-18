@@ -93,6 +93,19 @@ services:
     networks:
       - cvmfs-net
 
+  # ── runner-sd — Prometheus http_sd endpoint for the GitLab runner fleet's
+  # node-exporters, so dynamically added/removed runners are scraped without
+  # editing scrape.yml. Serves target JSON at :8080; the vmagent scrape.yml
+  # 'runner-nodes' job GETs it. Deployment file supplies GITLAB_URL/token env.
+  runner-sd:
+    image: python:3.12-alpine
+    container_name: cvmfs-runner-sd
+    volumes:
+      - ../containers/monitoring/runner-sd.py:/app/runner-sd.py:ro
+    command: ["python", "/app/runner-sd.py"]
+    networks:
+      - cvmfs-net
+
 networks:
   cvmfs-net:
     driver: bridge

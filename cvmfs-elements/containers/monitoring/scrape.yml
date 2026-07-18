@@ -50,3 +50,13 @@ scrape_configs:
       - source_labels: [__address__]
         target_label: instance
         replacement: 'host'
+
+  # Dynamic GitLab-runner node-exporters, discovered from the GitLab Runners API
+  # via the runner-sd service (Prometheus http_sd). Runners are added/removed from
+  # the fleet without editing this file; runner-sd sets each target's instance/job
+  # labels. Runner-sd serves [] until RUNNER_SD_TOKEN is configured.
+  - job_name: 'runner-nodes'
+    metrics_path: '/metrics'
+    http_sd_configs:
+      - url: 'http://runner-sd:8080/'
+        refresh_interval: 60s

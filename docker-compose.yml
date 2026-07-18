@@ -295,6 +295,21 @@ services:
     depends_on:
       - victoriametrics
 
+  # http_sd endpoint: discovers the runner fleet's node-exporters from the GitLab
+  # Runners API so vmagent scrapes them dynamically. Serves [] (harmless) until
+  # RUNNER_SD_TOKEN is set in .env; needs a token that can list runners + read
+  # their ip_address (project Maintainer/Owner, or admin for instance-wide).
+  runner-sd:
+    extends:
+      file: ./cvmfs-elements/compose/monitoring.yml
+      service: runner-sd
+    environment:
+      GITLAB_URL:         ${GITLAB_URL:-https://gitlab.cern.ch}
+      RUNNER_SD_TOKEN:    ${RUNNER_SD_TOKEN:-}
+      PROJECT_ID:         ${RUNNER_SD_PROJECT_ID:-}
+      NODE_EXPORTER_PORT: ${NODE_EXPORTER_PORT:-9100}
+      ONLY_DESC_REGEX:    ${RUNNER_SD_DESC_REGEX:-}
+
 networks:
   cvmfs-net:
     driver: bridge
