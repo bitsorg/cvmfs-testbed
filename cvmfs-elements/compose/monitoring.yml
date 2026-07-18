@@ -80,6 +80,19 @@ services:
     networks:
       - cvmfs-net
 
+  # ── vm-cors — CORS proxy so the bits-console browser SPA can query VM ─────
+  # VictoriaMetrics sends no CORS headers; this nginx adds them and proxies to
+  # it by service name. The deployment file publishes the host port (8430) —
+  # bits-console config/monitoring.yaml points metrics_url at it.
+  vm-cors:
+    image: nginx:alpine
+    container_name: cvmfs-vm-cors
+    volumes:
+      # Resolved relative to THIS base file's location (like vmagent's scrape.yml).
+      - ../containers/monitoring/nginx-cors.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - cvmfs-net
+
 networks:
   cvmfs-net:
     driver: bridge

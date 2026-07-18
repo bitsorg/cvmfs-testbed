@@ -283,6 +283,18 @@ services:
       file: ./cvmfs-elements/compose/monitoring.yml
       service: node-exporter
 
+  # CORS proxy in front of VictoriaMetrics so the bits-console dashboard can
+  # query it from the browser. Publishes host :8430 (bits-console
+  # config/monitoring.yaml metrics_url -> http://<host>:8430).
+  vm-cors:
+    extends:
+      file: ./cvmfs-elements/compose/monitoring.yml
+      service: vm-cors
+    ports:
+      - "8430:80"
+    depends_on:
+      - victoriametrics
+
 networks:
   cvmfs-net:
     driver: bridge
