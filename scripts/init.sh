@@ -809,6 +809,16 @@ else
         fi
 
         # ── Run mkfs ─────────────────────────────────────────────────────────────
+        # -p (do NOT configure Apache) is required here: Apache runs in the
+        #   stratum0 CONTAINER and is configured by the compose stack, but mkfs
+        #   runs on the HOST.  Without -p, mkfs ends with
+        #     wait_for_apache "http://stratum0/cvmfs/<repo>/.cvmfswhitelist"
+        #   (cvmfs_server_mkfs.sh:481) — and `stratum0` is a Docker-network
+        #   hostname the host cannot resolve, so mkfs dies with
+        #     "Creating Initial Repository... fail (Apache configuration)"
+        #   after having already created the keys, storage and whitelist.
+        #   The CVMFS_TESTBED env var below does not help: that support is not
+        #   present in the CVMFS server scripts we build from.
         # CVMFS_TESTBED=true  — skips Apache vhost setup (cvmfs_server_mkfs.sh).
         # CVMFS_TESTBED_SOFTWARE_ROOT — tells cvmfs_server_{coda,util}.sh where
         #   binaries (cvmfs_publish, cvmfs_swissknife) and libraries live, so
@@ -821,7 +831,7 @@ else
                 CVMFS_TESTBED=true \
                 CVMFS_TESTBED_SOFTWARE_ROOT="$SOFTWARE_ROOT" \
                 PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-                "$CVMFS_SERVER_BIN" mkfs -I -P \
+                "$CVMFS_SERVER_BIN" mkfs -I -P -p \
                 -w "http://stratum0/cvmfs/$REPO_NAME" \
                 -o "$USER" "$REPO_NAME"; then
             _mkfs_ok=true
