@@ -838,12 +838,32 @@ else
         # same storage directory, so the repository content is identical.
         _MKFS_STRATUM0_URL="http://localhost:8090/cvmfs/$REPO_NAME"
         _CONTAINER_STRATUM0_URL="http://stratum0/cvmfs/$REPO_NAME"
+        # `make clean && make init` legitimately runs with every container down,
+        # so init starts the one service mkfs depends on rather than telling the
+        # user to do it: Apache must be able to serve the storage directory back
+        # while mkfs signs the initial repository.  Starting stratum0 alone is
+        # enough (it has no dependencies) and is idempotent when already up.
         if ! curl -sf --max-time 5 "http://localhost:8090/" >/dev/null 2>&1; then
-            warn "Apache (stratum0 container) is not reachable at http://localhost:8090/."
-            warn "mkfs needs it to read back the whitelist/reflog it just wrote."
-            warn "Start the containers first, then re-run init:"
-            warn "  ./testbed start && ./testbed init"
+            info "Starting the stratum0 container (Apache) — mkfs must read back what it writes ..."
+            ( cd "$TESTBED_DIR" && docker compose up -d stratum0 ) >/dev/null 2>&1 \
+                || ( cd "$TESTBED_DIR" && docker-compose up -d stratum0 ) >/dev/null 2>&1 \
+                || warn "Could not start the stratum0 container automatically."
+            for _i in $(seq 1 30); do
+                curl -sf --max-time 2 "http://localhost:8090/" >/dev/null 2>&1 && break
+                sleep 1
+            done
         fi
+        if ! curl -sf --max-time 5 "http://localhost:8090/" >/dev/null 2>&1; then
+            warn "Apache (stratum0 container) is still not reachable at http://localhost:8090/."
+            warn "mkfs signs the initial repository by reading .cvmfsreflog back over HTTP,"
+            warn "so it cannot succeed while Apache is down — skipping mkfs."
+            warn "Start the containers, then re-run init:"
+            warn "  ./testbed start && ./testbed init"
+            CVMFS_REPO_INIT_OK=false
+        fi
+    fi
+
+    if $CVMFS_REPO_INIT_OK; then
         info "Running: sudo env CVMFS_TESTBED=true CVMFS_TESTBED_SOFTWARE_ROOT=$SOFTWARE_ROOT ... cvmfs_server mkfs"
         _mkfs_ok=false
         if sudo env \
