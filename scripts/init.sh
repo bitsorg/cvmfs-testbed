@@ -1013,12 +1013,24 @@ else
                 # data/gateway-spool is bind-mounted to /var/spool/cvmfs inside the
                 # gateway container.  It must contain client.local and reflog.chksum
                 # for cvmfs_receiver to function at commit time.
+                # The gateway container runs privileged, so a previous run may have
+                # left this tree owned by root: a plain mkdir/chmod/touch then
+                # fails with EPERM and (under `set -e`) aborts init right after a
+                # perfectly successful mkfs.  Take ownership first when needed.
                 _gspool="$TESTBED_ROOT/data/gateway-spool/$REPO_NAME"
-                mkdir -p "$_gspool"
-                chmod 755 "$_gspool"
+                if [[ -e "$_gspool" && ! -w "$_gspool" ]]; then
+                    warn "Spool dir is not writable (root-owned from a previous run) — taking ownership: $_gspool"
+                    sudo chown -R "$USER:$(id -gn)" "$_gspool" 2>/dev/null || true
+                fi
+                mkdir -p "$_gspool" 2>/dev/null \
+                    || sudo mkdir -p "$_gspool"
+                chmod 755 "$_gspool" 2>/dev/null \
+                    || sudo chmod 755 "$_gspool"
 
                 # client.local — just needs to exist; truncated to zero at commit.
-                touch "$_gspool/client.local"
+                touch "$_gspool/client.local" 2>/dev/null \
+                    || { sudo touch "$_gspool/client.local"
+                         sudo chown "$USER:$(id -gn)" "$_gspool/client.local"; }
 
                 # reflog.chksum — must contain the hash written by cvmfs_server mkfs.
                 # Copy from the host spool if available; fall back to an empty stub
@@ -1031,7 +1043,9 @@ else
                     chmod 644 "$_gspool/reflog.chksum"
                     info "Copied reflog.chksum from $_host_chksum"
                 else
-                    touch "$_gspool/reflog.chksum"
+                    touch "$_gspool/reflog.chksum" 2>/dev/null \
+                        || { sudo touch "$_gspool/reflog.chksum"
+                             sudo chown "$USER:$(id -gn)" "$_gspool/reflog.chksum"; }
                     warn "Host reflog.chksum not found at $_host_chksum"
                     warn "Commit operations may fail with kMissingReflog until it is created."
                     warn "If cvmfs_server mkfs succeeded, re-run: sudo cp $_host_chksum $_gspool/reflog.chksum"
@@ -1041,8 +1055,12 @@ else
                 # scratch→data/XY/hash stays on the same bind-mount (EXDEV fix).
                 # repos/<repo> is the same host path as /srv/cvmfs/<repo> inside the
                 # gateway container, so pre-creating it here is sufficient.
-                mkdir -p "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
-                chmod 755 "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
+                # Same story as the spool above: the gateway owns this directory
+                # once it has run, so fall back to sudo instead of aborting init.
+                mkdir -p "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch" 2>/dev/null \
+                    || sudo mkdir -p "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
+                chmod 755 "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch" 2>/dev/null \
+                    || sudo chmod 755 "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
 
                 info "Pre-created spool files in $_gspool"
                 info "Pre-created upstream-scratch in $TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
