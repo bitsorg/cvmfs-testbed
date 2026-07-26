@@ -29,6 +29,12 @@
 #                   cvmfs_server ingest.  Runs a privileged one-shot container;
 #                   requires gateway and stratum0 to be running.  Calls snapshot
 #                   automatically on success.
+#   fix-perms       Repair ownership/permissions on the repository tree so the
+#                   container services can write to it.  Needed after a mkfs
+#                   that failed halfway (cvmfs-prepub runs as the unprivileged
+#                   `prepub` user and uses that tree as its CAS root, so it
+#                   exits with "CAS probe failed: … permission denied" and the
+#                   API never comes up).  Idempotent.
 #   snapshot        Save current repository state (CAS + spool + keys + configs)
 #                   to TESTBED_ROOT/repo-seed.tar.gz.
 #   restore         Restore repository state from repo-seed.tar.gz.  Fails if the
@@ -480,6 +486,47 @@ _resolve_method() {
 # the nested-catalog structure required by cvmfs_server ingest.
 # Requires: gateway and stratum0 must already be running (use after cmd_start).
 # On success, automatically calls cmd_snapshot to create repo-seed.tar.gz.
+# fix_repo_perms — make the repository tree writable by the container services.
+#
+# The repo directory is bind-mounted into three containers with different
+# users: stratum0/gateway run privileged (root), but cvmfs-prepub runs as the
+# unprivileged `prepub` user and uses this very tree as its CAS root
+# (docker-compose: repos/<repo>:/data/cas).  `cvmfs_server mkfs` creates the
+# tree owned by the cvmfs user, so after any (re-)init — or after a mkfs that
+# failed halfway — prepub cannot write and dies on its startup probe with:
+#
+#   CAS probe failed: put: creating CAS object: open /data/cas/data/e3/… :
+#   permission denied
+#
+# …which surfaces much later as "cvmfs-prepub API not reachable" and a
+# bootstrap that cannot run.  init.sh applies these permissions after a
+# successful mkfs; this function is the idempotent, standalone version so the
+# tree can be repaired without a full re-init.
+#
+# upstream-scratch is skipped on purpose: the gateway owns it (root) and it may
+# be an active bind mount, where a recursive chmod fails with EPERM.
+fix_repo_perms() {
+    local repo_dir="${TESTBED_ROOT}/repos/${REPO_NAME}"
+    if [[ ! -d "$repo_dir" ]]; then
+        error "Repository directory not found: $repo_dir"
+        error "Run: ./testbed init"
+        return 1
+    fi
+    info "Repairing ownership/permissions on $repo_dir ..."
+    sudo chown -R "$USER:$(id -gn)" "$repo_dir" 2>/dev/null || true
+    find "$repo_dir" -path '*/upstream-scratch*' -prune -o \
+        -exec chmod 777 {} + 2>/dev/null || true
+    ok "Repository tree is writable by the container services."
+}
+
+cmd_fix_perms() {
+    section "Repairing repository permissions"
+    load_env
+    fix_repo_perms || exit 1
+    info "Restart prepub to clear a failed startup probe:"
+    info "  docker compose up -d cvmfs-prepub && ./testbed logs cvmfs-prepub | tail -5"
+}
+
 cmd_bootstrap() {
     section "Bootstrapping repository nested-catalog structure"
     load_env
@@ -680,6 +727,15 @@ _cmd_status_inner() {
         ok "All checked endpoints are reachable"
     else
         warn "Some endpoints are not yet reachable — containers may still be starting"
+        # Name the most common concrete cause instead of leaving the user with
+        # "not reachable": prepub exits when its startup probe cannot write to
+        # the CAS, which is this repo tree (see fix_repo_perms).
+        if run_compose logs --tail 40 cvmfs-prepub 2>/dev/null \
+             | grep -q "startup probe failed.*permission denied"; then
+            error "cvmfs-prepub cannot write to its CAS (the repository tree)."
+            error "This is a permissions problem, not a startup delay — repair it with:"
+            error "  ./testbed fix-perms && docker compose up -d cvmfs-prepub"
+        fi
     fi
 }
 
@@ -2427,6 +2483,7 @@ case "$CMD" in
     info)           cmd_info ;;
     logs)           cmd_logs ;;
     bootstrap)      cmd_bootstrap ;;
+    fix-perms)      cmd_fix_perms ;;
     snapshot)       cmd_snapshot ;;
     restore)        cmd_restore ;;
     test)           cmd_test ;;

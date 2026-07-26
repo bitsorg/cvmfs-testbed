@@ -993,6 +993,24 @@ else
         else
             warn "cvmfs_server mkfs failed — check output above."
             warn "Once fixed, re-run: ./testbed.sh init"
+            # A failed mkfs may still have created part of the repository tree,
+            # owned by the cvmfs user.  That tree is bind-mounted as
+            # cvmfs-prepub's CAS root, so prepub (running as the unprivileged
+            # `prepub` user) then dies on its startup probe with "permission
+            # denied" and the API never comes up — which is what the user
+            # actually sees, several steps later, as "cvmfs-prepub API not
+            # reachable" followed by "Repository not initialised" from
+            # bootstrap.  Apply the same permissions the success path does, so
+            # a partial tree cannot masquerade as a prepub problem.
+            if [[ -d "$TESTBED_ROOT/repos/$REPO_NAME" ]]; then
+                warn "Repairing permissions on the partial repository tree so the"
+                warn "failure stays visible as an mkfs failure (not a prepub crash)."
+                sudo chown -R "$USER:$(id -gn)" "$TESTBED_ROOT/repos/$REPO_NAME" 2>/dev/null || true
+                find "$TESTBED_ROOT/repos/$REPO_NAME" -path '*/upstream-scratch*' -prune -o \
+                    -exec chmod 777 {} + 2>/dev/null || true
+            fi
+            warn "If the tree already existed, permissions can be repaired any time with:"
+            warn "  ./testbed fix-perms"
         fi
     fi
 fi
