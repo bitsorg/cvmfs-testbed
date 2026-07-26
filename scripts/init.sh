@@ -864,8 +864,28 @@ else
                 "/etc/cvmfs/keys/$REPO_NAME.pub" \
                 "/etc/cvmfs/keys/$REPO_NAME.masterkey"; do
                 if [[ -f "$_keyfile" ]]; then
-                    sudo cp "$_keyfile" "$TESTBED_ROOT/config/keys/"
-                    sudo chown "$USER:$(id -gn)" "$TESTBED_ROOT/config/keys/$(basename "$_keyfile")"
+                    # Docker auto-creates a DIRECTORY at a bind-mount source that
+                    # does not exist yet.  If the containers were started before
+                    # mkfs produced these keys, config/keys/<repo>.{crt,key,pub,
+                    # masterkey} are now directories, and:
+                    #   * this cp fails with "cannot overwrite directory … with
+                    #     non-directory", and
+                    #   * any container created in that state has a directory as
+                    #     the mount point in its rootfs, so once the host path
+                    #     becomes a file it refuses to start with
+                    #     "not a directory: … Are you trying to mount a directory
+                    #     onto a file (or vice-versa)?"
+                    # Remove the bogus directory so the real key can be installed.
+                    # Containers created earlier must still be RECREATED (not just
+                    # restarted) — `docker compose down && ./testbed start`.
+                    _keydst="$TESTBED_ROOT/config/keys/$(basename "$_keyfile")"
+                    if [[ -d "$_keydst" ]]; then
+                        warn "Removing directory where a key file belongs: $_keydst"
+                        warn "(Docker created it; recreate containers afterwards: docker compose down)"
+                        sudo rm -rf "$_keydst"
+                    fi
+                    sudo cp "$_keyfile" "$_keydst"
+                    sudo chown "$USER:$(id -gn)" "$_keydst"
                 else
                     case "$_keyfile" in
                         *.crt)
