@@ -825,6 +825,25 @@ else
         #   setcap runs on the real files in SOFTWARE_ROOT and LD_LIBRARY_PATH is
         #   set correctly for all child processes.
         # Nothing is copied to /usr/bin or any system directory.
+        # ── Stratum0 URL: host-reachable for mkfs, container-facing afterwards ──
+        # mkfs runs on the HOST and genuinely fetches over this URL: swissknife
+        # `sign` is invoked with -u $CVMFS_STRATUM0 and pulls .cvmfsreflog
+        # (cvmfs_server_common.sh:669+). "http://stratum0/…" only resolves
+        # inside the compose network, so mkfs died with
+        #   HTTP connection error 4: http://stratum0/cvmfs/<repo>/.cvmfsreflog
+        #   failed loading reflog (3 - network failure) → fail! (cannot sign repo)
+        # Use the published Apache port for mkfs, then rewrite CVMFS_STRATUM0 in
+        # server.conf to the container-facing name (below), which is what the
+        # gateway/receiver inside the network must use.  Both URLs serve the very
+        # same storage directory, so the repository content is identical.
+        _MKFS_STRATUM0_URL="http://localhost:8090/cvmfs/$REPO_NAME"
+        _CONTAINER_STRATUM0_URL="http://stratum0/cvmfs/$REPO_NAME"
+        if ! curl -sf --max-time 5 "http://localhost:8090/" >/dev/null 2>&1; then
+            warn "Apache (stratum0 container) is not reachable at http://localhost:8090/."
+            warn "mkfs needs it to read back the whitelist/reflog it just wrote."
+            warn "Start the containers first, then re-run init:"
+            warn "  ./testbed start && ./testbed init"
+        fi
         info "Running: sudo env CVMFS_TESTBED=true CVMFS_TESTBED_SOFTWARE_ROOT=$SOFTWARE_ROOT ... cvmfs_server mkfs"
         _mkfs_ok=false
         if sudo env \
@@ -832,7 +851,7 @@ else
                 CVMFS_TESTBED_SOFTWARE_ROOT="$SOFTWARE_ROOT" \
                 PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
                 "$CVMFS_SERVER_BIN" mkfs -I -P -p \
-                -w "http://stratum0/cvmfs/$REPO_NAME" \
+                -w "$_MKFS_STRATUM0_URL" \
                 -o "$USER" "$REPO_NAME"; then
             _mkfs_ok=true
         fi
@@ -930,6 +949,24 @@ else
                     echo "CVMFS_UPSTREAM_STORAGE=${_new_upstream}" >> "$TESTBED_ROOT/config/repo-config/server.conf"
                     info "Added CVMFS_UPSTREAM_STORAGE to server.conf: ${_new_upstream}"
                 fi
+
+                # ── Patch CVMFS_STRATUM0 back to the container-facing URL ────────
+                # mkfs ran on the host and therefore used the published Apache
+                # port (see _MKFS_STRATUM0_URL).  Everything that reads
+                # server.conf afterwards runs INSIDE the compose network, where
+                # the service name is what resolves — so store that.  Both URLs
+                # serve the same storage directory.
+                for _sc in "$TESTBED_ROOT/config/repo-config/server.conf" \
+                           "/etc/cvmfs/repositories.d/$REPO_NAME/server.conf"; do
+                    [[ -f "$_sc" ]] || continue
+                    if grep -q "^CVMFS_STRATUM0=" "$_sc" 2>/dev/null; then
+                        sudo sed -i \
+                            "s|^CVMFS_STRATUM0=.*|CVMFS_STRATUM0=${_CONTAINER_STRATUM0_URL}|" "$_sc"
+                    else
+                        echo "CVMFS_STRATUM0=${_CONTAINER_STRATUM0_URL}" | sudo tee -a "$_sc" >/dev/null
+                    fi
+                done
+                info "Patched CVMFS_STRATUM0 → ${_CONTAINER_STRATUM0_URL} (container-facing)"
 
                 # Pre-create the per-repo spool tree on the HOST.
                 #
