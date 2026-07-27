@@ -1980,7 +1980,7 @@ def parse(path):
         return vals
     return None
 v = parse(os.environ["RUNTIME"]) or parse(os.environ["COMMITTED"]) \
-    or {"min": "25165824", "avg": "25165824", "max": "25165824"}  # fixed 24 MiB (coarse default)
+    or {"min": "6291456", "avg": "6291456", "max": "6291456"}  # fixed 6 MiB (coarse default)
 print(v["min"], v["avg"], v["max"])
 PY
 }

@@ -78,7 +78,13 @@ BITS_DIR ?= $(MAKEFILE_DIR)/cvmfs-bits
 # Resolve the testbed data root: prefer TESTBED_ROOT from .env, else CURDIR.
 # (verify-* use relative-looking repos/ and data/ paths; this makes them work
 # regardless of where the data root actually lives.)
-GET_TESTBED_ROOT = r=$$(sed -n 's/^TESTBED_ROOT=//p' "$(MAKEFILE_DIR)/.env" 2>/dev/null | tail -1); echo "$${r:-$(MAKEFILE_DIR)}"
+# The value is trimmed of surrounding whitespace, a trailing CR (a .env saved
+# with CRLF endings) and optional surrounding quotes.  Without the trim, a
+# trailing space in .env produced paths like "/home/u/cvmfs-testbed /repos/..."
+# and every verify-* target failed with a confusing "No such file or directory".
+GET_TESTBED_ROOT = r=$$(sed -n 's/^TESTBED_ROOT=//p' "$(MAKEFILE_DIR)/.env" 2>/dev/null | tail -1 \
+	| tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' -e 's/^"\(.*\)"$$/\1/' -e "s/^'\(.*\)'$$/\1/"); \
+	echo "$${r:-$(MAKEFILE_DIR)}"
 
 # "MIN AVG MAX" chunk sizes, read from config.yaml by testbed.sh (single source
 # of truth) so verify-chunking never hard-codes them and can't report a false
