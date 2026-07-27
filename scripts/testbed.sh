@@ -41,7 +41,7 @@
 #                   snapshot file does not exist.
 #   test            Run the smoke test (default method: bits).
 #   suite [name...] Run the selectable test suite (default: all six tests).
-#                   Names: bits ingest pull-wss chunking content stress.
+#                   Names: bits ingest pull-wss chunking content stress check.
 #                   Honors the TESTS env var when no names are given.
 #                   Records per-test metrics to data/test-results.ndjson and
 #                   live progress to data/test-suite-status.json.
@@ -1934,6 +1934,7 @@ cmd_pullstatus() {
 #   chunking  bits publish + verify-chunking.py               ~200
 #   content   compare-trees.py latest-bits vs /golden/smoke   ~120 (skip if golden absent)
 #   stress    stresstest N=10 (bits)                          ~300
+#   check     cvmfs_swissknife check -c (catalogs + objects)  ~600
 #
 # Each selected test is wrapped in `timeout <T>`, its stdout/stderr captured to a
 # temp log, parsed for key metrics, and one record appended to
@@ -1944,9 +1945,10 @@ cmd_pullstatus() {
 # Data contract — see scripts/testbed-server.py (readers) and testbed-console.html.
 
 # Ordered catalog and per-test default timeouts.
-_SUITE_TESTS=(bits ingest pull-wss chunking content stress)
+_SUITE_TESTS=(bits ingest pull-wss chunking content stress check)
 declare -A _SUITE_TIMEOUT=(
     [bits]=180 [ingest]=180 [pull-wss]=240 [chunking]=200 [content]=120 [stress]=300
+    [check]=600
 )
 
 # ISO-8601 UTC timestamp helper.
@@ -2084,6 +2086,20 @@ PY
 }
 
 # chunking: files_checked, all_match (from verify-chunking.py output).
+_suite_metrics_check() {
+    local log="$1"
+    LOG="$log" python3 - <<'PY'
+import json, os, re
+txt = open(os.environ["LOG"], encoding="utf-8", errors="replace").read()
+m = {"catalogs": len(re.findall(r'^\[inspecting catalog\]', txt, re.M))}
+if "no problems found" in txt:
+    m["clean"] = True
+elif "CATALOG PROBLEMS OR OTHER ERRORS FOUND" in txt:
+    m["clean"] = False
+print(json.dumps(m))
+PY
+}
+
 _suite_metrics_chunking() {
     local log="$1"
     LOG="$log" python3 - <<'PY'
@@ -2330,6 +2346,31 @@ _suite_run_one() {
                 [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" || _RT_MSG="stress failed (rc=$rc)"
             fi
             ;;
+        check)
+            # Whole-repository consistency gate: cvmfs_swissknife check walks
+            # every catalog from the signed manifest and validates structure,
+            # statistics counters, nested-catalog transition points and link
+            # counts.  -c additionally verifies that every referenced data
+            # object is actually RETRIEVABLE, which is what catches objects
+            # stored under the wrong key (e.g. a chunk missing its 'P' suffix)
+            # — the defect class that made published files unreadable while
+            # every catalog was internally consistent.
+            #
+            # Runs last, so it validates the repository after every other test
+            # has published into it.  Uses cvmfs-native-publisher: that is the
+            # container that already has cvmfs_swissknife, the shared libs on
+            # LD_LIBRARY_PATH and the repository public key mounted.
+            method="bits"
+            if ! _stack_healthy; then
+                _RT_MSG="skipped: stack not running (run: make ensure)"; rm -f "$log"; return 2
+            fi
+            timeout -k 15 "$t" bash "$0" check >"$log" 2>&1 || rc=$?
+            _RT_METRICS="$(_suite_metrics_check "$log")"
+            if [[ $rc -eq 0 ]]; then _RT_MSG="repository consistent (catalogs + data objects)"; else
+                [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" \
+                    || _RT_MSG="catalog/data problems found (rc=$rc)"
+            fi
+            ;;
         *)
             _RT_MSG="unknown test: $name"; rm -f "$log"; return 1
             ;;
@@ -2338,6 +2379,35 @@ _suite_run_one() {
     _RT_METHOD="$method"
     rm -f "$log"
     [[ $rc -eq 0 ]] && return 0 || return 1
+}
+
+# ── cmd_check ─────────────────────────────────────────────────────────────────
+# Whole-repository consistency check: cvmfs_swissknife check walks every catalog
+# reachable from the signed manifest and validates structure, statistics
+# counters, nested-catalog transition points and directory link counts.
+#
+# -c ("check availability of data chunks") is the important part: it verifies
+# that every referenced data object can actually be RETRIEVED. That is what
+# catches objects stored under the wrong key — e.g. a chunk missing its 'P'
+# (kSuffixPartial) suffix, which leaves every catalog internally consistent
+# while the files are unreadable on the client (EIO "failed to fetch chunk").
+#
+# Runs inside cvmfs-native-publisher: that container already has
+# cvmfs_swissknife, its shared libs on LD_LIBRARY_PATH and the repository
+# public key mounted at /etc/cvmfs/keys.
+#
+# Exit code is swissknife's own: 0 = "no problems found", 1 = problems.
+cmd_check() {
+    load_env
+    if ! _stack_healthy; then error "stack not running — run: make ensure"; exit 1; fi
+    local repo="${REPO_NAME:?REPO_NAME not set}"
+    section "Checking repository ${repo} (catalogs + data objects)"
+    run_compose exec -T cvmfs-native-publisher \
+        cvmfs_swissknife check \
+            -r "http://stratum0/cvmfs/${repo}" \
+            -N "${repo}" \
+            -k "/etc/cvmfs/keys/${repo}.pub" \
+            -t /tmp -c -l 3
 }
 
 cmd_baseline() {
@@ -2488,6 +2558,7 @@ case "$CMD" in
     restore)        cmd_restore ;;
     test)           cmd_test ;;
     suite)          cmd_suite ;;
+    check)          cmd_check ;;
     baseline)       cmd_baseline ;;
     stresstest)     cmd_stresstest ;;
     upload-filelist) cmd_upload_filelist ;;

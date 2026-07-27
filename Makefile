@@ -28,7 +28,7 @@
 #   make redeploy      install + full reset + bootstrap
 #   make clean         Stop containers and wipe all testbed state (keeps snapshot and .env)
 #   make cleanall      Like clean, but also deletes .env (full credential reset)
-#   make test          FULL test suite — all six tests (records metrics);
+#   make test          FULL test suite — all seven tests (records metrics);
 #                      auto-runs 'ensure' first so it works from ANY state;
 #                      subset via  make test TESTS="bits chunking content"
 #   make test-suite    Alias of `make test` (honors TESTS=)
@@ -37,6 +37,8 @@
 #   make test-chunking Suite: bits publish + xor32 chunk verify
 #   make test-content  Suite: compare-trees vs golden/smoke
 #   make test-stress   Suite: stress N=10 (bits)
+#   make test-check    Suite: cvmfs_swissknife check -c (catalogs + data objects)
+#   make check         Same check, raw output, no metrics record
 #   make stresstest    Stress test — bits method, N jobs (default N=10)
 #   make stresstest-ingest  Stress test — ingest path
 #   make catdiff       Diff catalog dumps: ingest vs bits
@@ -116,7 +118,7 @@ _METHOD := $(if $(METHOD),--method $(METHOD),)
 
 .PHONY: all build install init start start-wss ensure bootstrap snapshot restore redeploy clean cleanall baseline \
         test test-suite test-ingest test-bits test-pull test-pull-wss pull-status \
-        test-chunking test-content test-stress \
+        test-chunking test-content test-stress test-check check \
         stresstest stresstest-ingest \
         verify verify-chunking verify-content \
         catdump-ingest catdump-bits catdiff \
@@ -325,6 +327,17 @@ stresstest: | ensure
 test-stress: | ensure
 	bash "$(TESTBED)" suite stress
 
+# Whole-repository consistency gate: cvmfs_swissknife check -c walks every
+# catalog from the signed manifest AND verifies every referenced data object is
+# retrievable.  Catches objects stored under the wrong key (e.g. a chunk missing
+# its 'P' suffix) — internally consistent catalogs, unreadable files.
+test-check: | ensure
+	bash "$(TESTBED)" suite check
+
+# Same check, unwrapped: prints swissknife's own output, records no metrics.
+check: | ensure
+	bash "$(TESTBED)" check
+
 stresstest-ingest: | ensure
 	bash "$(TESTBED)" stresstest $(N) --method ingest
 
@@ -359,7 +372,7 @@ help:
 	@echo "  All test/verify/stress targets auto-run 'ensure' first, so they work"
 	@echo "  from ANY state (fresh checkout, after 'make clean', stopped or running)."
 	@echo ""
-	@echo "  make test                 FULL test suite — all six tests (records metrics)"
+	@echo "  make test                 FULL test suite — all seven tests (records metrics)"
 	@echo "  make test TESTS=\"bits chunking content\"   Run a selected subset"
 	@echo "  make test-suite           Alias of 'make test' (honors TESTS=)"
 	@echo "  make test-ingest          Suite: native ingest into golden/smoke (auto-ensure; skips if no golden)"
@@ -367,11 +380,13 @@ help:
 	@echo "  make test-chunking        Suite: bits publish + xor32 chunk verify"
 	@echo "  make test-content         Suite: compare-trees vs golden/smoke"
 	@echo "  make test-stress          Suite: stress N=10 (bits)"
+	@echo "  make test-check           Suite: swissknife check -c (catalogs + objects)"
+	@echo "  make check                Same check, raw output"
 	@echo "  make test-pull-wss        Suite: end-to-end pull over embedded wss (auto-ensure --wss; skips if not up)"
 	@echo "  make test-pull            Alias of test-pull-wss"
 	@echo "  make pull-status          Dump pull-relevant publisher/receiver logs"
 	@echo ""
-	@echo "  Suite tests (names for TESTS=): bits ingest pull-wss chunking content stress"
+	@echo "  Suite tests (names for TESTS=): bits ingest pull-wss chunking content stress check"
 	@echo "  Results: data/test-results.ndjson  ·  Live status: data/test-suite-status.json"
 	@echo ""
 	@echo "  make stresstest [N=10]    Stress test, N jobs (bits)"
