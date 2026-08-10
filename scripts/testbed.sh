@@ -664,8 +664,20 @@ cmd_restore() {
     info "Snapshot: $snap  (${size})"
 
     # Wipe only what the snapshot covers so we don't touch unrelated data.
+    #
+    # sudo, because the gateway and receiver containers run as root and leave
+    # root-owned files behind in the spool — reflog.chksum and client.local in
+    # particular.  Without it a plain user hits
+    #
+    #   rm: cannot remove '.../data/gateway-spool/<repo>/reflog.chksum': Permission denied
+    #
+    # and, because cmd_start auto-restores when .cvmfspublished is missing, the
+    # failure surfaces as `make test` dying in the `ensure` target rather than
+    # anywhere near restore.  The two sibling wipes already do this: the
+    # bootstrap-spool wipe in cmd_bootstrap and the CAS wipe in
+    # _clean_cas_reinit.  This one was simply missed.
     info "Clearing existing repository data ..."
-    rm -rf \
+    sudo rm -rf \
         "${TESTBED_ROOT}/repos/${REPO_NAME}" \
         "${TESTBED_ROOT}/data/gateway-spool/${REPO_NAME}" \
         "${TESTBED_ROOT}/config/keys" \
