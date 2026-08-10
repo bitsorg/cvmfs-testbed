@@ -10,6 +10,12 @@ RUN apt-get update \
         libssl3 \
         libsqlite3-0 \
         libcurl4 \
+        # cvmfs_swissknife links libcurl-gnutls.so.4, which libcurl4 (the
+        # OpenSSL flavour, libcurl.so.4) does NOT provide.  Without this the
+        # binary is present and executable but dies at load time, and the suite
+        # reports it as "catalog/data problems found (rc=127)" — 127 being
+        # "command not found", not a catalog problem at all.
+        libcurl3t64-gnutls \
         zlib1g \
         libattr1 \
         uuid-runtime \
