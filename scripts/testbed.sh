@@ -696,7 +696,45 @@ cmd_restore() {
     # recursive chmod there fails with EPERM.
     find "${TESTBED_ROOT}/repos/${REPO_NAME}" -path '*/upstream-scratch*' -prune -o -exec chmod 777 {} + 2>/dev/null || true
 
+    _regen_prepub_publisher
+
     ok "Repository restored from snapshot."
+}
+
+# Regenerate config/prepub-publisher/ from config/native-publisher/, differing
+# only in CVMFS_USER (prepub runs cvmfs_server as the non-root `prepub` user;
+# see get_user_shell in cvmfs_server_common.sh).
+#
+# It is NOT in the snapshot, so a restore wipes config/native-publisher and
+# re-extracts it while leaving this directory behind — stale, or gone. When it
+# is missing, Docker creates an empty ROOT-OWNED directory at the mount point,
+# and every ingest then fails with
+#
+#   Info: transaction on repository test.cvmfs.io
+#   Error: The repository test.cvmfs.io does not exist.
+#
+# which reads as a registration problem rather than a missing bind-mount source.
+# Worse, the directory being root-owned means the next attempt to regenerate it
+# by hand fails with EPERM, so the fix looks broken too. Both were observed;
+# 69 jobs failed this way.
+#
+# Deliberately does NOT run during a plain start: init.sh owns first creation,
+# and silently regenerating config on every boot would hide a real divergence.
+_regen_prepub_publisher() {
+    local nat="$TESTBED_ROOT/config/native-publisher"
+    local pre="$TESTBED_ROOT/config/prepub-publisher"
+    [[ -f "$nat/server.conf" ]] || return 0
+
+    # sudo: a previous run may have left a root-owned directory created by
+    # Docker for a missing mount source.
+    if [[ -d "$pre" && ! -w "$pre" ]]; then
+        sudo rm -rf "$pre"
+    fi
+    mkdir -p "$pre"
+    sed 's|^CVMFS_USER=.*|CVMFS_USER=prepub|' "$nat/server.conf" > "$pre/server.conf"
+    [[ -f "$nat/client.conf" ]] && cp "$nat/client.conf" "$pre/client.conf"
+    chmod 644 "$pre"/*.conf 2>/dev/null || true
+    info "Regenerated prepub-publisher config (CVMFS_USER=prepub)."
 }
 
 cmd_restart() {
