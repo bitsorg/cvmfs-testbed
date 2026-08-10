@@ -760,10 +760,13 @@ cmd_mkdirp() {
         return 3
     fi
 
-    local saved; saved="$(grep '^CVMFS_GW_MKDIR_PARENTS=' "$conf" 2>/dev/null || true)"
+    # Globals, not locals: the RETURN trap runs as the function unwinds and a
+    # failing run left the key deleted rather than restored.
+    _MKDIRP_CONF="$conf"
+    _MKDIRP_SAVED="$(grep '^CVMFS_GW_MKDIR_PARENTS=' "$conf" 2>/dev/null || true)"
     _mkdirp_restore() {
-        sed -i '/^CVMFS_GW_MKDIR_PARENTS=/d' "$conf"
-        [[ -n "$saved" ]] && echo "$saved" >> "$conf"
+        sed -i '/^CVMFS_GW_MKDIR_PARENTS=/d' "$_MKDIRP_CONF"
+        [[ -n "$_MKDIRP_SAVED" ]] && echo "$_MKDIRP_SAVED" >> "$_MKDIRP_CONF"
         run_compose up -d --force-recreate gateway >/dev/null 2>&1 || true
     }
     trap _mkdirp_restore RETURN
@@ -786,8 +789,11 @@ cmd_mkdirp() {
 
     section "mkdir-parents gate: ON must publish, OFF must refuse"
 
+    # A UNIQUE TOP-LEVEL component per run and per half: the whole point is a
+    # chain with NO existing ancestor, and a shared "mkdirp/" root would exist
+    # from the previous run, silently testing something else.
     _mkdirp_set true
-    if _mkdirp_ingest "mkdirp/on-$ts/deep/leaf"; then
+    if _mkdirp_ingest "mkdirp-on-$ts/deep/leaf"; then
         ok "gate ON: published into an absent prefix"
     else
         error "gate ON: publish into an absent prefix FAILED (feature broken)"
@@ -795,7 +801,7 @@ cmd_mkdirp() {
     fi
 
     _mkdirp_set false
-    if _mkdirp_ingest "mkdirp/off-$ts/deep/leaf"; then
+    if _mkdirp_ingest "mkdirp-off-$ts/deep/leaf"; then
         error "gate OFF: publish SUCCEEDED — the change is not opt-in any more"
         return 1
     fi
