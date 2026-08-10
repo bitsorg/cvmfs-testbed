@@ -107,12 +107,20 @@ services:
       # Signing keys plus <repo>.gw, which cvmfs_server_ingest.sh reads from a
       # hardcoded /etc/cvmfs/keys/<name>.gw.
       - ${TESTBED_ROOT}/config/keys:/etc/cvmfs/keys:ro
-      # Repository config.  Shared read-only with the native publisher on
-      # purpose: both paths must target the SAME repository and gateway for the
-      # comparison to mean anything.  CVMFS_USER=root in it is harmless here —
-      # cvmfs_server_ingest.sh uses it only to derive uid/gid metadata for the
-      # ingested files, never to check who it is running as.
-      - ${TESTBED_ROOT}/config/native-publisher:/etc/cvmfs/repositories.d/${REPO_NAME}:ro
+      # Repository config.  A SEPARATE copy from native-publisher/, differing
+      # in exactly one line: CVMFS_USER=prepub instead of root.
+      #
+      # It cannot be shared.  cvmfs_server's get_user_shell() picks "sh -c" only
+      # when whoami == CVMFS_USER, and "su -m $CVMFS_USER -c" only when running
+      # as root; with CVMFS_USER=root and a non-root caller NEITHER branch is
+      # taken, the shell command stays empty, and cvmfs_server then runs the
+      # whole swissknife command string as a single command name —
+      #   cvmfs_server: eval: cvmfs_swissknife ingest -u ... : not found
+      # for a binary that exists and runs fine on its own.
+      #
+      # Everything else is copied verbatim (same repository, same gateway, same
+      # chunking), so comparing the two publish paths remains meaningful.
+      - ${TESTBED_ROOT}/config/prepub-publisher:/etc/cvmfs/repositories.d/${REPO_NAME}:ro
       # SEPARATE spool from the native publisher.  Same path inside the
       # container, different host directory: the two paths must not share
       # transaction locks, session tokens or stats.db, or a failure in one
