@@ -214,6 +214,7 @@ mkdir -p \
     "$TESTBED_ROOT/data/receiver-logs" \
     "$TESTBED_ROOT/data/gateway-spool" \
     "$TESTBED_ROOT/data/native-ingest" \
+    "$TESTBED_ROOT/data/prepub-ingest" \
     "$TESTBED_ROOT/data/catalog-dumps" \
     "$TESTBED_ROOT/config/gateway" \
     "$TESTBED_ROOT/config/keys" \
@@ -238,7 +239,13 @@ chmod 777 \
     "$TESTBED_ROOT/data/monitoring/vmagent" \
     "$TESTBED_ROOT/data/cvmfs-client" \
     "$TESTBED_ROOT/data/receiver-logs" \
-    "$TESTBED_ROOT/data/gateway-spool"
+    "$TESTBED_ROOT/data/gateway-spool" \
+    "$TESTBED_ROOT/data/prepub-ingest"
+# prepub-ingest is world-writable for the same reason as the others: the
+# cvmfs-prepub container runs as a non-root user (uid 999), so a host directory
+# owned by the invoking user is not writable inside it.  cvmfs_server ingest
+# then cannot create its per-repo spool and the ingest path silently does
+# nothing useful, while /api/v1/health still advertises it.
 # NDJSON log files — must exist as regular files before docker-compose mounts
 # them (bind-mounting a non-existent path creates a directory, not a file).
 for _log in ingest-jobs.ndjson runs.ndjson test-results.ndjson; do

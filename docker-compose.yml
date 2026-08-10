@@ -85,11 +85,49 @@ services:
       CVMFS_GATEWAY_SECRET: ${CVMFS_GATEWAY_SECRET}
       CVMFS_GATEWAY_KEY_ID: ${CVMFS_GATEWAY_KEY_ID}
       PREPUB_HMAC_SECRET: ${PREPUB_HMAC_SECRET}
+      # Needed by the `ingest` publish path: prepub runs `cvmfs_server ingest`,
+      # whose swissknife children inherit this container's environment.
+      REPO_NAME: ${REPO_NAME}
+      LD_LIBRARY_PATH: /opt/cvmfs-software
     volumes:
       - ${SOFTWARE_ROOT}/cvmfs-prepub:/usr/local/bin/cvmfs-prepub:ro
       - ${TESTBED_ROOT}/repos/${REPO_NAME}:/data/cas
       - ${TESTBED_ROOT}/data/spool:/data/spool
       - ${TESTBED_ROOT}/config/cvmfs-prepub/config.yaml:/etc/cvmfs-prepub/config.yaml:ro
+      # ── `ingest` publish path (--ingest-publish) ──────────────────────────
+      # Mirrors cvmfs-native-publisher, which already runs `cvmfs_server
+      # ingest` in a container.  Mountless (connect-gw -P): no /cvmfs mount,
+      # no /dev/fuse, no SYS_ADMIN.  cvmfs_server detects this itself —
+      #   if ! is_mounted "/cvmfs/$name" && ! is_mounted "$CVMFS_SPOOL_DIR/rdonly"
+      # (cvmfs_server_ingest.sh) — and takes the gateway-lease path.
+      - ${SOFTWARE_ROOT}:/opt/cvmfs-software:ro
+      - ${SOFTWARE_ROOT}/cvmfs_server:/usr/local/bin/cvmfs_server:ro
+      - ${SOFTWARE_ROOT}/cvmfs_swissknife:/usr/local/bin/cvmfs_swissknife:ro
+      - ${SOFTWARE_ROOT}/cvmfs_publish:/usr/local/bin/cvmfs_publish:ro
+      # Signing keys plus <repo>.gw, which cvmfs_server_ingest.sh reads from a
+      # hardcoded /etc/cvmfs/keys/<name>.gw.
+      - ${TESTBED_ROOT}/config/keys:/etc/cvmfs/keys:ro
+      # Repository config.  Shared read-only with the native publisher on
+      # purpose: both paths must target the SAME repository and gateway for the
+      # comparison to mean anything.  CVMFS_USER=root in it is harmless here —
+      # cvmfs_server_ingest.sh uses it only to derive uid/gid metadata for the
+      # ingested files, never to check who it is running as.
+      - ${TESTBED_ROOT}/config/native-publisher:/etc/cvmfs/repositories.d/${REPO_NAME}:ro
+      # SEPARATE spool from the native publisher.  Same path inside the
+      # container, different host directory: the two paths must not share
+      # transaction locks, session tokens or stats.db, or a failure in one
+      # would show up as a mystery in the other.
+      - ${TESTBED_ROOT}/data/prepub-ingest:/var/spool/cvmfs
+    # Overrides core.yml so the testbed offers BOTH publish paths and they can
+    # be compared on one repository.  Deliberately set here rather than in
+    # cvmfs-elements/compose/core.yml: that file is shared with deployments
+    # that have no gateway registration, where --ingest-publish would fail the
+    # startup probe.  docker-compose.pull-wss.yml replaces `command` wholesale,
+    # so it carries the same flag — change one, change both.
+    command: >
+      /usr/local/bin/cvmfs-prepub
+      --config /etc/cvmfs-prepub/config.yaml
+      --ingest-publish
     ports:
       - "8080:8080"
     depends_on:

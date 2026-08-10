@@ -46,6 +46,7 @@ services:
       --ingest-swissknife /opt/cvmfs-software/cvmfs_swissknife
       --ingest-config-prefix /etc/cvmfs-prepub/gateway-client/
       --ingest-env LD_LIBRARY_PATH=/opt/cvmfs-software
+      --ingest-publish
 
   stratum1-a:
     depends_on:
