@@ -28,7 +28,7 @@
 #   make redeploy      install + full reset + bootstrap
 #   make clean         Stop containers and wipe all testbed state (keeps snapshot and .env)
 #   make cleanall      Like clean, but also deletes .env (full credential reset)
-#   make test          FULL test suite — all seven tests (records metrics);
+#   make test          FULL test suite — all eight tests (records metrics);
 #                      auto-runs 'ensure' first so it works from ANY state;
 #                      subset via  make test TESTS="bits chunking content"
 #   make test-suite    Alias of `make test` (honors TESTS=)
@@ -37,6 +37,7 @@
 #   make test-chunking Suite: bits publish + xor32 chunk verify
 #   make test-content  Suite: compare-trees vs golden/smoke
 #   make test-stress   Suite: stress N=10 (bits)
+#   make test-mkdirp   Suite: CVMFS_GW_MKDIR_PARENTS gate, on AND off
 #   make test-check    Suite: cvmfs_swissknife check -c (catalogs + data objects)
 #   make check         Same check, raw output, no metrics record
 #   make stresstest    Stress test — bits method, N jobs (default N=10)
@@ -118,7 +119,7 @@ _METHOD := $(if $(METHOD),--method $(METHOD),)
 
 .PHONY: all build install init start start-wss ensure bootstrap snapshot restore redeploy clean cleanall baseline \
         test test-suite test-ingest test-bits test-pull test-pull-wss pull-status \
-        test-chunking test-content test-stress test-check check \
+        test-chunking test-content test-stress test-mkdirp test-check check \
         stresstest stresstest-ingest \
         verify verify-chunking verify-content \
         catdump-ingest catdump-bits catdiff \
@@ -326,6 +327,12 @@ stresstest: | ensure
 # Suite-wrapped stress (fixed N=10) — logs a test-results.ndjson record.
 test-stress: | ensure
 	bash "$(TESTBED)" suite stress
+
+# Gated receiver feature: publishing into a lease path whose ancestors do not
+# exist must succeed with CVMFS_GW_MKDIR_PARENTS on and still be refused with it
+# off.  The OFF half is the one that keeps the upstream change honest.
+test-mkdirp: | ensure
+	bash "$(TESTBED)" suite mkdirp
 
 # Whole-repository consistency gate: cvmfs_swissknife check -c walks every
 # catalog from the signed manifest AND verifies every referenced data object is

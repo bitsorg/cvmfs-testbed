@@ -737,6 +737,72 @@ _regen_prepub_publisher() {
     info "Regenerated prepub-publisher config (CVMFS_USER=prepub)."
 }
 
+# ── cmd_mkdirp ────────────────────────────────────────────────────────────────
+# A/B the CVMFS_GW_MKDIR_PARENTS receiver gate: publishing into a lease path
+# whose ancestors do not exist must SUCCEED with the gate on and FAIL with it
+# off.  Both directions matter — the second is what proves the upstream change
+# stays opt-in and leaves existing deployments byte-for-byte unchanged.
+#
+# Ingests run from cvmfs-native-publisher (root, cvmfs_server already wired).
+# The gate is read by the RECEIVER from the repository server.conf, so each
+# flip needs the gateway recreated; that is most of the runtime.
+cmd_mkdirp() {
+    load_env
+    local conf="$TESTBED_ROOT/config/repo-config/server.conf"
+    if ! _stack_healthy; then error "stack not running — run: make ensure"; exit 1; fi
+
+    # Skip rather than fail on a receiver that predates the feature: the config
+    # key is compiled in, so its absence is a reliable probe.  Probed INSIDE the
+    # gateway at the fixed path — $TESTBED_ROOT may carry a trailing space.
+    if ! docker exec cvmfs-gateway grep -qs CVMFS_GW_MKDIR_PARENTS \
+         /usr/bin/cvmfs_receiver; then
+        warn "cvmfs_receiver has no CVMFS_GW_MKDIR_PARENTS support — skipping."
+        return 3
+    fi
+
+    local saved; saved="$(grep '^CVMFS_GW_MKDIR_PARENTS=' "$conf" 2>/dev/null || true)"
+    _mkdirp_restore() {
+        sed -i '/^CVMFS_GW_MKDIR_PARENTS=/d' "$conf"
+        [[ -n "$saved" ]] && echo "$saved" >> "$conf"
+        run_compose up -d --force-recreate gateway >/dev/null 2>&1 || true
+    }
+    trap _mkdirp_restore RETURN
+
+    local ts; ts="$(date +%s)"
+    docker exec cvmfs-native-publisher sh -c \
+        'rm -rf /tmp/mkdirp && mkdir -p /tmp/mkdirp/sub && echo hi > /tmp/mkdirp/sub/f \
+         && tar -cf /tmp/mkdirp.tar -C /tmp/mkdirp .' >/dev/null 2>&1
+
+    _mkdirp_set() {
+        sed -i '/^CVMFS_GW_MKDIR_PARENTS=/d' "$conf"
+        echo "CVMFS_GW_MKDIR_PARENTS=$1" >> "$conf"
+        run_compose up -d --force-recreate gateway >/dev/null 2>&1
+        sleep 8
+    }
+    _mkdirp_ingest() {   # $1 = base path; returns the ingest exit status
+        docker exec cvmfs-native-publisher cvmfs_server ingest \
+            -t /tmp/mkdirp.tar -b "$1" -c "$REPO_NAME" >/dev/null 2>&1
+    }
+
+    section "mkdir-parents gate: ON must publish, OFF must refuse"
+
+    _mkdirp_set true
+    if _mkdirp_ingest "mkdirp/on-$ts/deep/leaf"; then
+        ok "gate ON: published into an absent prefix"
+    else
+        error "gate ON: publish into an absent prefix FAILED (feature broken)"
+        return 1
+    fi
+
+    _mkdirp_set false
+    if _mkdirp_ingest "mkdirp/off-$ts/deep/leaf"; then
+        error "gate OFF: publish SUCCEEDED — the change is not opt-in any more"
+        return 1
+    fi
+    ok "gate OFF: publish refused, as before the change"
+    return 0
+}
+
 cmd_restart() {
     cmd_stop
     # Reset idempotency flag so load_env runs again in cmd_start with fresh state.
@@ -1995,10 +2061,10 @@ cmd_pullstatus() {
 # Data contract — see scripts/testbed-server.py (readers) and testbed-console.html.
 
 # Ordered catalog and per-test default timeouts.
-_SUITE_TESTS=(bits ingest pull-wss chunking content stress check)
+_SUITE_TESTS=(bits ingest pull-wss chunking content stress mkdirp check)
 declare -A _SUITE_TIMEOUT=(
     [bits]=180 [ingest]=180 [pull-wss]=240 [chunking]=200 [content]=120 [stress]=300
-    [check]=600
+    [mkdirp]=240 [check]=600
 )
 
 # ISO-8601 UTC timestamp helper.
@@ -2396,6 +2462,22 @@ _suite_run_one() {
                 [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" || _RT_MSG="stress failed (rc=$rc)"
             fi
             ;;
+        mkdirp)
+            # Gated receiver feature (CVMFS_GW_MKDIR_PARENTS): a publish into a
+            # lease path with absent ancestors must succeed with the gate on and
+            # still be refused with it off.  Skips on a receiver without it.
+            method="bits"
+            if ! _stack_healthy; then
+                _RT_MSG="skipped: stack not running (run: make ensure)"; rm -f "$log"; return 2
+            fi
+            timeout -k 15 "$t" bash "$0" mkdirp >"$log" 2>&1 || rc=$?
+            if [[ $rc -eq 0 ]]; then _RT_MSG="mkdir-parents gate correct in both directions"; else
+                [[ $rc -eq 3 ]] && { _RT_MSG="skipped: receiver has no CVMFS_GW_MKDIR_PARENTS"; rm -f "$log"; return 2; }
+                [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" \
+                    || _RT_MSG="mkdir-parents gate wrong (rc=$rc)"
+            fi
+            ;;
+
         check)
             # Whole-repository consistency gate: cvmfs_swissknife check walks
             # every catalog from the signed manifest and validates structure,
@@ -2606,6 +2688,7 @@ case "$CMD" in
     fix-perms)      cmd_fix_perms ;;
     snapshot)       cmd_snapshot ;;
     restore)        cmd_restore ;;
+    mkdirp)         cmd_mkdirp ;;
     test)           cmd_test ;;
     suite)          cmd_suite ;;
     check)          cmd_check ;;
