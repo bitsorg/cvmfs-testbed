@@ -38,6 +38,8 @@
 #   make test-content  Suite: compare-trees vs golden/smoke
 #   make test-stress   Suite: stress N=10 (bits)
 #   make test-mkdirp   Suite: CVMFS_GW_MKDIR_PARENTS gate, on AND off
+#   make test-idem     Two packages under one shared parent (-c matrix);
+#                      FAILS today by design — not part of `make test`
 #   make test-check    Suite: cvmfs_swissknife check -c (catalogs + data objects)
 #   make check         Same check, raw output, no metrics record
 #   make stresstest    Stress test — bits method, N jobs (default N=10)
@@ -119,7 +121,7 @@ _METHOD := $(if $(METHOD),--method $(METHOD),)
 
 .PHONY: all build install init start start-wss ensure bootstrap snapshot restore redeploy clean cleanall baseline \
         test test-suite test-ingest test-bits test-pull test-pull-wss pull-status \
-        test-chunking test-content test-stress test-mkdirp test-check check \
+        test-chunking test-content test-stress test-mkdirp test-idem test-check check \
         stresstest stresstest-ingest \
         verify verify-chunking verify-content \
         catdump-ingest catdump-bits catdiff \
@@ -333,6 +335,14 @@ test-stress: | ensure
 # off.  The OFF half is the one that keeps the upstream change honest.
 test-mkdirp: | ensure
 	bash "$(TESTBED)" suite mkdirp
+
+# Can two packages share a parent prefix?  That is what a multi-package build
+# does, and the ingest path cannot currently do it: the second publish aborts
+# the publisher with a duplicate INSERT.  Reports the -c matrix.
+test-idem: | ensure
+	# Direct command, not `suite`: the suite validates names against
+	# _SUITE_TESTS, and idem is deliberately not in that catalogue.
+	bash "$(TESTBED)" idem
 
 # Whole-repository consistency gate: cvmfs_swissknife check -c walks every
 # catalog from the signed manifest AND verifies every referenced data object is

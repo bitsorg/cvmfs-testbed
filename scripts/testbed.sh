@@ -809,6 +809,58 @@ cmd_mkdirp() {
     return 0
 }
 
+# ── cmd_idem ──────────────────────────────────────────────────────────────────
+# Can two packages be published under a SHARED parent prefix?  That is what a
+# multi-package build does (every package lands under .../Packages), and it is
+# the property the ingest publish path needs in order to be usable at all.
+#
+# The second ingest into an existing parent currently aborts in the PUBLISHER:
+#   catalog_rw.cc:165  WritableCatalog::AddEntry  Assertion `retval' failed
+# which is a failed SQL INSERT — a duplicate row. Separate from the gateway-side
+# missing-parents problem that CVMFS_GW_MKDIR_PARENTS addresses.
+#
+# Varies the one thing every observed failure had in common: -c (make the base
+# a nested catalog root).  If the failure is -c specific, dropping it for
+# package publishes is a far cheaper fix than changing ingest.
+cmd_idem() {
+    load_env
+    if ! _stack_healthy; then error "stack not running — run: make ensure"; exit 1; fi
+    local ts; ts="$(date +%s)"
+    docker exec cvmfs-native-publisher sh -c \
+        'rm -rf /tmp/idem && mkdir -p /tmp/idem/sub && echo hi > /tmp/idem/sub/f \
+         && tar -cf /tmp/idem.tar -C /tmp/idem .' >/dev/null 2>&1
+
+    # Echoes OK / ASSERT / PANIC / OTHER for one ingest.
+    _idem_ing() {   # $1 = base path, $2 = "yes" to pass -c
+        local out cflag=()
+        [[ "$2" == "yes" ]] && cflag=(-c)
+        out="$(docker exec cvmfs-native-publisher cvmfs_server ingest \
+               -t /tmp/idem.tar -b "$1" "${cflag[@]}" "$REPO_NAME" 2>&1)"
+        if   grep -q "Changes submitted" <<<"$out"; then echo OK
+        elif grep -q "Assertion"        <<<"$out"; then echo "ASSERT($(grep -oE 'catalog_rw\.cc:[0-9]+' <<<"$out" | head -1))"
+        elif grep -q "PANIC"            <<<"$out"; then echo "PANIC($(grep -oE 'catalog_mgr_rw\.cc : [0-9]+' <<<"$out" | head -1))"
+        else echo "OTHER"; fi
+    }
+
+    section "Two packages under one shared parent — with and without -c"
+    local any_ok=1 mode root first second
+    for mode in yes no; do
+        root="idem-${mode}-${ts}"
+        first="$(_idem_ing  "${root}/shared/pkgA/v1" "$mode")"
+        second="$(_idem_ing "${root}/shared/pkgB/v1" "$mode")"
+        printf "  -c=%-3s  1st=%-22s 2nd=%s\n" "$mode" "$first" "$second"
+        [[ "$first" == OK && "$second" == OK ]] && any_ok=0
+    done
+
+    if [[ $any_ok -eq 0 ]]; then
+        ok "at least one mode publishes two packages under a shared parent"
+    else
+        error "NO mode publishes a second package under a shared parent —" \
+              "the ingest path cannot serve a multi-package build"
+    fi
+    return $any_ok
+}
+
 cmd_restart() {
     cmd_stop
     # Reset idempotency flag so load_env runs again in cmd_start with fresh state.
@@ -2067,10 +2119,15 @@ cmd_pullstatus() {
 # Data contract — see scripts/testbed-server.py (readers) and testbed-console.html.
 
 # Ordered catalog and per-test default timeouts.
+# `idem` is deliberately NOT here: it fails today by design (see cmd_idem), and
+# a permanently red `make test` teaches people to ignore failures.  This list is
+# also the VALID-NAME catalogue, so `suite idem` is rejected — make test-idem
+# calls the command directly.  Add it here once ingest is idempotent.
+# Its suite case below is kept ready for that day.
 _SUITE_TESTS=(bits ingest pull-wss chunking content stress mkdirp check)
 declare -A _SUITE_TIMEOUT=(
     [bits]=180 [ingest]=180 [pull-wss]=240 [chunking]=200 [content]=120 [stress]=300
-    [mkdirp]=240 [check]=600
+    [mkdirp]=240 [idem]=240 [check]=600
 )
 
 # ISO-8601 UTC timestamp helper.
@@ -2484,6 +2541,21 @@ _suite_run_one() {
             fi
             ;;
 
+        idem)
+            # Two packages under one shared parent, with and without -c.  This
+            # is what a multi-package build needs; it currently fails, so the
+            # test records WHICH modes work rather than assuming any do.
+            method="bits"
+            if ! _stack_healthy; then
+                _RT_MSG="skipped: stack not running (run: make ensure)"; rm -f "$log"; return 2
+            fi
+            timeout -k 15 "$t" bash "$0" idem >"$log" 2>&1 || rc=$?
+            if [[ $rc -eq 0 ]]; then _RT_MSG="shared-parent publish works in at least one mode"; else
+                [[ $rc -eq 124 ]] && _RT_MSG="timed out after ${t}s" \
+                    || _RT_MSG="no mode publishes a 2nd package under a shared parent (rc=$rc)"
+            fi
+            ;;
+
         check)
             # Whole-repository consistency gate: cvmfs_swissknife check walks
             # every catalog from the signed manifest and validates structure,
@@ -2695,6 +2767,7 @@ case "$CMD" in
     snapshot)       cmd_snapshot ;;
     restore)        cmd_restore ;;
     mkdirp)         cmd_mkdirp ;;
+    idem)           cmd_idem ;;
     test)           cmd_test ;;
     suite)          cmd_suite ;;
     check)          cmd_check ;;
