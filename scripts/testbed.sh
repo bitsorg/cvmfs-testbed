@@ -842,6 +842,22 @@ cmd_idem() {
         else echo "OTHER"; fi
     }
 
+    # Self-contained: do not inherit the gate from ambient config.  Relying on
+    # it cost a red suite when mkdirp (which flips and restores it) left it
+    # unset and idem ran afterwards.
+    _IDEM_CONF="$TESTBED_ROOT/config/repo-config/server.conf"
+    _IDEM_SAVED="$(grep '^CVMFS_GW_MKDIR_PARENTS=' "$_IDEM_CONF" 2>/dev/null || true)"
+    _idem_restore() {
+        sed -i '/^CVMFS_GW_MKDIR_PARENTS=/d' "$_IDEM_CONF"
+        [[ -n "$_IDEM_SAVED" ]] && echo "$_IDEM_SAVED" >> "$_IDEM_CONF"
+        run_compose up -d --force-recreate gateway >/dev/null 2>&1 || true
+    }
+    trap _idem_restore RETURN
+    sed -i '/^CVMFS_GW_MKDIR_PARENTS=/d' "$_IDEM_CONF"
+    echo "CVMFS_GW_MKDIR_PARENTS=true" >> "$_IDEM_CONF"
+    run_compose up -d --force-recreate gateway >/dev/null 2>&1
+    sleep 8
+
     section "Two packages under one shared parent — with and without -c"
     local any_ok=1 mode root first second
     for mode in yes no; do

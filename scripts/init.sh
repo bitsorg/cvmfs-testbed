@@ -655,8 +655,19 @@ if [[ -f "$_config_server_conf" ]]; then
     fi
     # Ensure the scratch directory exists on the host (visible inside the
     # gateway container as /srv/cvmfs/<repo>/upstream-scratch/).
-    mkdir -p "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
-    chmod 755 "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch"
+    # Best-effort: the gateway container runs as root and may already own this
+    # directory, and under `set -e` a failed chmod aborted the whole init --
+    # silently skipping everything below it.
+    mkdir -p "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch" 2>/dev/null || true
+    chmod 755 "$TESTBED_ROOT/repos/$REPO_NAME/upstream-scratch" 2>/dev/null || true
+
+    # Receiver opt-in: create absent parents of a lease path instead of aborting
+    # the commit.  The testbed wants it on, and it must survive `make clean`;
+    # set by hand it silently vanished on the next init and the suite went red.
+    if ! grep -q "^CVMFS_GW_MKDIR_PARENTS=" "$_config_server_conf"; then
+        echo "CVMFS_GW_MKDIR_PARENTS=true" >> "$_config_server_conf"
+        info "Enabled CVMFS_GW_MKDIR_PARENTS in config/repo-config/server.conf"
+    fi
     success "server.conf CVMFS_UPSTREAM_STORAGE OK."
 
     # ── Generate native-publisher server.conf (gateway mode) ─────────────────
