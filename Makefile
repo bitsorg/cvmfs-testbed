@@ -28,7 +28,7 @@
 #   make redeploy      install + full reset + bootstrap
 #   make clean         Stop containers and wipe all testbed state (keeps snapshot and .env)
 #   make cleanall      Like clean, but also deletes .env (full credential reset)
-#   make test          FULL test suite — all eight tests (records metrics);
+#   make test          FULL test suite — all nine tests (records metrics);
 #                      auto-runs 'ensure' first so it works from ANY state;
 #                      subset via  make test TESTS="bits chunking content"
 #   make test-suite    Alias of `make test` (honors TESTS=)
@@ -38,8 +38,7 @@
 #   make test-content  Suite: compare-trees vs golden/smoke
 #   make test-stress   Suite: stress N=10 (bits)
 #   make test-mkdirp   Suite: CVMFS_GW_MKDIR_PARENTS gate, on AND off
-#   make test-idem     Two packages under one shared parent (-c matrix);
-#                      FAILS today by design — not part of `make test`
+#   make test-idem     Suite: two packages under one shared parent (-c matrix)
 #   make test-check    Suite: cvmfs_swissknife check -c (catalogs + data objects)
 #   make check         Same check, raw output, no metrics record
 #   make stresstest    Stress test — bits method, N jobs (default N=10)
@@ -340,9 +339,7 @@ test-mkdirp: | ensure
 # does, and the ingest path cannot currently do it: the second publish aborts
 # the publisher with a duplicate INSERT.  Reports the -c matrix.
 test-idem: | ensure
-	# Direct command, not `suite`: the suite validates names against
-	# _SUITE_TESTS, and idem is deliberately not in that catalogue.
-	bash "$(TESTBED)" idem
+	bash "$(TESTBED)" suite idem
 
 # Whole-repository consistency gate: cvmfs_swissknife check -c walks every
 # catalog from the signed manifest AND verifies every referenced data object is

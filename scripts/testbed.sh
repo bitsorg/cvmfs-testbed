@@ -2119,12 +2119,7 @@ cmd_pullstatus() {
 # Data contract — see scripts/testbed-server.py (readers) and testbed-console.html.
 
 # Ordered catalog and per-test default timeouts.
-# `idem` is deliberately NOT here: it fails today by design (see cmd_idem), and
-# a permanently red `make test` teaches people to ignore failures.  This list is
-# also the VALID-NAME catalogue, so `suite idem` is rejected — make test-idem
-# calls the command directly.  Add it here once ingest is idempotent.
-# Its suite case below is kept ready for that day.
-_SUITE_TESTS=(bits ingest pull-wss chunking content stress mkdirp check)
+_SUITE_TESTS=(bits ingest pull-wss chunking content stress mkdirp idem check)
 declare -A _SUITE_TIMEOUT=(
     [bits]=180 [ingest]=180 [pull-wss]=240 [chunking]=200 [content]=120 [stress]=300
     [mkdirp]=240 [idem]=240 [check]=600
