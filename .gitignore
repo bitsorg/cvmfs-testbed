@@ -22,6 +22,19 @@ data/payload/
 repo-seed.tar.gz
 /data/
 /repos/
+# Generated runtime config: signing keys, gateway secrets, and the S3 config
+# (which carries the MinIO access/secret key).  Defensive only — these normally
+# live in $TESTBED_ROOT (default ~/cvmfs-testbed), which is NOT this checkout
+# unless the two happen to coincide.
+#
+# Written as /config/* rather than /config/, because git does not descend into
+# an excluded DIRECTORY: a `!` negation for a path beneath it is never
+# evaluated.  Excluding the contents instead, then re-including the one
+# directory and its one tracked file, is what actually works.
+/config/*
+!/config/cvmfs-prepub/
+/config/cvmfs-prepub/*
+!/config/cvmfs-prepub/config.yaml
 /software/
 /scripts/software/
 /bits-console/

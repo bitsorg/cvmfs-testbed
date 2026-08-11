@@ -64,9 +64,16 @@ RUN useradd -r -s /sbin/nologin prepub
 #
 # /etc/cvmfs itself is prepub-owned (non-recursively — the bind-mounted
 # subdirectories keep their own ownership) so the entrypoint can create
-# <repo>.s3.conf there for the direct-to-S3 ingest variant.  That path is fixed:
-# cvmfs_server_ingest.sh tests for exactly /etc/cvmfs/<repo>.s3.conf, so writing
-# it elsewhere would not switch anything.
+# <repo>.s3.conf there for the direct-to-S3 ingest variant.
+#
+# That path is the DEFAULT, not a fixed one: cvmfs_server_ingest.sh reads
+# "${CVMFS_INGEST_DIRECT_S3_CONFIG:-/etc/cvmfs/${name}.s3.conf}", so the env var
+# wins when set.  The testbed sets it to a canonical file provisioned by init.sh
+# and mounted read-only at /etc/cvmfs/s3/<repo>.s3.conf, shared with the gateway
+# receiver — the entrypoint's own copy is now only the fallback for deployments
+# that provision nothing.  (An earlier version of this comment asserted the path
+# was fixed and that writing it elsewhere would not switch anything; that was
+# wrong, and the whole shared-config arrangement depends on it being wrong.)
 RUN mkdir -p /data/cas /data/spool /etc/cvmfs-prepub \
              /var/spool/cvmfs /etc/cvmfs/repositories.d /etc/cvmfs/keys /srv/cvmfs \
  && chown -R prepub:prepub /data /etc/cvmfs-prepub /var/spool/cvmfs /srv/cvmfs \

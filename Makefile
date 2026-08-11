@@ -297,8 +297,13 @@ s3-status:
 	@printf '.env.s3     : %s\n' "$$(grep '^S3_ENABLED=' "$(MAKEFILE_DIR)/.env.s3" 2>/dev/null || echo '<no .env.s3>')"
 	@printf 'container   : S3_ENABLED=%s\n' \
 	    "$$(docker exec cvmfs-prepub sh -c 'echo $${S3_ENABLED:-<unset>}' 2>/dev/null || echo '<not running>')"
+	@# Report the file cvmfs_server will ACTUALLY read, which is the path in
+	@# CVMFS_INGEST_DIRECT_S3_CONFIG when set and only otherwise the conventional
+	@# /etc/cvmfs/<repo>.s3.conf.  Globbing the conventional path alone reports a
+	@# stale per-container copy as healthy while direct_s3 publishes abort, and
+	@# reports the shared provisioned config as "absent" when it is working.
 	@printf 'S3 config   : %s\n' \
-	    "$$(docker exec cvmfs-prepub sh -c 'ls /etc/cvmfs/*.s3.conf 2>/dev/null || echo "absent — direct_s3 builds will fail"' 2>/dev/null || echo '<not running>')"
+	    "$$(docker exec cvmfs-prepub sh -c 'p=$${CVMFS_INGEST_DIRECT_S3_CONFIG:-/etc/cvmfs/'"$$(grep -m1 "^REPO_NAME=" "$(MAKEFILE_DIR)/.env" | cut -d= -f2- | tr -d " \r")"'.s3.conf}; if [ -r "$$p" ]; then echo "$$p (readable)"; elif [ -e "$$p" ]; then echo "$$p (EXISTS BUT UNREADABLE)"; else echo "$$p (absent — direct_s3 builds will fail)"; fi' 2>/dev/null || echo '<not running>')"
 	@printf 'minio       : %s\n' "$$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^cvmfs-minio$$' | sed 's/^0$$/not running/; s/^1$$/running/')"
 	@printf 'path choice : per build (job field direct_s3), not set here\n' 
 

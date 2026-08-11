@@ -48,7 +48,36 @@ fi
 # Because prepub now takes --direct-s3 PER JOB, the config has to be present all
 # the time: any build may ask for it, and requiring a restart to make it usable
 # would defeat choosing per build. So this is a capability, not a mode.
+#
+# S3_ENABLED stays the outermost test, so withdrawing the capability still
+# withdraws it.  Checking the provisioned file first would make the cleanup
+# branch unreachable whenever init.sh had written one — and it writes it
+# whenever credentials exist, independently of S3_ENABLED — so `make s3-off`
+# would stop MinIO but leave a usable-looking config behind, turning an
+# immediate "S3 config does not exist" into a connection failure deep inside a
+# publish.
 if [[ "${S3_ENABLED:-0}" == "1" ]]; then
+  # A canonical config provisioned by init.sh (mounted read-only at the path in
+  # CVMFS_INGEST_DIRECT_S3_CONFIG) wins over anything written here: the gateway
+  # receiver reads that same file when the repository's upstream is S3, and a
+  # second copy generated per container is how prepub, the receiver and the
+  # native publisher would come to disagree about which bucket the repository
+  # lives in.  Writing our own is the fallback for deployments without one.
+  if [[ -n "${CVMFS_INGEST_DIRECT_S3_CONFIG:-}" && -e "${CVMFS_INGEST_DIRECT_S3_CONFIG}" ]]; then
+    # -e then -r, not -r alone: an existing but unreadable file must fail loudly
+    # rather than silently fall through to a per-container copy, which is
+    # exactly the divergence this is meant to prevent.
+    if [[ ! -r "${CVMFS_INGEST_DIRECT_S3_CONFIG}" ]]; then
+        echo "[prepub-entrypoint] ERROR: provisioned S3 config" \
+             "${CVMFS_INGEST_DIRECT_S3_CONFIG} exists but is not readable by" \
+             "$(id -un) (uid $(id -u)). Fix its permissions on the host —" \
+             "falling back to a private copy would let this container publish" \
+             "to a different bucket than the gateway receiver commits to." >&2
+        exit 1
+    fi
+    echo "[prepub-entrypoint] Using provisioned S3 config:" \
+         "${CVMFS_INGEST_DIRECT_S3_CONFIG} (not writing a per-container copy)."
+  else
     if [[ -z "${REPO_NAME:-}" ]]; then
         echo "[prepub-entrypoint] ERROR: S3_ENABLED=1 but REPO_NAME is unset —" \
              "the config path is /etc/cvmfs/<repo>.s3.conf, so there is nothing" \
@@ -95,10 +124,23 @@ CVMFS_S3_MAX_NUMBER_OF_PARALLEL_CONNECTIONS=$(sq "${S3_PARALLEL:-16}")
 EOF
     )
     chmod 600 "$s3_conf"
+    # Point cvmfs_server at the copy we just wrote.  Compose sets
+    # CVMFS_INGEST_DIRECT_S3_CONFIG unconditionally, and cvmfs_server_ingest.sh
+    # honours it over the conventional /etc/cvmfs/<repo>.s3.conf and aborts the
+    # publish if it does not exist — so without this, reaching the fallback
+    # branch means every direct_s3 job dies with "S3 config does not exist"
+    # while a perfectly good config sits at the conventional path.
+    export CVMFS_INGEST_DIRECT_S3_CONFIG="$s3_conf"
     echo "[prepub-entrypoint] S3 capability ready: ${s3_conf}." \
          "Builds submitted with direct_s3=true will bypass the gateway for data;" \
          "others are unaffected."
+  fi
 else
+    # Withdrawing the capability must actually withdraw it, so clear the pointer
+    # as well as the file: a build asking for direct_s3 should fail immediately
+    # with "S3 config does not exist" rather than later, inside a publish,
+    # against a MinIO that is no longer running.
+    unset CVMFS_INGEST_DIRECT_S3_CONFIG
     # Remove a config left by a previous S3_ENABLED=1 run, so withdrawing the
     # capability actually withdraws it: a stale file would let a build request
     # --direct-s3 and point cvmfs_server at credentials for a MinIO that is no
