@@ -53,7 +53,13 @@ if [[ "${S3_DIRECT:-0}" == "1" && -n "${REPO_NAME:-}" ]]; then
         exit 1
     fi
     s3_conf="/etc/cvmfs/${REPO_NAME}.s3.conf"
-    mkdir -p /etc/cvmfs
+    mkdir -p /etc/cvmfs 2>/dev/null || true
+    if ! : > "$s3_conf" 2>/dev/null; then
+        echo "[prepub-entrypoint] ERROR: cannot write ${s3_conf} —" \
+             "this container runs as an unprivileged user and /etc/cvmfs is" \
+             "root-owned. The image must grant it write access." >&2
+        exit 1
+    fi
     # DNS_BUCKETS=false: MinIO serves path-style (host/bucket), not
     # bucket.host virtual-host style.
     cat > "$s3_conf" <<EOF
@@ -73,7 +79,12 @@ EOF
 else
     # Remove a file left by a previous S3_DIRECT=1 run, so turning the switch
     # off actually turns it off.
-    rm -f "/etc/cvmfs/${REPO_NAME:-__none__}.s3.conf"
+    #
+    # Best-effort on purpose. This container runs unprivileged and /etc/cvmfs is
+    # root-owned, so the rm can fail with EACCES — and under `set -e` that took
+    # the whole service down on a testbed that was not even using the variant.
+    # Nothing to remove is the overwhelmingly common case.
+    rm -f "/etc/cvmfs/${REPO_NAME:-__none__}.s3.conf" 2>/dev/null || true
 fi
 
 exec "$@"

@@ -61,9 +61,16 @@ RUN useradd -r -s /sbin/nologin prepub
 # the spool, so the question never arises.  /etc/cvmfs/keys and
 # /etc/cvmfs/repositories.d/<repo> are bind-mounted read-only from the host and
 # only need to be TRAVERSABLE, which is why /etc/cvmfs itself is 0755.
+#
+# /etc/cvmfs itself is prepub-owned (non-recursively — the bind-mounted
+# subdirectories keep their own ownership) so the entrypoint can create
+# <repo>.s3.conf there for the direct-to-S3 ingest variant.  That path is fixed:
+# cvmfs_server_ingest.sh tests for exactly /etc/cvmfs/<repo>.s3.conf, so writing
+# it elsewhere would not switch anything.
 RUN mkdir -p /data/cas /data/spool /etc/cvmfs-prepub \
              /var/spool/cvmfs /etc/cvmfs/repositories.d /etc/cvmfs/keys /srv/cvmfs \
  && chown -R prepub:prepub /data /etc/cvmfs-prepub /var/spool/cvmfs /srv/cvmfs \
+ && chown prepub:prepub /etc/cvmfs \
  && chmod 755 /etc/cvmfs /etc/cvmfs/repositories.d /etc/cvmfs/keys
 
 COPY entrypoint.sh /usr/local/bin/prepub-entrypoint.sh
