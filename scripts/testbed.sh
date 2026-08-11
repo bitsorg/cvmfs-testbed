@@ -281,6 +281,21 @@ compose_files() {
     _COMPOSE_FILES=("-f" "$TESTBED_DIR/docker-compose.yml")
     if $USE_BITS; then  _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.bits.yml"); fi
     if $USE_WSS; then _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.pull-wss.yml"); fi
+
+    # Env files for ${VAR} interpolation.  Passing --env-file REPLACES compose's
+    # implicit .env, so .env must be listed explicitly once we name any file.
+    #
+    # .env.s3 holds the direct-to-S3 variant's credentials and is deliberately
+    # NOT in .env: enabling or deleting the variant must never risk rotating the
+    # secrets the rest of the testbed runs on.  It is optional — appended only
+    # when present — which is also why the compose file cannot use the
+    # `env_file: [{path, required: false}]` form: that syntax needs Compose
+    # >= 2.24, while the README only promises Docker >= 24 (Compose ~2.19), and
+    # an unsupported key fails to PARSE, taking down every service for everyone.
+    _COMPOSE_ENVFILES=("--env-file" "$TESTBED_DIR/.env")
+    if [[ -f "$TESTBED_DIR/.env.s3" ]]; then
+        _COMPOSE_ENVFILES+=("--env-file" "$TESTBED_DIR/.env.s3")
+    fi
 }
 
 run_compose() {
@@ -293,9 +308,9 @@ run_compose() {
     # the per-test `timeout` kills it.  All our exec uses run non-interactive
     # baked scripts, so EOF-on-stdin is the correct behaviour.
     if [[ "${1:-}" == "exec" ]]; then
-        docker compose "${_COMPOSE_FILES[@]}" "$@" </dev/null
+        docker compose "${_COMPOSE_ENVFILES[@]}" "${_COMPOSE_FILES[@]}" "$@" </dev/null
     else
-        docker compose "${_COMPOSE_FILES[@]}" "$@"
+        docker compose "${_COMPOSE_ENVFILES[@]}" "${_COMPOSE_FILES[@]}" "$@"
     fi
 }
 
@@ -699,10 +714,29 @@ cmd_restore() {
     # The snapshot carries its own server.conf, so the extract above discards
     # whatever init.sh appended.  This is the only point that runs after every
     # restore, so the receiver gate has to be re-applied here.
+    #
+    # Assert the VALUE, not merely the key.  cmd_mkdirp writes
+    # CVMFS_GW_MKDIR_PARENTS=false for the negative half of its A/B and restores
+    # the old value from a RETURN trap — which does not run when the suite's
+    # `timeout -k` kills it.  A killed mkdirp therefore leaves `=false` behind;
+    # a key-presence check would honour it, and cmd_snapshot archives
+    # config/repo-config, so the next snapshot would bake the gate permanently
+    # OFF.  That is the exact failure this block exists to prevent.
+    #
+    # Non-fatal: this runs after the repository data has been wiped and
+    # re-extracted, so aborting here under `set -e` would leave a half-restored
+    # testbed and skip _regen_prepub_publisher below.
     local _conf="$TESTBED_ROOT/config/repo-config/server.conf"
-    if [[ -f "$_conf" ]] && ! grep -q "^CVMFS_GW_MKDIR_PARENTS=" "$_conf"; then
-        echo "CVMFS_GW_MKDIR_PARENTS=true" >> "$_conf"
-        info "Re-applied CVMFS_GW_MKDIR_PARENTS after snapshot restore."
+    if [[ -f "$_conf" ]]; then
+        if ! grep -q "^CVMFS_GW_MKDIR_PARENTS=true$" "$_conf"; then
+            if sed -i '/^CVMFS_GW_MKDIR_PARENTS=/d' "$_conf" 2>/dev/null \
+               && echo "CVMFS_GW_MKDIR_PARENTS=true" >> "$_conf" 2>/dev/null; then
+                info "Re-applied CVMFS_GW_MKDIR_PARENTS=true after snapshot restore."
+            else
+                warn "Could not set CVMFS_GW_MKDIR_PARENTS in $_conf —" \
+                     "publishing into a fresh prefix may hit the graft panic."
+            fi
+        fi
     fi
 
     _regen_prepub_publisher

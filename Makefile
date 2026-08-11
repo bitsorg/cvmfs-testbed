@@ -240,22 +240,47 @@ restore:
 # from, so the suite is expected to fail until the repository's data source is
 # moved to MinIO as well.
 s3-on:
-	@$(MAKE) --no-print-directory _s3-set S3_VALUE=1
+	@$(MAKE) --no-print-directory _s3-set S3_VALUE=1 S3_PROFILE=s3
 s3-off:
-	@$(MAKE) --no-print-directory _s3-set S3_VALUE=0
+	@$(MAKE) --no-print-directory _s3-set S3_VALUE=0 S3_PROFILE=
 
 _s3-set:
 	@if [[ ! -f "$(MAKEFILE_DIR)/.env.s3" ]]; then \
 	    printf '[WARN] .env.s3 not found — run '"'"'make'"'"' to generate it.\n'; exit 1; \
 	fi
-	@if grep -q '^S3_DIRECT=' "$(MAKEFILE_DIR)/.env.s3"; then \
-	    sed -i 's|^S3_DIRECT=.*|S3_DIRECT=$(S3_VALUE)|' "$(MAKEFILE_DIR)/.env.s3"; \
-	else \
-	    echo "S3_DIRECT=$(S3_VALUE)" >> "$(MAKEFILE_DIR)/.env.s3"; \
+	@# Refuse to enable with empty credentials. compose cannot enforce this: it
+	@# interpolates the whole file before profiles are applied, so a required
+	@# ${VAR:?} breaks every command for people who never use the variant.
+	@# Enabling is the only moment where the check is both safe and meaningful —
+	@# MinIO with unset credentials falls back to minioadmin/minioadmin on
+	@# published ports.
+	@if [ "$(S3_VALUE)" = "1" ]; then \
+	    pw=$$(sed -n 's|^MINIO_ROOT_PASSWORD=||p' "$(MAKEFILE_DIR)/.env.s3"); \
+	    us=$$(sed -n 's|^MINIO_ROOT_USER=||p' "$(MAKEFILE_DIR)/.env.s3"); \
+	    if [ -z "$$pw" ] || [ -z "$$us" ]; then \
+	        printf '[ERR] MINIO_ROOT_USER/MINIO_ROOT_PASSWORD are empty in .env.s3.\n'; \
+	        printf '      MinIO would start on minioadmin/minioadmin, published on\n'; \
+	        printf '      9000/9001. Set them (or delete .env.s3 and re-run make,\n'; \
+	        printf '      which generates a random password) before enabling.\n'; \
+	        exit 1; \
+	    fi; \
 	fi
+	@set -e; f="$(MAKEFILE_DIR)/.env.s3"; \
+	for kv in "S3_DIRECT=$(S3_VALUE)" "COMPOSE_PROFILES=$(S3_PROFILE)"; do \
+	    k=$${kv%%=*}; \
+	    if grep -q "^$$k=" "$$f"; then \
+	        sed -i "s|^$$k=.*|$$kv|" "$$f"; \
+	    else \
+	        echo "$$kv" >> "$$f"; \
+	    fi; \
+	done
+	@# COMPOSE_PROFILES is what actually starts MinIO: the services are behind
+	@# `profiles: [s3]`, and testbed.sh passes .env.s3 as a second --env-file,
+	@# from which compose reads COMPOSE_PROFILES. Verified: with it, `config
+	@# --services` lists the gated services; without it, they do not exist.
 	@echo "── S3_DIRECT=$(S3_VALUE) written to .env.s3 ──────────────────────────"
 	@printf '\n'
-	@printf 'Not applied yet. env_file values are captured when the container is\n'
+	@printf 'Not applied yet. Environment is captured when the container is\n'
 	@printf 'CREATED, so a restart keeps the old setting — the container must be\n'
 	@printf 'recreated. Bring the testbed up the way you normally do, e.g.\n'
 	@printf '\n'
