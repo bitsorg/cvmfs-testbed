@@ -696,6 +696,15 @@ cmd_restore() {
     # recursive chmod there fails with EPERM.
     find "${TESTBED_ROOT}/repos/${REPO_NAME}" -path '*/upstream-scratch*' -prune -o -exec chmod 777 {} + 2>/dev/null || true
 
+    # The snapshot carries its own server.conf, so the extract above discards
+    # whatever init.sh appended.  This is the only point that runs after every
+    # restore, so the receiver gate has to be re-applied here.
+    local _conf="$TESTBED_ROOT/config/repo-config/server.conf"
+    if [[ -f "$_conf" ]] && ! grep -q "^CVMFS_GW_MKDIR_PARENTS=" "$_conf"; then
+        echo "CVMFS_GW_MKDIR_PARENTS=true" >> "$_conf"
+        info "Re-applied CVMFS_GW_MKDIR_PARENTS after snapshot restore."
+    fi
+
     _regen_prepub_publisher
 
     ok "Repository restored from snapshot."
