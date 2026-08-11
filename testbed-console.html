@@ -564,7 +564,6 @@
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap" id="tb-config">
           <span class="badge" id="tb-cfg-method" style="background:#0075ca;color:#fff;font-size:11px">method: …</span>
           <span class="badge" id="tb-cfg-wss" style="background:#57606a;color:#fff;font-size:11px">pull(wss): …</span>
-          <span class="badge" id="tb-cfg-bits" style="background:#57606a;color:#fff;font-size:11px">bits-console: …</span>
           <span class="muted" id="tb-cfg-started" style="font-size:11px"></span>
         </div>
       </div>
@@ -1033,7 +1032,6 @@ let cfg = {...DEFAULTS};
 let SERVER_MODE = false;  // true when testbed-server.py is reachable
 let SERVER_TOKEN = '';    // secret token for X-Testbed-Token header
 let USE_MQTT    = false;  // set from /api/health flags.mqtt
-let USE_BITS    = false;  // set from /api/health flags.bits
 
 // ── Collapse map — sections that persist open/closed state ───────────────────
 const COLLAPSE_MAP = {
@@ -1160,7 +1158,6 @@ async function detectMode(){
       // Apply service config from server (authoritative)
       if(data.flags){
         USE_MQTT = !!data.flags.mqtt;
-        USE_BITS = !!data.flags.bits;
       }
       // Auto-fill prepub token from server if not already set by the user
       if(data.prepub_token && !cfg.token){
@@ -1185,13 +1182,13 @@ async function detectMode(){
   // Show/hide command tab warning
   $('cmd-server-warn').style.display = SERVER_MODE ? 'none' : '';
 
-  // Apply MQTT / bits UI overlay
+  // Apply MQTT UI overlay
   applyOverlayState();
 
 }
 
 // ═══════════════════════════ Topology overlay state ═══════════════════════════
-// Called after detectMode() resolves USE_BITS from /api/health. Dims the MQTT
+// Called after detectMode(). Dims the MQTT
 // elements of the dashboard architecture diagram when the pull overlay is off.
 function applyOverlayState(){
   const mqttGroup = $('mqtt-topology');
@@ -1201,9 +1198,7 @@ function applyOverlayState(){
   });
   const topoSub = $('topology-sub');
   if(topoSub){
-    topoSub.textContent = USE_BITS
-      ? 'Active: bits overlay.'
-      : 'Testbed architecture.';
+    topoSub.textContent = 'Testbed architecture.';
   }
 }
 
@@ -2338,7 +2333,6 @@ async function refreshTestbedConfig(){
   };
   set('tb-cfg-method','method', c.method, c.method==='ingest' ? '#6f42c1' : '#0075ca');
   set('tb-cfg-wss','pull(wss)', c.wss, '#1a7f37');
-  set('tb-cfg-bits','bits-console', c.bits, '#1a7f37');
   const st=$('tb-cfg-started');
   if(st) st.textContent = c.started_at ? `· started ${relTime(c.started_at)}` : '';
 }
