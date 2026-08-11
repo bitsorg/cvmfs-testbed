@@ -89,6 +89,12 @@ services:
       # whose swissknife children inherit this container's environment.
       REPO_NAME: ${REPO_NAME}
       LD_LIBRARY_PATH: /opt/cvmfs-software
+    # Direct-to-S3 ingest switch and MinIO credentials. Optional and separate
+    # from .env: absent file => S3_DIRECT unset => entrypoint leaves the
+    # gateway upload path alone. See .env.s3.example.
+    env_file:
+      - path: .env.s3
+        required: false
     volumes:
       - ${SOFTWARE_ROOT}/cvmfs-prepub:/usr/local/bin/cvmfs-prepub:ro
       - ${TESTBED_ROOT}/repos/${REPO_NAME}:/data/cas
@@ -355,6 +361,51 @@ services:
       PROJECT_ID:         ${RUNNER_SD_PROJECT_ID:-}
       NODE_EXPORTER_PORT: ${NODE_EXPORTER_PORT:-9100}
       ONLY_DESC_REGEX:    ${RUNNER_SD_DESC_REGEX:-}
+
+  # ── minio — S3 endpoint for the direct-to-S3 ingest variant ────────────────
+  # Always started (idle and cheap when unused); the switch is S3_DIRECT on
+  # cvmfs-prepub, not the presence of this service.
+  minio:
+    image: minio/minio:latest
+    container_name: cvmfs-minio
+    command: server /data --console-address ":9001"
+    env_file:
+      - path: .env.s3
+        required: false
+    volumes:
+      - ${TESTBED_ROOT}/data/minio:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - cvmfs-net
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+
+  # One-shot: create the bucket and make it world-readable, so a CVMFS client
+  # can fetch objects over plain HTTP the way it would from stratum0.
+  minio-init:
+    image: minio/mc:latest
+    container_name: cvmfs-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - path: .env.s3
+        required: false
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set tb http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
+        mc mb --ignore-existing tb/\"$$S3_BUCKET\" &&
+        mc anonymous set download tb/\"$$S3_BUCKET\" &&
+        echo 'minio-init: bucket ready'
+      "
+    networks:
+      - cvmfs-net
+    restart: "no"
 
 networks:
   cvmfs-net:

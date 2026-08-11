@@ -10,6 +10,9 @@
 # If TESTBED_ROOT is inside this repo tree, keep it out of git:
 cvmfs-testbed/
 *.env
+# *.env does NOT match .env.s3 (it ends in .s3), and that file holds the MinIO
+# password. The .example template stays tracked.
+.env.s3
 
 # Editor / OS artefacts
 .DS_Store

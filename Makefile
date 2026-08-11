@@ -121,6 +121,7 @@ _METHOD := $(if $(METHOD),--method $(METHOD),)
 .PHONY: all build install init start start-wss ensure bootstrap snapshot restore redeploy clean cleanall baseline \
         test test-suite test-ingest test-bits test-pull test-pull-wss pull-status \
         test-chunking test-content test-stress test-mkdirp test-idem test-check check \
+        s3-on s3-off s3-status _s3-set \
         stresstest stresstest-ingest \
         verify verify-chunking verify-content \
         catdump-ingest catdump-bits catdiff \
@@ -220,6 +221,58 @@ snapshot:
 # ── restore ───────────────────────────────────────────────────────────────────
 restore:
 	bash "$(TESTBED)" restore
+
+# ── s3-on / s3-off / s3-status ────────────────────────────────────────────────
+# Select the ingest data path for the NEXT publish.
+#
+#   s3-off (default)  cvmfs_server ingest uploads objects through the gateway
+#   s3-on             objects go straight to MinIO, gateway sees lease+commit only
+#
+# The switch is the existence of /etc/cvmfs/<repo>.s3.conf inside cvmfs-prepub —
+# cvmfs_server_ingest.sh appends -3 when it is there. The container entrypoint
+# writes or removes that file from S3_DIRECT, so flipping it means recreating
+# the container, not just restarting it.
+#
+# Deliberately a per-instance switch, not per job: concurrent jobs in one prepub
+# share that file, so there is no safe way to vary it per publish.
+#
+# NOTE: with s3-on the objects are NOT under repos/<repo>, where stratum0 serves
+# from, so the suite is expected to fail until the repository's data source is
+# moved to MinIO as well.
+s3-on:
+	@$(MAKE) --no-print-directory _s3-set S3_VALUE=1
+s3-off:
+	@$(MAKE) --no-print-directory _s3-set S3_VALUE=0
+
+_s3-set:
+	@if [[ ! -f "$(MAKEFILE_DIR)/.env.s3" ]]; then \
+	    printf '[WARN] .env.s3 not found — run '"'"'make'"'"' to generate it.\n'; exit 1; \
+	fi
+	@if grep -q '^S3_DIRECT=' "$(MAKEFILE_DIR)/.env.s3"; then \
+	    sed -i 's|^S3_DIRECT=.*|S3_DIRECT=$(S3_VALUE)|' "$(MAKEFILE_DIR)/.env.s3"; \
+	else \
+	    echo "S3_DIRECT=$(S3_VALUE)" >> "$(MAKEFILE_DIR)/.env.s3"; \
+	fi
+	@echo "── S3_DIRECT=$(S3_VALUE) written to .env.s3 ──────────────────────────"
+	@printf '\n'
+	@printf 'Not applied yet. env_file values are captured when the container is\n'
+	@printf 'CREATED, so a restart keeps the old setting — the container must be\n'
+	@printf 'recreated. Bring the testbed up the way you normally do, e.g.\n'
+	@printf '\n'
+	@printf '    make start          (or: make ensure)\n'
+	@printf '\n'
+	@printf 'Then  make s3-status  to confirm the container agrees with the file.\n'
+	@printf '\n'
+	@$(MAKE) --no-print-directory s3-status
+
+# Report the switch AND what the container actually has, so a stale container
+# (flag changed, never recreated) is visible rather than assumed correct.
+s3-status:
+	@printf '.env.s3      : %s\n' "$$(grep '^S3_DIRECT=' "$(MAKEFILE_DIR)/.env.s3" 2>/dev/null || echo '<no .env.s3>')"
+	@printf 'container    : S3_DIRECT=%s\n' \
+	    "$$(docker exec cvmfs-prepub sh -c 'echo $${S3_DIRECT:-<unset>}' 2>/dev/null || echo '<not running>')"
+	@printf 'trigger file : %s\n' \
+	    "$$(docker exec cvmfs-prepub sh -c 'ls /etc/cvmfs/*.s3.conf 2>/dev/null || echo "absent (gateway upload path)"' 2>/dev/null || echo '<not running>')"
 
 # ── redeploy ──────────────────────────────────────────────────────────────────
 # Full rebuild: wipe sentinels + state, then run the full pipeline from scratch.

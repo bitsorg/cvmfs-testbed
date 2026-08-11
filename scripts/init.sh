@@ -322,6 +322,26 @@ else
     warn "Reusing existing secrets from $ENV_FILE"
 fi
 
+# ── .env.s3 — direct-to-S3 ingest variant (separate from .env on purpose) ─────
+# Kept out of .env so that enabling, changing or deleting the S3 variant never
+# risks rotating the credentials the rest of the testbed depends on. Compose
+# declares it `required: false`, so a missing file simply leaves the variant
+# off; this creates it with S3_DIRECT=0 and a random MinIO password.
+_ENV_S3_FILE="$TESTBED_DIR/.env.s3"
+if [[ ! -f "$_ENV_S3_FILE" && -f "$TESTBED_DIR/.env.s3.example" ]]; then
+    _minio_pw=$(openssl rand -hex 16)
+    awk -v PW="$_minio_pw" \
+        'BEGIN { FS="="; OFS="=" }
+         /^MINIO_ROOT_PASSWORD=$/ { $2=PW; print; next }
+         { print }' \
+        "$TESTBED_DIR/.env.s3.example" > "$_ENV_S3_FILE"
+    chmod 600 "$_ENV_S3_FILE"
+    unset _minio_pw
+    success "Wrote $(basename "$_ENV_S3_FILE") (S3_DIRECT=0 — variant off)"
+else
+    info "$(basename "$_ENV_S3_FILE") present — left untouched"
+fi
+
 # Re-source .env so any newly written values are available for config templates.
 # shellcheck source=/dev/null
 source "$ENV_FILE"
