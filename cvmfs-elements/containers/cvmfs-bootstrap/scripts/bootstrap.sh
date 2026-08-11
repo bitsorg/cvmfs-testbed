@@ -148,6 +148,63 @@ fi
 
 info "No bootstrap sentinel found — running bootstrap ingest."
 
+# ── 3b. Prove the staged binaries can actually load ───────────────────────────
+# Staging copies binaries out of a read-only mount; it does not check that the
+# image supplies their shared libraries.  A missing one (libcurl-gnutls.so.4 has
+# already done this once) leaves cvmfs_swissknife present, executable, and dead
+# on exec with status 127 — which surfaces much later as an ingest failure that
+# reads like a catalog problem.  Ask the binary its version and fail here, where
+# the message still names the cause.
+#
+# Deliberately placed AFTER the sentinel and SKIP_BOOTSTRAP_INGEST checks: those
+# paths never invoke swissknife, and a deployment that legitimately skips the
+# ingest must not be failed for a library it will never load.
+# Both binaries are checked: cvmfs_server ingest runs swissknife for the sync and
+# execs cvmfs_publish for the signing step, and they share the dependency, so
+# checking only the first would still let a publish-time load failure through.
+#
+# The probe subcommand differs per binary and is NOT interchangeable.  These are
+# the two that were confirmed to exit 0 against the 2.15.0 binaries in
+# SOFTWARE_ROOT; in particular `cvmfs_publish version` does NOT exist — it prints
+# "unknown command: version" and exits 1, which would fail this check on every
+# run of an image that is perfectly healthy.
+for _probe in "cvmfs_swissknife version" "cvmfs_publish help"; do
+    _bin=${_probe%% *}
+    _cmd=${_probe#* }
+
+    # Staging only warns when a binary is absent from $SOFT_RO, so distinguish
+    # "never staged" from "staged but cannot load" — a missing file reported as a
+    # missing library sends the reader to the wrong place.
+    if [[ ! -x "$SOFT_BIN/$_bin" ]]; then
+        die "${_bin} was not staged: not found in ${SOFT_RO}." \
+            "\n       Check that SOFTWARE_ROOT is mounted and contains it."
+    fi
+
+    # Test for the loader specifically, by status, not by output.  A dynamic
+    # linking failure exits 127 ("error while loading shared libraries");
+    # anything else — including a subcommand these binaries dislike — means the
+    # image is fine and is not this check's business to police.
+    #
+    # `|| _rc=$?` is load-bearing: this script runs under `set -e`, so a bare
+    # invocation would abort the whole script the moment the probe returned
+    # non-zero, and the status test below would never run.  Keeping the call in a
+    # condition context is what allows the failure to be classified at all.
+    _rc=0
+    "$SOFT_BIN/$_bin" $_cmd >/dev/null 2>&1 || _rc=$?
+    if [[ $_rc -eq 127 ]]; then
+        # `|| true` for the same reason, one level subtler: an assignment from a
+        # command substitution carries that command's status, and with pipefail a
+        # pipeline whose FIRST element fails carries the failure.  Without it the
+        # script exits 127 here — right before the message explaining why.
+        _err=$("$SOFT_BIN/$_bin" $_cmd 2>&1 >/dev/null | head -1) || true
+        die "staged ${_bin} cannot be loaded: ${_err}" \
+            "\n       It was staged from ${SOFT_RO}, but this image is missing a" \
+            "\n       shared library it needs.  Fix the container image rather" \
+            "\n       than the mount — see cvmfs-bootstrap/Dockerfile."
+    fi
+    info "Staged ${_bin} loads."
+done
+
 # ── 4. Compute lease base and tar sub-path ────────────────────────────────────
 # LEASE_BASE: first path component — the gateway lease is taken here so the
 #   receiver reports all intermediate directories as additions, which is required
