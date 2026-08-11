@@ -282,20 +282,29 @@ compose_files() {
     if $USE_BITS; then  _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.bits.yml"); fi
     if $USE_WSS; then _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.pull-wss.yml"); fi
 
-    # Env files for ${VAR} interpolation.  Passing --env-file REPLACES compose's
-    # implicit .env, so .env must be listed explicitly once we name any file.
+    # Env sources for ${VAR} interpolation, later winning within the merged
+    # file.  Note that is only true WITHIN the file: load_env exports .env into
+    # this shell, and compose ranks the inherited environment above any
+    # --env-file, so .env.s3 cannot override a key that also appears in .env.
+    # It does not need to — the S3 keys appear in neither .env nor .env.example.
     #
-    # .env.s3 holds the direct-to-S3 variant's credentials and is deliberately
-    # NOT in .env: enabling or deleting the variant must never risk rotating the
-    # secrets the rest of the testbed runs on.  It is optional — appended only
-    # when present — which is also why the compose file cannot use the
-    # `env_file: [{path, required: false}]` form: that syntax needs Compose
-    # >= 2.24, while the README only promises Docker >= 24 (Compose ~2.19), and
-    # an unsupported key fails to PARSE, taking down every service for everyone.
-    _COMPOSE_ENVFILES=("--env-file" "$TESTBED_DIR/.env")
-    if [[ -f "$TESTBED_DIR/.env.s3" ]]; then
-        _COMPOSE_ENVFILES+=("--env-file" "$TESTBED_DIR/.env.s3")
-    fi
+    # run_compose merges them into one temporary file
+    # because both ways of handing compose two files are newer than the
+    # README's floor of Docker >= 24 (Compose ~2.19), and an unsupported form
+    # does not degrade — it refuses to PARSE, taking down every service:
+    #   - `env_file: [{path, required: false}]`  needs Compose >= 2.24
+    #   - a repeated --env-file flag               likewise newer
+    # A single --env-file has worked since v2.0.
+    #
+    # .env.s3 is optional and deliberately NOT part of .env: enabling or
+    # deleting the S3 variant must never risk rotating the secrets the rest of
+    # the testbed runs on.
+    #
+    # NOTE .env lives at TESTBED_ROOT (init.sh writes "$TESTBED_ROOT/.env"),
+    # which is NOT the checkout unless the two happen to coincide; .env.s3 sits
+    # beside docker-compose.yml in the checkout.  Reading both from the same
+    # directory silently dropped .env on any split layout.
+    _COMPOSE_ENVSRC=("$(_env_file)" "$TESTBED_DIR/.env.s3")
 }
 
 run_compose() {
@@ -307,11 +316,37 @@ run_compose() {
     # in-container command has exited — making the suite appear to hang until
     # the per-test `timeout` kills it.  All our exec uses run non-interactive
     # baked scripts, so EOF-on-stdin is the correct behaviour.
-    if [[ "${1:-}" == "exec" ]]; then
-        docker compose "${_COMPOSE_ENVFILES[@]}" "${_COMPOSE_FILES[@]}" "$@" </dev/null
+    # Merge the env sources into a PER-INVOCATION temp file.  A fixed path would
+    # be rewritten by every one of the ~40 run_compose call sites, and the
+    # console server runs a suite in the background while still serving
+    # requests — a second process truncating the file mid-parse yields either a
+    # silently missing COMPOSE_PROFILES or a hard "invalid env file" error.
+    # mktemp also creates it 0600 from the outset, so the secrets are never
+    # briefly world-readable, and it does not outlive the command.
+    local _envfile _f
+    _envfile="$(mktemp "${TMPDIR:-/tmp}/cvmfs-testbed-env.XXXXXX" 2>/dev/null)" || _envfile=""
+    if [[ -n "$_envfile" ]]; then
+        for _f in "${_COMPOSE_ENVSRC[@]}"; do
+            [[ -f "$_f" ]] || continue
+            cat -- "$_f" >> "$_envfile" || true
+            # A file whose last line lacks a newline would otherwise glue itself
+            # onto the first line of the next one.
+            printf '\n' >> "$_envfile" || true
+        done
+        _COMPOSE_ENVFILES=("--env-file" "$_envfile")
     else
-        docker compose "${_COMPOSE_ENVFILES[@]}" "${_COMPOSE_FILES[@]}" "$@"
+        warn "Could not create a temporary env file; .env.s3 will be ignored."
+        _COMPOSE_ENVFILES=("--env-file" "${_COMPOSE_ENVSRC[0]}")
     fi
+
+    local _rc=0
+    if [[ "${1:-}" == "exec" ]]; then
+        docker compose "${_COMPOSE_ENVFILES[@]}" "${_COMPOSE_FILES[@]}" "$@" </dev/null || _rc=$?
+    else
+        docker compose "${_COMPOSE_ENVFILES[@]}" "${_COMPOSE_FILES[@]}" "$@" || _rc=$?
+    fi
+    [[ -n "$_envfile" ]] && rm -f "$_envfile"
+    return $_rc
 }
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -1673,6 +1708,12 @@ cmd_clean() {
                 sudo rm -rf "${TESTBED_ROOT:?}/$subdir"
             fi
         done
+
+        # Legacy: an earlier version merged .env + .env.s3 into a fixed
+        # merged.env here. It is a per-invocation temp file now, but remove any
+        # left by that version -- it holds every secret and --purge-env is
+        # supposed to destroy exactly those.
+        rm -f "${TESTBED_ROOT}/merged.env" "${TESTBED_DIR}/merged.env"
 
         if $_purge_env; then
             info "Removing $env_file ..."
