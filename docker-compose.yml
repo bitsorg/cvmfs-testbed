@@ -89,11 +89,13 @@ services:
       # whose swissknife children inherit this container's environment.
       REPO_NAME: ${REPO_NAME}
       LD_LIBRARY_PATH: /opt/cvmfs-software
-      # Direct-to-S3 ingest switch and MinIO credentials, interpolated from
-      # .env.s3 which testbed.sh passes as a second --env-file when present.
-      # All defaulted: with no .env.s3 the switch is 0 and the entrypoint
-      # leaves the gateway upload path alone. See .env.s3.example.
-      S3_DIRECT: ${S3_DIRECT:-0}
+      # S3 CAPABILITY (not a mode) plus MinIO credentials, interpolated from
+      # .env.s3, which testbed.sh merges in when present. With S3_ENABLED=1 the
+      # entrypoint writes /etc/cvmfs/<repo>.s3.conf and MinIO runs; WHICH path a
+      # publish takes is then chosen per job, by prepub passing --direct-s3.
+      # All defaulted: with no .env.s3 there is no capability and nothing
+      # changes. See .env.s3.example.
+      S3_ENABLED: ${S3_ENABLED:-0}
       S3_BUCKET: ${S3_BUCKET:-cvmfs}
       S3_HOST: ${S3_HOST:-minio}
       S3_PORT: ${S3_PORT:-9000}

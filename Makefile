@@ -223,22 +223,23 @@ restore:
 	bash "$(TESTBED)" restore
 
 # ── s3-on / s3-off / s3-status ────────────────────────────────────────────────
-# Select the ingest data path for the NEXT publish.
+# Turn the S3 CAPABILITY on or off. This does not choose a publish path.
 #
-#   s3-off (default)  cvmfs_server ingest uploads objects through the gateway
-#   s3-on             objects go straight to MinIO, gateway sees lease+commit only
+#   s3-on   MinIO runs and /etc/cvmfs/<repo>.s3.conf exists, so any build MAY
+#           ask for the direct-to-S3 path
+#   s3-off  neither exists; a build asking for it fails
 #
-# The switch is the existence of /etc/cvmfs/<repo>.s3.conf inside cvmfs-prepub —
-# cvmfs_server_ingest.sh appends -3 when it is there. The container entrypoint
-# writes or removes that file from S3_DIRECT, so flipping it means recreating
-# the container, not just restarting it.
+# Which path a publish actually takes is per build: prepub passes --direct-s3
+# when the job carries direct_s3=true. That is why this is a capability rather
+# than a mode — comparing the two paths means switching per build, not
+# restarting the stack between measurements.
 #
-# Deliberately a per-instance switch, not per job: concurrent jobs in one prepub
-# share that file, so there is no safe way to vary it per publish.
+# Changing it recreates cvmfs-prepub (the entrypoint writes the config at
+# container start) and starts or stops MinIO via COMPOSE_PROFILES.
 #
-# NOTE: with s3-on the objects are NOT under repos/<repo>, where stratum0 serves
-# from, so the suite is expected to fail until the repository's data source is
-# moved to MinIO as well.
+# NOTE: objects from a direct_s3 build land in MinIO, not under repos/<repo>
+# where stratum0 serves from, so a client cannot read them until the
+# repository's data source is moved to MinIO too.
 s3-on:
 	@$(MAKE) --no-print-directory _s3-set S3_VALUE=1 S3_PROFILE=s3
 s3-off:
@@ -266,7 +267,7 @@ _s3-set:
 	    fi; \
 	fi
 	@set -e; f="$(MAKEFILE_DIR)/.env.s3"; \
-	for kv in "S3_DIRECT=$(S3_VALUE)" "COMPOSE_PROFILES=$(S3_PROFILE)"; do \
+	for kv in "S3_ENABLED=$(S3_VALUE)" "COMPOSE_PROFILES=$(S3_PROFILE)"; do \
 	    k=$${kv%%=*}; \
 	    if grep -q "^$$k=" "$$f"; then \
 	        sed -i "s|^$$k=.*|$$kv|" "$$f"; \
@@ -278,7 +279,7 @@ _s3-set:
 	@# `profiles: [s3]`, and testbed.sh passes .env.s3 as a second --env-file,
 	@# from which compose reads COMPOSE_PROFILES. Verified: with it, `config
 	@# --services` lists the gated services; without it, they do not exist.
-	@echo "── S3_DIRECT=$(S3_VALUE) written to .env.s3 ──────────────────────────"
+	@echo "── S3_ENABLED=$(S3_VALUE) written to .env.s3 ─────────────────────────"
 	@printf '\n'
 	@printf 'Not applied yet. Environment is captured when the container is\n'
 	@printf 'CREATED, so a restart keeps the old setting — the container must be\n'
@@ -293,11 +294,13 @@ _s3-set:
 # Report the switch AND what the container actually has, so a stale container
 # (flag changed, never recreated) is visible rather than assumed correct.
 s3-status:
-	@printf '.env.s3      : %s\n' "$$(grep '^S3_DIRECT=' "$(MAKEFILE_DIR)/.env.s3" 2>/dev/null || echo '<no .env.s3>')"
-	@printf 'container    : S3_DIRECT=%s\n' \
-	    "$$(docker exec cvmfs-prepub sh -c 'echo $${S3_DIRECT:-<unset>}' 2>/dev/null || echo '<not running>')"
-	@printf 'trigger file : %s\n' \
-	    "$$(docker exec cvmfs-prepub sh -c 'ls /etc/cvmfs/*.s3.conf 2>/dev/null || echo "absent (gateway upload path)"' 2>/dev/null || echo '<not running>')"
+	@printf '.env.s3     : %s\n' "$$(grep '^S3_ENABLED=' "$(MAKEFILE_DIR)/.env.s3" 2>/dev/null || echo '<no .env.s3>')"
+	@printf 'container   : S3_ENABLED=%s\n' \
+	    "$$(docker exec cvmfs-prepub sh -c 'echo $${S3_ENABLED:-<unset>}' 2>/dev/null || echo '<not running>')"
+	@printf 'S3 config   : %s\n' \
+	    "$$(docker exec cvmfs-prepub sh -c 'ls /etc/cvmfs/*.s3.conf 2>/dev/null || echo "absent — direct_s3 builds will fail"' 2>/dev/null || echo '<not running>')"
+	@printf 'minio       : %s\n' "$$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^cvmfs-minio$$' | sed 's/^0$$/not running/; s/^1$$/running/')"
+	@printf 'path choice : per build (job field direct_s3), not set here\n' 
 
 # ── redeploy ──────────────────────────────────────────────────────────────────
 # Full rebuild: wipe sentinels + state, then run the full pipeline from scratch.

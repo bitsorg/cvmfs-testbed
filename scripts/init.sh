@@ -326,7 +326,7 @@ fi
 # Kept out of .env so that enabling, changing or deleting the S3 variant never
 # risks rotating the credentials the rest of the testbed depends on. Compose
 # declares it `required: false`, so a missing file simply leaves the variant
-# off; this creates it with S3_DIRECT=0 and a random MinIO password.
+# off; this creates it with S3_ENABLED=0 and a random MinIO password.
 _ENV_S3_FILE="$TESTBED_DIR/.env.s3"
 if [[ ! -f "$_ENV_S3_FILE" && -f "$TESTBED_DIR/.env.s3.example" ]]; then
     _minio_pw=$(openssl rand -hex 16)
@@ -337,7 +337,7 @@ if [[ ! -f "$_ENV_S3_FILE" && -f "$TESTBED_DIR/.env.s3.example" ]]; then
         "$TESTBED_DIR/.env.s3.example" > "$_ENV_S3_FILE"
     chmod 600 "$_ENV_S3_FILE"
     unset _minio_pw
-    success "Wrote $(basename "$_ENV_S3_FILE") (S3_DIRECT=0 — variant off)"
+    success "Wrote $(basename "$_ENV_S3_FILE") (S3_ENABLED=0 — capability off)"
 else
     info "$(basename "$_ENV_S3_FILE") present — left untouched"
 fi

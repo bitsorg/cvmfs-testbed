@@ -36,26 +36,27 @@ else
          "(only needed for the 'ingest' publish path)"
 fi
 
-# ── Optional: direct-to-S3 ingest (S3_DIRECT=1) ──────────────────────────────
-# cvmfs_server_ingest.sh switches to direct upload purely on the EXISTENCE of
-# /etc/cvmfs/<repo>.s3.conf:
+# ── S3 capability for direct-to-S3 ingest (S3_ENABLED=1) ─────────────────────
+# This writes the S3 CONFIG. It does not decide anything.
 #
-#   if [ $mountless_gateway_ingest -eq 1 ] && [ -f "$s3_direct_config" ]; then
-#       ingest_command="$ingest_command -3 $s3_direct_config"
+# cvmfs_server enables direct-to-S3 only on --direct-s3 (or
+# CVMFS_INGEST_DIRECT_S3=true) and then reads its settings from
+# /etc/cvmfs/<repo>.s3.conf. The file's presence is NOT a switch -- that was an
+# early prototype, and building the testbed around it meant publishes ran
+# through the gateway while looking like they used S3.
 #
-# so the file must not be bind-mounted unconditionally — that would silently
-# reroute every ingest publish to S3, and the objects would no longer be under
-# repos/<repo> where stratum0's Apache serves them. Writing it here keeps the
-# switch explicit and off by default.
-if [[ "${S3_DIRECT:-0}" == "1" ]]; then
+# Because prepub now takes --direct-s3 PER JOB, the config has to be present all
+# the time: any build may ask for it, and requiring a restart to make it usable
+# would defeat choosing per build. So this is a capability, not a mode.
+if [[ "${S3_ENABLED:-0}" == "1" ]]; then
     if [[ -z "${REPO_NAME:-}" ]]; then
-        echo "[prepub-entrypoint] ERROR: S3_DIRECT=1 but REPO_NAME is unset —" \
-             "the trigger path is /etc/cvmfs/<repo>.s3.conf, so there is no" \
-             "file to write and the variant would silently not engage." >&2
+        echo "[prepub-entrypoint] ERROR: S3_ENABLED=1 but REPO_NAME is unset —" \
+             "the config path is /etc/cvmfs/<repo>.s3.conf, so there is nothing" \
+             "to write and any build asking for --direct-s3 would fail." >&2
         exit 1
     fi
     if [[ -z "${MINIO_ROOT_USER:-}" || -z "${MINIO_ROOT_PASSWORD:-}" ]]; then
-        echo "[prepub-entrypoint] ERROR: S3_DIRECT=1 but MinIO credentials are unset" >&2
+        echo "[prepub-entrypoint] ERROR: S3_ENABLED=1 but MinIO credentials are unset" >&2
         exit 1
     fi
 
@@ -94,18 +95,21 @@ CVMFS_S3_MAX_NUMBER_OF_PARALLEL_CONNECTIONS=$(sq "${S3_PARALLEL:-16}")
 EOF
     )
     chmod 600 "$s3_conf"
-    echo "[prepub-entrypoint] S3_DIRECT=1 — wrote ${s3_conf};" \
-         "'cvmfs_server ingest' will add -3 and bypass the gateway for data"
+    echo "[prepub-entrypoint] S3 capability ready: ${s3_conf}." \
+         "Builds submitted with direct_s3=true will bypass the gateway for data;" \
+         "others are unaffected."
 else
-    # Remove a file left by a previous S3_DIRECT=1 run, so turning the switch
-    # off actually turns it off.
+    # Remove a config left by a previous S3_ENABLED=1 run, so withdrawing the
+    # capability actually withdraws it: a stale file would let a build request
+    # --direct-s3 and point cvmfs_server at credentials for a MinIO that is no
+    # longer running.
     #
     # Best-effort on purpose: this container runs unprivileged and /etc/cvmfs is
     # root-owned, so removing a file that IS present fails with EACCES, and
     # under `set -e` that would take the service down.
     #
     # (An earlier commit message blamed this line for a startup failure. It was
-    # wrong: the failure was the heredoc in the S3_DIRECT=1 branch above, and
+    # wrong: the failure was the heredoc in the capability branch above, and
     # `rm -f` on a MISSING file in an unwritable directory returns 0. Hardening
     # both branches was still right.)
     rm -f "/etc/cvmfs/${REPO_NAME:-__none__}.s3.conf" 2>/dev/null || true
