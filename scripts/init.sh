@@ -6,7 +6,6 @@
 #
 # Directory convention (enforced here):
 #   <cvmfs-testbed>/cvmfs/          CVMFS source tree  (git clone or symlink)
-#   <cvmfs-testbed>/bits-console/   bits-console source (git clone or symlink)
 #   <cvmfs-testbed>/software/       built CVMFS binaries (populated by install.sh)
 #
 # Before running init.sh for the first time:
@@ -15,8 +14,6 @@
 #        cmake -S cvmfs -B cvmfs/build && make -C cvmfs/build -j$(nproc)
 #   2. Run install.sh to populate software/:
 #        ./install.sh
-#   3. (bits overlay) Clone / symlink bits-console:
-#        git clone https://github.com/your-org/bits-console bits-console
 #
 # What init.sh does (in order):
 #   1. Parse command-line arguments.
@@ -25,7 +22,7 @@
 #   3. Load existing .env so SOFTWARE_ROOT and other overrides are available
 #      before PATH is modified.
 #   4. Apply --software-root / --testbed-root overrides over .env values.
-#   5. Check that the conventional subdirectories exist (cvmfs/, bits-console/).
+#   5. Check that the conventional subdirectories exist (cvmfs/).
 #   6. Prepend SOFTWARE_ROOT to PATH (locally built binaries win over system ones).
 #   7. Check prerequisites (docker, openssl, cvmfs_server).
 #   8. Create directory tree under TESTBED_ROOT.
@@ -77,9 +74,6 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { error "--testbed-root requires a value"; exit 1; }
             TESTBED_ROOT_ARG="$2"; shift 2 ;;
         --testbed-root=*)  TESTBED_ROOT_ARG="${1#*=}"; shift ;;
-        # --bits-src is no longer needed: bits-console lives at $TESTBED_DIR/bits-console
-        # Accept it silently for backward compatibility with any existing scripts.
-        --bits-src|--bits-src=*) shift; [[ "$1" == --bits-src ]] && shift || true ;;
         *)                 shift ;;   # silently skip unknown flags from testbed.sh
     esac
 done
@@ -126,14 +120,6 @@ if [[ ! -d "$TESTBED_DIR/cvmfs" ]]; then
     warn "  cmake -S $TESTBED_DIR/cvmfs -B $TESTBED_DIR/cvmfs/build"
     warn "  make -C $TESTBED_DIR/cvmfs/build -j\$(nproc)"
     warn "  $SCRIPT_DIR/install.sh"
-fi
-
-# bits-console/ is optional (needed for the --bits overlay only).
-BITS_CONSOLE_SRC="$TESTBED_DIR/bits-console"
-if [[ ! -d "$BITS_CONSOLE_SRC" ]]; then
-    warn "bits-console source not found at $BITS_CONSOLE_SRC"
-    warn "Clone or symlink it if you need the bits/Gitea overlay:"
-    warn "  git clone https://github.com/your-org/bits-console $BITS_CONSOLE_SRC"
 fi
 
 # Prompt for REPO_NAME only if still unset (not in .env, not in environment).
@@ -186,16 +172,6 @@ if [[ -z "$CVMFS_SERVER_BIN" ]]; then
 fi
 success "Prerequisites OK  (cvmfs_server: $CVMFS_SERVER_BIN)"
 
-# Check optional act_runner — only relevant when bits-console is present.
-if [[ -d "$BITS_CONSOLE_SRC" ]]; then
-    if command -v act_runner &>/dev/null; then
-        success "act_runner found — bits overlay fully supported."
-    else
-        warn "act_runner not found — bits-console overlay will not run CI jobs."
-        warn "Install from: https://gitea.com/gitea/act_runner/releases"
-    fi
-fi
-
 # ── Create directory tree ─────────────────────────────────────────────────────
 info "Creating directory structure under $TESTBED_ROOT ..."
 mkdir -p \
@@ -211,7 +187,6 @@ mkdir -p \
     "$TESTBED_ROOT/data/cvmfs-client" \
     "$TESTBED_ROOT/data/mosquitto" \
     "$TESTBED_ROOT/data/mosquitto-log" \
-    "$TESTBED_ROOT/data/gitea" \
     "$TESTBED_ROOT/data/receiver-logs" \
     "$TESTBED_ROOT/data/gateway-spool" \
     "$TESTBED_ROOT/data/native-ingest" \
@@ -267,9 +242,6 @@ if [[ ! -f "$TESTBED_ROOT/data/test-suite-status.json" ]]; then
 fi
 success "Directory structure created."
 
-# (BITS_CONSOLE_SRC is derived from the conventional path $TESTBED_DIR/bits-console
-# and has already been checked above — no further action needed here.)
-
 # ── Generate secrets and write .env ──────────────────────────────────────────
 # Idempotent: if CVMFS_GATEWAY_SECRET is already set (loaded from .env above),
 # the existing secrets are reused and .env is not rewritten.
@@ -283,12 +255,6 @@ if [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
     PREPUB_HMAC_SECRET=$(openssl rand -hex 32)
     CVMFS_GATEWAY_KEY_ID="prepub-key"
 
-    # Gitea secrets — use hex to avoid the head/tr/SIGPIPE problem under pipefail.
-    GITEA_ADMIN_PASSWORD=$(openssl rand -hex 10)   # 20 hex chars, always safe
-    GITEA_SECRET_KEY=$(openssl rand -hex 32)
-    GITEA_INTERNAL_TOKEN=$(openssl rand -hex 32)
-    GITEA_ADMIN_USER="${GITEA_ADMIN_USER:-gitea-admin}"
-
     # Write .env from template, substituting all known variables.
     # Use awk instead of sed: awk's gsub replacement is literal, so values
     # containing '|', '&', '\', or '/' cannot corrupt the substitution.
@@ -300,10 +266,6 @@ if [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
         -v PREPUB_API_TOKEN="$PREPUB_API_TOKEN" \
         -v PREPUB_HMAC_SECRET="$PREPUB_HMAC_SECRET" \
         -v CVMFS_GATEWAY_KEY_ID="$CVMFS_GATEWAY_KEY_ID" \
-        -v GITEA_ADMIN_USER="$GITEA_ADMIN_USER" \
-        -v GITEA_ADMIN_PASSWORD="$GITEA_ADMIN_PASSWORD" \
-        -v GITEA_SECRET_KEY="$GITEA_SECRET_KEY" \
-        -v GITEA_INTERNAL_TOKEN="$GITEA_INTERNAL_TOKEN" \
         'BEGIN { FS="="; OFS="=" }
          /^TESTBED_ROOT=/             { $2=TESTBED_ROOT;             print; next }
          /^SOFTWARE_ROOT=/            { $2=SOFTWARE_ROOT;            print; next }
@@ -312,10 +274,6 @@ if [[ -z "${CVMFS_GATEWAY_SECRET:-}" ]]; then
          /^PREPUB_API_TOKEN=$/        { $2=PREPUB_API_TOKEN;         print; next }
          /^PREPUB_HMAC_SECRET=$/      { $2=PREPUB_HMAC_SECRET;       print; next }
          /^CVMFS_GATEWAY_KEY_ID=/     { $2=CVMFS_GATEWAY_KEY_ID;     print; next }
-         /^GITEA_ADMIN_USER=/         { $2=GITEA_ADMIN_USER;         print; next }
-         /^GITEA_ADMIN_PASSWORD=$/    { $2=GITEA_ADMIN_PASSWORD;     print; next }
-         /^GITEA_SECRET_KEY=$/        { $2=GITEA_SECRET_KEY;         print; next }
-         /^GITEA_INTERNAL_TOKEN=$/    { $2=GITEA_INTERNAL_TOKEN;     print; next }
          { print }' \
         "$TESTBED_DIR/.env.example" > "$ENV_FILE"
     success "Generated secrets and wrote $ENV_FILE"
@@ -696,50 +654,6 @@ data_host: stratum1-b
 node_id: "stratum1-b"
 EOFCONFIG
 success "stratum1-b config written."
-
-# ── act_runner config (populated with secrets from .env) ─────────────────────
-# Written to $TESTBED_ROOT/config/act_runner/config.yaml so that the operator
-# can copy (or symlink) it to /etc/act_runner/config.yaml.  The PREPUB_URL and
-# PREPUB_API_TOKEN values are injected here so the runner can reach the prepub
-# service without needing project-level CI/CD variables.
-if [[ -d "$BITS_CONSOLE_SRC" ]]; then
-    mkdir -p "$TESTBED_ROOT/config/act_runner"
-    cat > "$TESTBED_ROOT/config/act_runner/config.yaml" <<EOF
-# act_runner configuration — generated by init.sh
-# Copy to /etc/act_runner/config.yaml before registering the runner.
-
-log:
-  level: info
-
-runner:
-  name: bits-host-runner
-  labels:
-    - self-hosted
-    - bits
-    - ubuntu-latest
-  work_dir: /tmp/act_runner_work
-  capacity: 4
-  fetch_interval: 2s
-  job_timeout: 3h
-
-  # Per-runner environment variables injected into every job.
-  # Set here (not as project CI/CD variables) so different runner instances
-  # can publish to different prepub servers, all from the same bits-console.
-  envs:
-    PREPUB_URL:       "http://cvmfs-prepub:8080"
-    PREPUB_API_TOKEN: "${PREPUB_API_TOKEN}"
-
-cache:
-  dir: /tmp/act_runner_cache
-  host: ""
-  port: 0
-
-container:
-  docker_host: ""
-  force_pull: true
-EOF
-    success "act_runner config written → config/act_runner/config.yaml"
-fi
 
 # ── Patch server.conf CVMFS_UPSTREAM_STORAGE (unconditional) ─────────────────
 # This section runs every time init.sh is invoked so that existing installations
@@ -1316,8 +1230,6 @@ else
 fi
 
 # ── Print next-steps summary ──────────────────────────────────────────────────
-_BITS_AVAILABLE=false
-[[ -d "$TESTBED_DIR/bits-console" ]] && _BITS_AVAILABLE=true
 
 echo ""
 echo "========================================================"
@@ -1328,8 +1240,4 @@ echo "  Software root:        $SOFTWARE_ROOT"
 echo "  .env file:            $ENV_FILE"
 echo "  Repository:           $REPO_NAME"
 echo "  API token (prepub):   ${PREPUB_API_TOKEN:0:16}...  (see $ENV_FILE for full value)"
-if $_BITS_AVAILABLE && [[ -n "${GITEA_ADMIN_PASSWORD:-}" ]]; then
-echo "  Gitea admin user:     ${GITEA_ADMIN_USER:-gitea-admin}"
-echo "  Gitea admin password: ${GITEA_ADMIN_PASSWORD:0:8}...  (see $ENV_FILE for full value)"
-fi
 echo "========================================================"

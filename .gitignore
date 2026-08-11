@@ -37,7 +37,6 @@ repo-seed.tar.gz
 !/config/cvmfs-prepub/config.yaml
 /software/
 /scripts/software/
-/bits-console/
 __pycache__/
 *.pyc
 /scripts/testbed-console-cert.pem

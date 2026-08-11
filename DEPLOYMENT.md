@@ -21,7 +21,6 @@ Production pulls the same components apart based on their actual dependencies.
 | CAS / object storage | shared volume | Stores all compressed, deduplicated objects |
 | Stratum 1 receivers | `stratum1-a`, `stratum1-b` | Pull objects from CAS, serve repository to CVMFS clients |
 | MQTT broker | `mosquitto` (optional) | Control-plane bus for announce/ready signalling |
-| CI runners / bits builders | `act_runner` (host) | Build software, POST tar to cvmfs-prepub |
 | Monitoring | `vmagent`, `victoriametrics` | Scrape metrics, store time series |
 | Canary CVMFS client | `cvmfs-client` (testbed only) | Verify end-to-end file visibility after publish |
 

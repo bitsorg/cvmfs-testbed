@@ -256,18 +256,6 @@ else
     fi
 fi
 
-# ── 7. Copy act_runner ───────────────────────────────────────────────────────
-# act_runner is the Gitea CI runner required by the bits-console overlay.
-# It is expected at <cvmfs-testbed>/act_runner (download from
-# https://gitea.com/gitea/act_runner/releases and place there).
-# Copying it to SOFTWARE_ROOT puts it on PATH so init.sh can find it.
-_act_runner_src="$TESTBED_DIR/act_runner"
-if [[ -f "$_act_runner_src" ]]; then
-    cp "$_act_runner_src" "$SOFTWARE_ROOT/act_runner"
-    chmod +x "$SOFTWARE_ROOT/act_runner"
-    success "act_runner installed → $SOFTWARE_ROOT/act_runner"
-fi
-# If act_runner is not present, init.sh will warn when bits-console/ is present.
 
 # ── 8. Install gateway stub scripts ──────────────────────────────────────────
 # Some cvmfs-gateway actions invoke scripts that are part of the full

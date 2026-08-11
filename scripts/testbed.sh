@@ -6,7 +6,6 @@
 #
 # Directory convention:
 #   <cvmfs-testbed>/cvmfs/          CVMFS source tree  (git clone or symlink)
-#   <cvmfs-testbed>/bits-console/   bits-console source (git clone or symlink)
 #   <cvmfs-testbed>/software/       built CVMFS binaries (populated by install.sh)
 #
 # Usage:
@@ -83,8 +82,6 @@
 #   help            Show this help text.
 #
 # Options (accepted by all commands):
-#   --bits                Include the bits-console overlay (Gitea + seeder).
-#                         Requires bits-console/ to be present in this directory.
 #   --wss                 Include the ADR-0001 pull-distribution overlay over the
 #                         embedded MQTT-over-WSS broker (no external mosquitto).
 #   --method bits|ingest  Publishing method for test/stresstest commands.
@@ -104,7 +101,6 @@
 #   # First-time setup — clone sources, build, then init:
 #   git clone https://github.com/cvmfs/cvmfs cvmfs
 #   cmake -S cvmfs -B cvmfs/build && make -C cvmfs/build -j$(nproc)
-#   git clone https://github.com/your-org/bits-console bits-console  # optional
 #   ./testbed.sh init
 #   ./testbed.sh start
 #   ./testbed.sh bootstrap    # once — seeds nested catalog, creates snapshot
@@ -130,7 +126,7 @@
 #
 #   # Start the console server (accessible from any host):
 #   ./testbed.sh server          # plain testbed (port 8888)
-#   ./testbed.sh server --bits 9090  # custom port
+#   ./testbed.sh server 9090         # custom port
 #   # Then open: http://<hostname>:8888/
 #
 #   # Pull-distribution end-to-end test (embedded wss broker):
@@ -170,7 +166,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTBED_DIR="$(dirname "$SCRIPT_DIR")"   # root of cvmfs-testbed checkout
 
 # ── Default flags ─────────────────────────────────────────────────────────────
-USE_BITS=false
 USE_WSS=true            # ADR-0001 pull distribution (embedded MQTT-over-WSS broker) — default;
                         # disable with --no-wss for the bare base stack.
 SOFTWARE_ROOT_OVERRIDE=""
@@ -191,7 +186,6 @@ shift || true
 POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --bits)                USE_BITS=true;                    shift ;;
         --wss)                 USE_WSS=true;                     shift ;;
         --no-wss)              USE_WSS=false;                    shift ;;
         --software-root)
@@ -261,8 +255,6 @@ load_env() {
     [[ -n "$TESTBED_ROOT_OVERRIDE"  ]] && TESTBED_ROOT="$TESTBED_ROOT_OVERRIDE"
     [[ -n "$SOFTWARE_ROOT_OVERRIDE" ]] && SOFTWARE_ROOT="$SOFTWARE_ROOT_OVERRIDE"
 
-    # 4. Derive BITS_CONSOLE_SRC from the conventional location (no .env entry needed).
-    BITS_CONSOLE_SRC="$TESTBED_DIR/bits-console"
 
     # 5. Prepend SOFTWARE_ROOT to PATH so locally built binaries take precedence
     #    over any system-wide CVMFS installation in a potentially read-only area.
@@ -279,7 +271,6 @@ compose_files() {
     # NOTE: use 'if' rather than '$BOOL && ...' — under set -e the latter exits
     # when the bool variable expands to the 'false' command (exit code 1).
     _COMPOSE_FILES=("-f" "$TESTBED_DIR/docker-compose.yml")
-    if $USE_BITS; then  _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.bits.yml"); fi
     if $USE_WSS; then _COMPOSE_FILES+=("-f" "$TESTBED_DIR/docker-compose.pull-wss.yml"); fi
 
     # Env sources for ${VAR} interpolation, later winning within the merged
@@ -431,13 +422,6 @@ cmd_start() {
         exit 1
     fi
 
-    if $USE_BITS && [[ ! -d "$TESTBED_DIR/bits-console" ]]; then
-        error "--bits requires bits-console/ to be present at $TESTBED_DIR/bits-console"
-        error "Clone or symlink it there:"
-        error "  git clone https://github.com/your-org/bits-console $TESTBED_DIR/bits-console"
-        exit 1
-    fi
-
     # ── Auto-restore from snapshot ────────────────────────────────────────────
     # If the repository has not been initialised (no .cvmfspublished) but a
     # snapshot exists, restore it now before starting containers.  This lets
@@ -477,10 +461,6 @@ cmd_start() {
             "http://localhost:8090/"; do
             curl -sf --max-time 2 "$url" >/dev/null 2>&1 || { _ready=false; break; }
         done
-        if $USE_BITS; then
-            curl -sf --max-time 2 "http://localhost:3000/api/v1/version" >/dev/null 2>&1 \
-                || _ready=false
-        fi
         if $_ready; then all_up=true; break; fi
         echo -n "."
     done
@@ -489,7 +469,7 @@ cmd_start() {
         warn "Some services did not respond within 60 s — check logs: ./testbed.sh logs"
     fi
     _write_testbed_config
-    info "Active config: method=${PUBLISH_METHOD} wss=${USE_WSS} bits=${USE_BITS}"
+    info "Active config: method=${PUBLISH_METHOD} wss=${USE_WSS}"
     _cmd_status_inner  # status without re-running load_env
 }
 
@@ -515,8 +495,8 @@ _testbed_config_path() { echo "${TESTBED_ROOT}/data/testbed-config.json"; }
 
 _write_testbed_config() {
     mkdir -p "${TESTBED_ROOT}/data"
-    printf '{"method":"%s","wss":%s,"bits":%s,"started_at":"%s"}\n' \
-        "$PUBLISH_METHOD" "$USE_WSS" "$USE_BITS" "$(_iso_now)" \
+    printf '{"method":"%s","wss":%s,"started_at":"%s"}\n' \
+        "$PUBLISH_METHOD" "$USE_WSS" "$(_iso_now)" \
         > "$(_testbed_config_path)"
 }
 
@@ -986,10 +966,6 @@ _cmd_status_inner() {
     _check_http "cvmfs-prepub API"  "http://localhost:8080/api/v1/health"  || _status_ok=false
     _check_http "gateway"           "http://localhost:4929/api/v1/repos"   || _status_ok=false
     _check_http "stratum0 (apache)" "http://localhost:8090/"                 || _status_ok=false
-
-    if $USE_BITS; then
-        _check_http "Gitea API" "http://localhost:3000/api/v1/version" || _status_ok=false
-    fi
 
     if $_status_ok; then
         ok "All checked endpoints are reachable"
@@ -1808,7 +1784,6 @@ cmd_server() {
         --script "$SCRIPT_DIR/testbed.sh"
     )
     [[ -n "${TESTBED_ROOT:-}" ]] && server_args+=(--testbed-root "$TESTBED_ROOT")
-    if $USE_BITS; then server_args+=(--bits); fi
     if $USE_WSS; then server_args+=(--wss); fi
     # Pass through --no-tls / --no-auth if given as extra positional args
     for arg in "${POSITIONAL_ARGS[@]:1}"; do
@@ -1987,15 +1962,6 @@ cmd_info() {
     _isep
     echo "║  ── Monitoring ────────────────────────────────────────────────────────║"
     _iline "  VictoriaMetrics:" "internal only (scraped by vmagent)"
-
-    if $USE_BITS && [[ -n "${GITEA_ADMIN_USER:-}" ]]; then
-        _isep
-        echo "║  ── Gitea (bits overlay) ──────────────────────────────────────────────║"
-        _iline "  URL:"      "http://localhost:3000"
-        _iline "  SSH:"      "git@localhost:2222"
-        _iline "  User:"     "${GITEA_ADMIN_USER}"
-        _iline "  Password:" "${GITEA_ADMIN_PASSWORD:-(see .env)}"
-    fi
 
     echo "╠══════════════════════════════════════════════════════════════════════╣"
     echo "║  Full secrets: ${TESTBED_ROOT:-\$TESTBED_ROOT}/.env"

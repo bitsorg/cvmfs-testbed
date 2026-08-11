@@ -39,7 +39,6 @@ cvmfs-elements/
 │   ├── client.yml            # cvmfs-client (SYS_ADMIN, /dev/fuse, apparmor)
 │   ├── mqtt.yml              # mosquitto MQTT broker base
 │   ├── monitoring.yml        # victoriametrics, vmagent, cadvisor, node-exporter
-│   └── bits.yml              # seeder (Gitea provisioner) base
 ├── containers/
 │   ├── gateway/              # Dockerfile + entrypoint for cvmfs-gateway
 │   ├── stratum0/             # Dockerfile + Apache config for Stratum 0
@@ -49,7 +48,6 @@ cvmfs-elements/
 │   ├── cvmfs-bootstrap/      # Dockerfile + bootstrap.sh (one-shot repo seeder)
 │   ├── cvmfs-native-publisher/ # Dockerfile + entrypoint + native publish scripts
 │   ├── publisher/            # Dockerfile + bits publish scripts
-│   ├── seeder/               # Dockerfile + seed.py (Gitea provisioner)
 │   ├── monitoring/
 │   │   └── scrape.yml        # Canonical vmagent scrape config (service-name based)
 │   └── mosquitto/

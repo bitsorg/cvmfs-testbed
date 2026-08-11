@@ -165,7 +165,6 @@ def parse_args():
     p.add_argument('--s1b',           default='http://localhost:9102')
     p.add_argument('--victoriametrics', default='http://localhost:8428')
     # Overlay flags
-    p.add_argument('--bits',  action='store_true', help='--bits overlay active')
     p.add_argument('--mqtt',  action='store_true', help='--mqtt overlay active')
     p.add_argument('--wss',   action='store_true', help='--wss (embedded broker) overlay active')
     # CAS stats
@@ -338,7 +337,6 @@ class Handler(BaseHTTPRequestHandler):
                     'server': 'testbed-console',
                     'testbed_root': str(self.server.testbed_root),
                     'services': self.server.services,
-                    'flags': {'bits': self.server.use_bits, 'mqtt': self.server.use_mqtt},
                     'tls': self.server.use_tls,
                     'auth': bool(self.server.auth_token),
                     'prepub_token': self.server.prepub_token,
@@ -1528,7 +1526,6 @@ class TestbedServer(ThreadingHTTPServer):
         super().__init__(addr, handler)
         self.testbed_root = Path(args.testbed_root)
         self.script_path  = Path(args.script)
-        self.use_bits     = args.bits
         self.use_mqtt     = args.mqtt
         self.use_tls      = use_tls
         self.verbose      = args.verbose

@@ -21,73 +21,6 @@ Monitoring is built in with VictoriaMetrics and vmagent; real-time host metrics 
 
 ## Architecture Diagrams
 
-### Full stack with bits-console and Gitea (docker-compose.bits.yml overlay)
-
-```
-╔══════════════════════════════ Physical Host ═════════════════════════════════╗
-║                                                                              ║
-║  Browser                                                                     ║
-║    │  http://testbed.localhost:3000/bits-project/testbed/                   ║
-║    │  (bits-console SPA, served by Gitea Pages gh-pages branch)             ║
-║    │                                                                         ║
-║    │  POST /api/v1/repos/testbed/bits-project/actions/workflows/            ║
-║    │       bits-publish.yaml/dispatches                                      ║
-║    ▼                                                                         ║
-║  ┌──────────────────────────────────────────────────────────────────────┐   ║
-║  │ Docker Compose                                                        │   ║
-║  │                                                                       │   ║
-║  │  gitea:3000 ────────── dispatches workflow ──────────────────────►  │   ║
-║  │      │                                           act_runner (host)   │   ║
-║  │  (Pages at testbed.localhost:3000)                      │            │   ║
-║  │                                               ┌─────────┴──────────┐│   ║
-║  │  seeder ──init──► gitea (org/repo/pages)      │  job steps         ││   ║
-║  │                                               │  • checkout        ││   ║
-║  │  cvmfs-prepub:8080 ◄── bits publish ──────────┤  • bits build      ││   ║
-║  │      │                                        │  • bits publish    ││   ║
-║  │      ├──► stratum1-a:9100/9101                └────────────────────┘│   ║
-║  │      ├──► stratum1-b:9100/9101                                       │   ║
-║  │      └──► gateway:4929                                               │   ║
-║  │              │                                                       │   ║
-║  │         stratum0:80                                                  │   ║
-║  │              │                                                       │   ║
-║  │         cvmfs-client (FUSE)                                          │   ║
-║  │                                                                       │   ║
-║  │  victoriametrics + vmagent + cAdvisor                               │   ║
-║  └──────────────────────────────────────────────────────────────────────┘   ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-```
-
-### Job submission chain (10 steps)
-
-```
-Step  Who           Action
-────  ────────────  ──────────────────────────────────────────────────────────
- 1    Browser       User fills in Package/Version/Platform form in bits-console
-                    SPA (served via Gitea Pages at testbed.localhost:3000)
- 2    bits-console  POST /api/v1/repos/{org}/{repo}/actions/workflows/
-                         bits-publish.yaml/dispatches
-                    with inputs: COMMUNITY, PACKAGE, VERSION, PLATFORM …
- 3    Gitea         Enqueues a workflow_dispatch run; assigns run_id
- 4    act_runner    Polls Gitea for pending jobs; picks up the run
-                    (runner is registered with labels [self-hosted, bits])
- 5    act_runner    Executes bits-publish.yaml steps on the physical host:
-                    a) actions/checkout@v3 — checks out the repo into a workspace
-                    b) Validate community config (reads ui-config.yaml)
-                    c) Authorize submitter (checks admins list)
-                    d) Set up bits environment (sources config/bits-setup.sh)
-                    e) bits build — builds the package into $JOB_SCRATCH
-                    f) bits publish — POSTs tar to cvmfs-prepub:8080
- 6    cvmfs-prepub  Accepts tar, deduplicates objects, writes WAL entry
- 7    cvmfs-prepub  Announces job to stratum1-a and stratum1-b (HTTP or MQTT)
-                    Receivers pull objects from CAS; reply with "ready"
- 8    cvmfs-prepub  Acquires lease from gateway:4929 (HMAC auth)
-                    Updates catalog, commits → .cvmfspublished written
- 9    act_runner    bits publish returns 0; step g) updates cvmfs-status.json
-                    in the repo (git push to main)
-10    Browser       bits-console polls workflow run status via Gitea API;
-                    shows "published" badge; user can verify via cvmfs-client
-```
-
 ### HTTP mode (default, no overlay)
 
 ```
@@ -173,7 +106,6 @@ cvmfs-testbed/               ← this repository
 ├── init.sh                  # One-time host setup (called by testbed.sh init)
 ├── docker-compose.yml       # Core services (HTTP mode)
 ├── docker-compose.mqtt.yml  # Overlay: MQTT control plane
-├── docker-compose.bits.yml  # Overlay: Gitea + seeder for bits-console
 ├── .env.example             # Environment template (secrets only)
 ├── README.md                # This file
 │
@@ -189,10 +121,6 @@ cvmfs-testbed/               ← this repository
 ├── cvmfs-bits/              # ← cvmfs-bits source tree (git clone or symlink HERE)
 │   │                        #   Builds cvmfs-prepub and cvmfs_gateway binaries
 │   └── Makefile             #   `make build` produces the binaries
-│
-├── bits-console/            # ← bits-console source (git clone or symlink HERE)
-│   │                        #   Required only for the --bits overlay
-│   └── build-communities.sh
 │
 ├── software/                # ← Populated by install.sh (never edit manually)
 │   ├── cvmfs_server         # Rebuilt from patched cvmfs/cvmfs/server/
@@ -236,12 +164,6 @@ cvmfs-testbed/               ← this repository
 │       └── verify-publish.sh
 ├── mosquitto/
 │   └── mosquitto.conf
-├── seeder/
-│   ├── Dockerfile
-│   └── seed.py
-├── act_runner/
-│   ├── config.yaml
-│   └── act_runner.service
 └── monitoring/
     └── scrape.yml
 
@@ -258,7 +180,6 @@ ${TESTBED_ROOT}/             ← All persistent runtime state (default: $HOME/cv
 │   ├── cvmfs-client/        # CVMFS client disk cache
 │   ├── mosquitto/           # Mosquitto persistence (MQTT mode)
 │   ├── mosquitto-log/       # Mosquitto logs (MQTT mode)
-│   ├── gitea/               # Gitea database + repos (bits overlay)
 │   └── monitoring/
 │       ├── vm/              # VictoriaMetrics data
 │       └── vmagent/         # vmagent data
@@ -289,16 +210,6 @@ ${TESTBED_ROOT}/             ← All persistent runtime state (default: $HOME/cv
   - `./install.sh`   ← copies binaries to `software/` and rebuilds `cvmfs_server`
 - **Compiled binaries** for cvmfs-prepub, cvmfs_gateway, cvmfs2, cvmfs_talk copied to `software/`
 
-### bits-console overlay (optional)
-
-- **bits-console** source tree cloned (or symlinked) at `cvmfs-testbed/bits-console/`
-  - `git clone https://github.com/your-org/bits-console bits-console`
-  - No `.env` change needed — the path is fixed by convention.
-- **act_runner** binary on the host — download from https://gitea.com/gitea/act_runner/releases
-- **bits** build toolchain installed on the host
-- The operator's Unix user must be in the **docker** group (runner spawns Docker containers)
-- Modern browser for the SPA (Chrome, Firefox, Edge). Safari requires adding `127.0.0.1 testbed.localhost` to `/etc/hosts`.
-
 ## testbed.sh — Management Script
 
 `testbed.sh` is the recommended entry point for all testbed operations. It wraps `init.sh` and `docker compose` to give a single, consistent interface.
@@ -328,7 +239,6 @@ ${TESTBED_ROOT}/             ← All persistent runtime state (default: $HOME/cv
 
 | Flag                  | Effect                                                                    |
 |-----------------------|---------------------------------------------------------------------------|
-| `--bits`              | Include the bits-console overlay (requires `bits-console/` to exist)      |
 | `--mqtt`              | Include the MQTT control-plane overlay                                     |
 | `--method bits\|ingest` | Publishing path for `test`/`stresstest`: `bits` (REST API, default) or `ingest` (`cvmfs_server ingest`) |
 | `-y`, `--yes`         | Skip interactive confirmation prompts (used by `make clean`)              |
@@ -355,12 +265,7 @@ ${TESTBED_ROOT}/             ← All persistent runtime state (default: $HOME/cv
 # Core stack + MQTT control plane
 ./testbed.sh start --mqtt
 
-# Full stack with bits-console (bits-console/ must already be present)
-./testbed.sh init  --bits
-./testbed.sh start --bits
-
 # Tear down everything and start fresh
-./testbed.sh reset --bits
 ```
 
 ---
@@ -728,98 +633,6 @@ For a full description of the MQTT topic schema, flow diagrams, and security con
 
 ---
 
-## Full Stack with bits-console and Gitea
-
-The `docker-compose.bits.yml` overlay adds two services to the core stack:
-
-- **gitea** — a lightweight Gitea git server (gitea/gitea:1.21, ~300 MB RAM). Serves the bits-console SPA via Gitea Pages at `http://testbed.localhost:3000/bits-project/testbed/` and provides the REST API and Actions CI at `http://localhost:3000/api/v1/`.
-- **seeder** — a one-shot Python container that runs after Gitea becomes healthy. It creates the `testbed` organisation and `bits-project` repository, pushes bits-console source and the testbed community config to the `main` branch, builds the Pages static tree, pushes it to the `gh-pages` branch, sets CI variables and secrets, and prints the act_runner registration token.
-
-### Quick start (bits overlay)
-
-1. **Clone (or symlink) bits-console inside cvmfs-testbed**
-   ```bash
-   git clone https://github.com/your-org/bits-console bits-console
-   # or: ln -s /path/to/your/bits-console bits-console
-   ```
-   No `.env` change needed — the path is fixed by convention.
-
-2. **Start all services** (core + Gitea + seeder)
-   ```bash
-   docker compose \
-     -f docker-compose.yml \
-     -f docker-compose.bits.yml \
-     up -d
-   ```
-
-3. **Watch the seeder output** — it will print the act_runner registration token when done:
-   ```bash
-   docker compose logs -f seeder
-   ```
-
-4. **Register and start act_runner on the host**
-   ```bash
-   # Use the config generated by init.sh — it has PREPUB_URL and
-   # PREPUB_API_TOKEN already filled in from .env, so the runner can
-   # reach cvmfs-prepub without any project-level CI/CD variables.
-   sudo mkdir -p /var/lib/act_runner /etc/act_runner
-   sudo cp ~/cvmfs-testbed/config/act_runner/config.yaml /etc/act_runner/config.yaml
-
-   # Register (use the token printed by the seeder)
-   act_runner register \
-     --instance http://localhost:3000 \
-     --token <TOKEN_FROM_SEEDER> \
-     --name bits-host-runner \
-     --labels self-hosted,bits,ubuntu-latest \
-     --no-interactive
-
-   # Install as a systemd service
-   sudo cp act_runner/act_runner.service /etc/systemd/system/
-   # Edit the User= line if your username differs from cvmfs-testbed
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now act_runner
-   sudo systemctl status act_runner
-   ```
-
-5. **Open bits-console in a browser**
-   ```
-   http://testbed.localhost:3000/bits-project/testbed/
-   ```
-   Log in with the Gitea admin credentials (see `.env`).
-
-6. **Submit a build job** from the bits-console UI. The workflow dispatches to Gitea Actions, act_runner picks it up, runs `bits build` and `bits publish` on the host, and cvmfs-prepub handles the rest.
-
-### CORS and browser notes
-
-bits-console is served from `testbed.localhost:3000` (a Gitea Pages subdomain) and calls the Gitea API at `localhost:3000` — two different browser origins. Gitea is configured with `CORS_ALLOW_DOMAIN = http://testbed.localhost:3000` to allow this.
-
-All modern browsers (Chrome, Firefox, Edge) resolve `*.localhost` to `127.0.0.1` automatically per RFC 6761 — no `/etc/hosts` changes needed. **Safari** is the exception: add this line to `/etc/hosts`:
-```
-127.0.0.1 testbed.localhost
-```
-
-### bits-console community config (testbed)
-
-The seeder injects a testbed community config at `communities/testbed/ui-config.yaml` in the repository. Key fields used by bits-console:
-
-```yaml
-api_type: gitea              # routes to Gitea API instead of GitLab
-gitlab_url: http://localhost:3000
-project_id: testbed/bits-project   # org/repo string (not an integer)
-workflow_file: bits-publish.yaml
-cvmfs_repo: test.cvmfs.io
-```
-
-### Re-seeding (after a `docker compose down -v`)
-
-The seeder is idempotent: running it again after resetting Gitea is safe. It will recreate all resources. To force a re-seed without restarting all services:
-```bash
-docker compose -f docker-compose.yml -f docker-compose.bits.yml \
-  up seeder --force-recreate
-```
-
----
-
 ## Monitoring
 
 ### VictoriaMetrics
@@ -840,9 +653,6 @@ The easiest way is via `testbed.sh reset`:
 # Core stack
 sudo ./testbed.sh reset
 
-# With bits overlay (bits-console/ must already be present)
-sudo ./testbed.sh reset --bits
-```
 
 `reset` runs `clean` (stops containers, removes all host state) then `init` then `start`.
 
@@ -902,31 +712,6 @@ If jobs hang in "pending" state:
   docker compose exec cvmfs-client curl -sI http://stratum0/cvmfs/${REPO_NAME}/.cvmfspublished
   ```
 - Check the client cache is not stale: `docker compose exec cvmfs-client cvmfs_talk -i ${REPO_NAME} cache list`
-
-### Gitea: seeder exits with an error
-- Check seeder logs: `docker compose logs seeder`
-- Verify `BITS_CONSOLE_SRC` is set and points to a valid bits-console source tree
-- Ensure `build-communities.sh` is present and executable in the bits-console root
-- If Gitea itself failed to start: `docker compose logs gitea`
-- Re-run the seeder: `docker compose -f docker-compose.yml -f docker-compose.bits.yml up seeder --force-recreate`
-
-### bits-console SPA not loading
-- Confirm the seeder completed successfully (exited 0)
-- Check the `gh-pages` branch was pushed: browse to `http://localhost:3000/testbed/bits-project/src/branch/gh-pages`
-- Gitea Pages uses the subdomain format `{org}.{PAGES_DOMAIN}:{port}/{repo}/`; the `testbed` org → `testbed.localhost:3000/bits-project/testbed/`
-- Safari: add `127.0.0.1 testbed.localhost` to `/etc/hosts`
-
-### act_runner: jobs are not picked up
-- Check runner status: `systemctl status act_runner`
-- Verify registration: `act_runner list` (should show the runner as online in Gitea)
-- Ensure the runner labels match `runs-on: [self-hosted, bits]` in the workflow
-- Check runner logs: `journalctl -u act_runner -f`
-- Confirm the runner user is in the `docker` group: `groups $USER`
-
-### act_runner: bits build step fails
-- Ensure the `bits` binary is in the runner's PATH (see `act_runner/act_runner.service` `Environment=PATH=...`)
-- Check that `PREPUB_API_TOKEN` is set as a repository secret in Gitea
-- View the full step log in the Gitea Actions UI at `http://localhost:3000/testbed/bits-project/actions`
 
 ### MQTT mode: publishers or receivers not connecting
 - Check Mosquitto is up: `docker compose logs mosquitto`
