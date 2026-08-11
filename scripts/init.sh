@@ -1057,6 +1057,14 @@ else
                     info "Added CVMFS_UPSTREAM_STORAGE to server.conf: ${_new_upstream}"
                 fi
 
+                # The cp above overwrites the file, discarding the gate set
+                # earlier.  UPSTREAM_STORAGE survived only because it is
+                # re-patched here; the gate needs the same treatment.
+                if ! grep -q "^CVMFS_GW_MKDIR_PARENTS=" "$TESTBED_ROOT/config/repo-config/server.conf"; then
+                    echo "CVMFS_GW_MKDIR_PARENTS=true" >> "$TESTBED_ROOT/config/repo-config/server.conf"
+                    info "Enabled CVMFS_GW_MKDIR_PARENTS in server.conf (post-copy)"
+                fi
+
                 # ── Patch CVMFS_STRATUM0 back to the container-facing URL ────────
                 # mkfs ran on the host and therefore used the published Apache
                 # port (see _MKFS_STRATUM0_URL).  Everything that reads
