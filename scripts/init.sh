@@ -89,6 +89,10 @@ TESTBED_ROOT="${TESTBED_ROOT_ARG:-${TESTBED_ROOT:-$HOME/cvmfs-testbed}}"
 # .env lives in TESTBED_ROOT — the script directory may be read-only.
 ENV_FILE="$TESTBED_ROOT/.env"
 
+# Remember an explicit STORAGE from the caller before .env sourcing can
+# overwrite it (consumed in the STORAGE block below).
+_STORAGE_CLI="${STORAGE:-}"
+
 # ── Load existing .env before touching PATH ───────────────────────────────────
 # This makes SOFTWARE_ROOT (and all other settings) available immediately.
 if [[ -f "$ENV_FILE" ]]; then
@@ -328,12 +332,24 @@ fi
 #   STORAGE=s3    — the repository is served from it.
 #
 # See docs/storage-topology.md.
+# An explicit STORAGE from the command line must win over .env: both source
+# lines above overwrite it, which made `STORAGE=s3 ./init.sh` a silent no-op.
+[[ -n "${_STORAGE_CLI:-}" ]] && STORAGE="$_STORAGE_CLI"
 STORAGE="${STORAGE:-local}"
 case "$STORAGE" in
     s3|local) ;;
     *) error "STORAGE must be 's3' or 'local', got '${STORAGE}'."; exit 1 ;;
 esac
 info "Storage backend: STORAGE=${STORAGE}"
+# Persist it: STORAGE must survive into later inits and into testbed.sh
+# (load_env), or a plain re-init silently flips an s3 testbed back to local.
+if [[ -f "$ENV_FILE" ]]; then
+    if grep -q '^STORAGE=' "$ENV_FILE"; then
+        sed -i "s|^STORAGE=.*|STORAGE=${STORAGE}|" "$ENV_FILE"
+    else
+        printf 'STORAGE=%s\n' "$STORAGE" >> "$ENV_FILE"
+    fi
+fi
 
 # ── Canonical <repo>.s3.conf ──────────────────────────────────────────────────
 # ONE file, written here, mounted read-only wherever it is needed: the gateway
@@ -390,6 +406,12 @@ EOF
     chmod 644 "$_S3_CONF" 2>/dev/null || true
     unset -f _sq
     success "Canonical S3 config written: config/s3/${REPO_NAME}.s3.conf"
+    # HOST-FACING twin at a STABLE path.  mkfs runs on the host and bakes the
+    # -s path VERBATIM into /etc/cvmfs/repositories.d/<repo>/server.conf
+    # (make_s3_upstream), so a mktemp path would be recorded into host state
+    # and then deleted.  Same content, CVMFS_S3_HOST=localhost.
+    sed "s/^CVMFS_S3_HOST=.*/CVMFS_S3_HOST=localhost/" "$_S3_CONF"         > "$_S3_CONF_DIR/${REPO_NAME}.host.s3.conf"
+    chmod 644 "$_S3_CONF_DIR/${REPO_NAME}.host.s3.conf" 2>/dev/null || true
 elif [[ "$STORAGE" == "s3" ]]; then
     error "STORAGE=s3 but MINIO_ROOT_USER/MINIO_ROOT_PASSWORD are unset." \
           "\n       The repository would be served from a bucket nothing can" \
@@ -400,7 +422,7 @@ else
     # No credentials and STORAGE=local: nothing needs the file.  Remove a stale
     # one so withdrawing the credentials actually withdraws the capability
     # rather than leaving a config pointing at a MinIO that is not running.
-    rm -f "$_S3_CONF"
+    rm -f "$_S3_CONF" "$_S3_CONF_DIR/${REPO_NAME}.host.s3.conf"
     info "No MinIO credentials — S3 config not written (STORAGE=local)."
 fi
 
@@ -671,6 +693,13 @@ if [[ -f "$_config_server_conf" ]]; then
     _spool_dir_patch="/srv/cvmfs/$REPO_NAME/upstream-scratch"
     _cas_root_patch="/srv/cvmfs/$REPO_NAME"
     _new_upstream_patch="local,${_spool_dir_patch},${_cas_root_patch}"
+    # STORAGE-aware: under s3 the receiver commits catalogs into the BUCKET.
+    # This block runs on EVERY init, before mkfs — left unconditional it would
+    # reset an S3 testbed to local on any partial run, recreating the split
+    # repository (catalogs local, data in bucket) it exists to prevent.
+    if [[ "$STORAGE" == "s3" ]]; then
+        _new_upstream_patch="S3,/var/spool/cvmfs/${REPO_NAME}/tmp,${REPO_NAME}@/etc/cvmfs/s3/${REPO_NAME}.s3.conf"
+    fi
     if grep -q "^CVMFS_UPSTREAM_STORAGE=" "$_config_server_conf"; then
         _current=$(grep "^CVMFS_UPSTREAM_STORAGE=" "$_config_server_conf")
         if [[ "$_current" != "CVMFS_UPSTREAM_STORAGE=${_new_upstream_patch}" ]]; then
@@ -798,13 +827,52 @@ info "Checking CVMFS repository..."
 # Check both the direct path and via the /srv/cvmfs symlink (they should be the
 # same after a successful init, but may differ if TESTBED_ROOT changed).
 _repo_published=false
+_repo_init_skip=false
+_disk_published=false
 for _rpath in \
     "$TESTBED_ROOT/repos/$REPO_NAME/.cvmfspublished" \
     "/srv/cvmfs/$REPO_NAME/.cvmfspublished"; do
-    [[ -f "$_rpath" ]] && { _repo_published=true; break; }
+    [[ -f "$_rpath" ]] && { _disk_published=true; break; }
 done
+if [[ "$STORAGE" == "s3" ]]; then
+    # Under s3 the manifest lives in the BUCKET; the bucket is the ONLY
+    # authority.  Three hard rules, each learned from a review finding:
+    #  - "cannot reach MinIO" must never be read as "not initialised" — the
+    #    init branch runs rmfs and mkfs -I, which would destroy and recreate
+    #    a repository whose data sits intact in the bucket.
+    #  - a 404 with a LOCAL repository on disk is a storage-mode mismatch,
+    #    not an uninitialised testbed; converting is an explicit operator
+    #    step (clean first), never a silent side effect of init.
+    #  - only a reachable bucket answering 404 means genuinely absent.
+    _s3_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+        "http://localhost:${S3_PORT:-9000}/${S3_BUCKET:-cvmfs}/${REPO_NAME}/.cvmfspublished" \
+        2>/dev/null || true)
+    [[ -n "$_s3_code" ]] || _s3_code=000
+    case "$_s3_code" in
+        200)
+            _repo_published=true ;;
+        404|403)
+            if $_disk_published; then
+                error "STORAGE=s3 but an existing LOCAL repository was found at"
+                error "  $TESTBED_ROOT/repos/$REPO_NAME (.cvmfspublished on disk)"
+                error "and the bucket holds no repository.  Refusing to convert"
+                error "implicitly.  To move to s3: make clean, then re-run init."
+                _repo_init_skip=true
+            fi ;;
+        *)
+            error "STORAGE=s3 but MinIO/bucket '${S3_BUCKET:-cvmfs}' is unreachable"
+            error "on :${S3_PORT:-9000} (HTTP ${_s3_code}) — cannot tell whether the"
+            error "repository exists, so skipping repository init entirely."
+            error "Start the store first:  make s3-on && make start && rm -f .make/init"
+            _repo_init_skip=true ;;
+    esac
+else
+    _repo_published=$_disk_published
+fi
 if $_repo_published; then
     success "CVMFS repository already initialised."
+elif $_repo_init_skip; then
+    warn "Repository init SKIPPED (see above) — nothing was created or removed."
 else
     info "Initialising CVMFS repository..."
 
@@ -857,23 +925,26 @@ else
         info "Created symlink /srv/cvmfs → $TESTBED_ROOT/repos"
     fi
 
-    if $CVMFS_REPO_INIT_OK; then
-        # cvmfs_server mkfs refuses to run when autofs is mounted on /cvmfs.
-        if mount | grep -q 'autofs.*on /cvmfs'; then
-            warn "autofs is mounted on /cvmfs — cvmfs_server will refuse to run."
-            read -rp "Stop autofs now (sudo systemctl stop autofs)? [y/N] " _stop_autofs
-            if [[ "${_stop_autofs,,}" == "y" ]]; then
-                if sudo systemctl stop autofs 2>/dev/null; then
-                    info "autofs stopped."
-                else
-                    warn "Failed to stop autofs — trying 'sudo umount /cvmfs' instead."
-                    sudo umount /cvmfs 2>/dev/null || true
-                fi
-            else
-                warn "Skipping CVMFS repo init. Stop autofs manually and re-run:"
-                warn "  sudo systemctl stop autofs"
-                CVMFS_REPO_INIT_OK=false
-            fi
+    # ── autofs on /cvmfs: private mount namespace instead of stopping autofs ──
+    # cvmfs_server refuses when /proc/mounts has "^/etc/auto.cvmfs /cvmfs " — true
+    # on any build host that is itself a CVMFS client.  Stopping autofs unmounts
+    # that host's production repositories, so instead the mkfs step runs inside
+    # `unshare -m --propagation private` with /cvmfs lazily unmounted there; the
+    # unmount does not propagate back.  Verified 2026-08-12: host keeps all
+    # repositories mounted throughout (MEASUREMENTS.md §7).
+    # NOTE: test /proc/mounts, the same string cvmfs_server tests.  An earlier
+    # check greped `mount` output for 'autofs.*on /cvmfs', which can never match
+    # (the type FOLLOWS the path there) and reported every host clear.
+    _MKFS_WRAPPER=()
+    if grep -q "^/etc/auto.cvmfs /cvmfs " /proc/mounts 2>/dev/null; then
+        if command -v unshare >/dev/null 2>&1; then
+            info "autofs owns /cvmfs — mkfs will run in a private mount namespace."
+            _MKFS_WRAPPER=(unshare --mount --propagation private -- \
+                           bash -c 'umount -l /cvmfs 2>/dev/null || true; exec "$@"' _)
+        else
+            warn "autofs is on /cvmfs and unshare(1) is missing — mkfs will refuse."
+            warn "Install util-linux, or stop autofs manually (unmounts host repos)."
+            CVMFS_REPO_INIT_OK=false
         fi
     fi
 
@@ -897,7 +968,8 @@ else
         if [[ -d "/etc/cvmfs/repositories.d/$REPO_NAME" ]]; then
             warn "Partial repository registration found in /etc/cvmfs/repositories.d/$REPO_NAME"
             warn "Running: sudo $CVMFS_SERVER_BIN rmfs -f $REPO_NAME"
-            sudo env PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            sudo ${_MKFS_WRAPPER[@]+"${_MKFS_WRAPPER[@]}"} \
+                env PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
                 "$CVMFS_SERVER_BIN" rmfs -f "$REPO_NAME" 2>/dev/null || true
             # rmfs on a partial registration cleans the spool and mount point but
             # may leave /etc/cvmfs/repositories.d/<repo>/ on disk.  cvmfs_server mkfs
@@ -937,8 +1009,17 @@ else
         # server.conf to the container-facing name (below), which is what the
         # gateway/receiver inside the network must use.  Both URLs serve the very
         # same storage directory, so the repository content is identical.
-        _MKFS_STRATUM0_URL="http://localhost:8090/cvmfs/$REPO_NAME"
-        _CONTAINER_STRATUM0_URL="http://stratum0/cvmfs/$REPO_NAME"
+        # For S3, mkfs mangles -w by appending the repository name itself
+        # (mangle_s3_cvmfs_url), so -w must be the bucket root WITHOUT the repo;
+        # the local case passes the full per-repository URL.  mkfs runs on the
+        # HOST, so -w uses the published port; containers use the network name.
+        if [[ "$STORAGE" == "s3" ]]; then
+            _MKFS_STRATUM0_URL="http://localhost:${S3_PORT:-9000}/${S3_BUCKET:-cvmfs}"
+            _CONTAINER_STRATUM0_URL="http://${S3_HOST:-minio}:${S3_PORT:-9000}/${S3_BUCKET:-cvmfs}/$REPO_NAME"
+        else
+            _MKFS_STRATUM0_URL="http://localhost:8090/cvmfs/$REPO_NAME"
+            _CONTAINER_STRATUM0_URL="http://stratum0/cvmfs/$REPO_NAME"
+        fi
         # `make clean && make init` legitimately runs with every container down,
         # so init starts the one service mkfs depends on rather than telling the
         # user to do it: Apache must be able to serve the storage directory back
@@ -965,17 +1046,57 @@ else
     fi
 
     if $CVMFS_REPO_INIT_OK; then
-        info "Running: sudo env CVMFS_TESTBED=true CVMFS_TESTBED_SOFTWARE_ROOT=$SOFTWARE_ROOT ... cvmfs_server mkfs"
+        _MKFS_STORAGE_ARGS=()
+        if [[ "$STORAGE" == "s3" ]]; then
+            # STORAGE=s3 needs MinIO up AND the bucket created (minio-init, a
+            # separate one-shot service) — both behind the compose 's3'
+            # profile.  Guard rather than start implicitly; non-fatal like
+            # every other failure in this section.  Port note: compose
+            # publishes 9000 hardcoded, so S3_PORT is honoured here only for
+            # symmetry with the conf.
+            if ! curl -sf --max-time 3 -o /dev/null \
+                    "http://localhost:${S3_PORT:-9000}/${S3_BUCKET:-cvmfs}/"; then
+                error "STORAGE=s3 but MinIO/bucket '${S3_BUCKET:-cvmfs}' does not answer on :${S3_PORT:-9000}."
+                error "Enable and start it first:  make s3-on && make start && rm -f .make/init"
+                CVMFS_REPO_INIT_OK=false
+            fi
+        fi
+        if [[ "$STORAGE" == "s3" ]] && $CVMFS_REPO_INIT_OK; then
+            # mkfs runs on the HOST; every mkfs WRITE goes through the -s
+            # config (swissknife create/whitelist/sign all take -r), and the
+            # canonical config says CVMFS_S3_HOST=minio, which the host cannot
+            # resolve.  Use the STABLE host-facing twin written next to the
+            # canonical file: mkfs bakes this path verbatim into the host's
+            # server.conf, so it must outlive this run (a mktemp here was
+            # review finding D1).
+            _S3_CONF_HOST="$TESTBED_ROOT/config/s3/${REPO_NAME}.host.s3.conf"
+            if [[ ! -f "$_S3_CONF_HOST" ]]; then
+                error "Missing $_S3_CONF_HOST (written by the canonical-conf step)."
+                CVMFS_REPO_INIT_OK=false
+            else
+                _MKFS_STORAGE_ARGS=(-s "$_S3_CONF_HOST")
+                info "S3-backed repository: bucket ${S3_BUCKET:-cvmfs} (host-facing conf for mkfs)."
+            fi
+        fi
         _mkfs_ok=false
-        if sudo env \
+        # Re-test: the s3 guards above set CVMFS_REPO_INIT_OK=false INSIDE this
+        # block, and without this check mkfs would still run — without -s, i.e.
+        # creating a local-upstream repository wearing an S3 stratum0 URL.
+        if $CVMFS_REPO_INIT_OK; then
+        info "Running: sudo env CVMFS_TESTBED=true CVMFS_TESTBED_SOFTWARE_ROOT=$SOFTWARE_ROOT ... cvmfs_server mkfs"
+        # ${arr[@]+...} guard: bash <4.4 treats "${arr[@]}" on an empty array as
+        # unset under `set -u` and aborts.
+        if sudo ${_MKFS_WRAPPER[@]+"${_MKFS_WRAPPER[@]}"} env \
                 CVMFS_TESTBED=true \
                 CVMFS_TESTBED_SOFTWARE_ROOT="$SOFTWARE_ROOT" \
                 PATH="$SOFTWARE_ROOT:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
                 "$CVMFS_SERVER_BIN" mkfs -I -P -p \
+                ${_MKFS_STORAGE_ARGS[@]+"${_MKFS_STORAGE_ARGS[@]}"} \
                 -w "$_MKFS_STRATUM0_URL" \
                 -o "$USER" "$REPO_NAME"; then
             _mkfs_ok=true
         fi
+        fi  # CVMFS_REPO_INIT_OK re-test
 
         if $_mkfs_ok; then
             # Copy signing keys produced by mkfs into our config tree.
@@ -1076,6 +1197,16 @@ else
                 _spool_dir="/srv/cvmfs/$REPO_NAME/upstream-scratch"
                 _cas_root="/srv/cvmfs/$REPO_NAME"
                 _new_upstream="local,${_spool_dir},${_cas_root}"
+
+                # Under STORAGE=s3 the receiver must commit catalogs into the
+                # BUCKET — data and catalogs in different stores is the split
+                # repository no CVMFS_SERVER_URL can serve.  The gw-deadlock this
+                # override exists for does not apply: an S3 upstream talks to
+                # MinIO, not to the gateway it runs in.  Config path is the
+                # canonical file at its IN-CONTAINER mount point.
+                if [[ "$STORAGE" == "s3" ]]; then
+                    _new_upstream="S3,/var/spool/cvmfs/${REPO_NAME}/tmp,${REPO_NAME}@/etc/cvmfs/s3/${REPO_NAME}.s3.conf"
+                fi
 
                 if grep -q "^CVMFS_UPSTREAM_STORAGE=" "$TESTBED_ROOT/config/repo-config/server.conf"; then
                     _orig=$(grep "^CVMFS_UPSTREAM_STORAGE=" "$TESTBED_ROOT/config/repo-config/server.conf")
