@@ -426,8 +426,21 @@ cmd_start() {
     # If the repository has not been initialised (no .cvmfspublished) but a
     # snapshot exists, restore it now before starting containers.  This lets
     # the normal workflow be: clean → start → test, with no manual bootstrap.
-    local _published="${TESTBED_ROOT}/repos/${REPO_NAME}/.cvmfspublished"
-    if [[ ! -f "$_published" ]]; then
+    if [[ "${STORAGE:-local}" == "s3" ]]; then
+        # Under s3 the manifest lives in the bucket and restore DELETES bucket
+        # contents before mirroring, so start never restores implicitly — the
+        # operator runs `./testbed.sh restore` once MinIO is up.  A deliberate
+        # behaviour difference from local, where restore only writes files.
+        case "$(_s3_manifest_state)" in
+            present) ;;
+            absent)
+                warn "No repository in bucket ${S3_BUCKET:-cvmfs}/${REPO_NAME}."
+                warn "After start:  ./testbed.sh restore   (or bootstrap)" ;;
+            unreachable)
+                info "MinIO not reachable yet (normal before start) — repository"
+                info "presence can be checked after the containers are up." ;;
+        esac
+    elif [[ ! -f "${TESTBED_ROOT}/repos/${REPO_NAME}/.cvmfspublished" ]]; then
         local _snap
         _snap="$(_snapshot_path)"
         if [[ -f "$_snap" ]]; then
@@ -637,6 +650,46 @@ cmd_bootstrap() {
 # The archive contains: CAS data, gateway spool, signing keys, and configs.
 # Restoring it via cmd_restore produces a fully functional repository without
 # needing to re-run bootstrap.
+# ── _s3_manifest_state ────────────────────────────────────────────────────────
+# Three-way probe of <bucket>/<repo>/.cvmfspublished over anonymous HTTP:
+# present | absent | unreachable.  "unreachable" must NEVER be treated as
+# "absent" by any caller — absent leads to restore/re-create, both destructive,
+# and a stopped MinIO is not a missing repository.  403 is unreachable too: a
+# bucket that lost its anonymous-download policy is ambiguity, and ambiguity
+# never deletes.
+_s3_manifest_state() {
+    local _code
+    _code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+        "http://localhost:${S3_PORT:-9000}/${S3_BUCKET:-cvmfs}/${REPO_NAME}/.cvmfspublished" \
+        2>/dev/null || true)
+    case "${_code:-000}" in
+        200) echo present ;;
+        404) echo absent ;;
+        *)   echo unreachable ;;
+    esac
+}
+
+# ── _mc_run ───────────────────────────────────────────────────────────────────
+# One-shot `mc` against the testbed MinIO, credentials from .env.s3.  The MinIO
+# server image ships no tar (UBI-micro), so bucket import/export mirrors to a
+# BIND-MOUNTED host directory via this pinned mc image (already pulled for the
+# minio-init service) and tar runs on the host.
+#   _mc_run <hostdir-to-mount-at-/x, or ""> <mc args...>
+_mc_run() {
+    local _vol="$1"; shift
+    local _us _pw
+    _us=$(sed -n 's/^MINIO_ROOT_USER=//p'     "$TESTBED_DIR/.env.s3" | tr -d ' \r')
+    _pw=$(sed -n 's/^MINIO_ROOT_PASSWORD=//p' "$TESTBED_DIR/.env.s3" | tr -d ' \r')
+    if [[ -z "$_us" || -z "$_pw" ]]; then
+        error "MinIO credentials not found in $TESTBED_DIR/.env.s3"
+        return 1
+    fi
+    docker run --rm --network cvmfs-testbed_cvmfs-net \
+        ${_vol:+-v "$_vol":/x} \
+        -e MC_HOST_L="http://${_us}:${_pw}@minio:9000" \
+        minio/mc:RELEASE.2025-04-16T18-13-26Z "$@"
+}
+
 cmd_snapshot() {
     section "Creating repository snapshot"
     load_env
@@ -644,28 +697,84 @@ cmd_snapshot() {
     local snap
     snap="$(_snapshot_path)"
 
-    local _published="${TESTBED_ROOT}/repos/${REPO_NAME}/.cvmfspublished"
-    if [[ ! -f "$_published" ]]; then
-        error "No published repository found at ${TESTBED_ROOT}/repos/${REPO_NAME}."
-        error "Run bootstrap first: ./testbed.sh bootstrap"
-        exit 1
+    local _storage="${STORAGE:-local}"
+    if [[ "$_storage" == "s3" ]]; then
+        # The manifest lives in the bucket; repos/<repo> may not even exist
+        # (mkfs skips create_repository_storage for a non-local upstream).
+        case "$(_s3_manifest_state)" in
+            present) ;;
+            absent)
+                error "No published repository in bucket ${S3_BUCKET:-cvmfs}/${REPO_NAME}."
+                error "Run bootstrap first: ./testbed.sh bootstrap"
+                exit 1 ;;
+            unreachable)
+                error "MinIO is unreachable on :${S3_PORT:-9000} — cannot snapshot."
+                error "Start it first: make start"
+                exit 1 ;;
+        esac
+    else
+        local _published="${TESTBED_ROOT}/repos/${REPO_NAME}/.cvmfspublished"
+        if [[ ! -f "$_published" ]]; then
+            error "No published repository found at ${TESTBED_ROOT}/repos/${REPO_NAME}."
+            error "Run bootstrap first: ./testbed.sh bootstrap"
+            exit 1
+        fi
     fi
 
     info "Archiving repository state → $(basename "$snap") ..."
 
     # upstream-scratch is a transient scratch directory used during publish.
     # Excluding it keeps the snapshot lean and avoids partial-chunk confusion.
+    # Only repos/<repo> is legitimately optional (mkfs does not create it for
+    # a non-local upstream).  The other members are mandatory in BOTH modes:
+    # optional would turn "keys are missing" into a snapshot that succeeds and
+    # fails only at restore.
+    local _members=() _m
+    for _m in "data/gateway-spool/${REPO_NAME}" \
+              "config/keys" "config/repo-config" "config/native-publisher"; do
+        if [[ ! -e "$TESTBED_ROOT/$_m" ]]; then
+            error "Snapshot member missing: $TESTBED_ROOT/$_m — refusing to"
+            error "write a snapshot that cannot restore."
+            exit 1
+        fi
+        _members+=("$_m")
+    done
+    [[ -e "$TESTBED_ROOT/repos/${REPO_NAME}" ]] && _members+=("repos/${REPO_NAME}")
+
+    # Write to .tmp and move into place only when everything succeeded:
+    # `tar --file=` truncates its target, so in-place writes let one failed
+    # export destroy the previous good pair.
     tar \
         --create \
         --gzip \
-        --file="$snap" \
+        --file="${snap}.tmp" \
         --directory="$TESTBED_ROOT" \
         --exclude="repos/${REPO_NAME}/upstream-scratch" \
-        "repos/${REPO_NAME}" \
-        "data/gateway-spool/${REPO_NAME}" \
-        "config/keys" \
-        "config/repo-config" \
-        "config/native-publisher"
+        ${_members[@]+"${_members[@]}"}
+
+    # ── Bucket half (export) ──────────────────────────────────────────────────
+    # With an S3 upstream the objects, catalogs and manifest are in MinIO; the
+    # tar above holds only keys, config and spool.
+    local _s3snap="${snap%.tar.gz}-s3.tar.gz"
+    if [[ "$_storage" == "s3" ]]; then
+        info "Exporting bucket ${S3_BUCKET:-cvmfs}/${REPO_NAME} → $(basename "$_s3snap") ..."
+        local _exp="$TESTBED_ROOT/data/s3-export"
+        rm -rf "$_exp" && mkdir -p "$_exp"
+        if _mc_run "$_exp" mirror --quiet "L/${S3_BUCKET:-cvmfs}/${REPO_NAME}" /x >/dev/null \
+           && tar -czf "${_s3snap}.tmp" -C "$_exp" .; then
+            rm -rf "$_exp"
+            mv "${snap}.tmp" "$snap"
+            mv "${_s3snap}.tmp" "$_s3snap"
+            ok "Bucket snapshot: $(basename "$_s3snap")  ($(du -sh "$_s3snap" | cut -f1))"
+        else
+            rm -rf "$_exp"; rm -f "${snap}.tmp" "${_s3snap}.tmp"
+            error "Bucket export failed — the .tmp halves were removed; the"
+            error "PREVIOUS snapshot pair (if any) is untouched."
+            exit 1
+        fi
+    else
+        mv "${snap}.tmp" "$snap"
+    fi
 
     local size
     size=$(du -sh "$snap" | cut -f1)
@@ -706,6 +815,31 @@ cmd_restore() {
     # anywhere near restore.  The two sibling wipes already do this: the
     # bootstrap-spool wipe in cmd_bootstrap and the CAS wipe in
     # _clean_cas_reinit.  This one was simply missed.
+    # ── s3 preconditions — BEFORE anything is wiped ──────────────────────────
+    local _storage="${STORAGE:-local}"
+    local _s3snap="${snap%.tar.gz}-s3.tar.gz"
+    if [[ "$_storage" == "s3" ]]; then
+        if [[ "${_RESTORE_EXPLICIT:-0}" != "1" ]]; then
+            # Enforced in code, not by comment: under s3 restore deletes bucket
+            # contents, so only the CLI `restore` command may run it; cmd_start
+            # must never arrive here.
+            error "Internal: cmd_restore invoked non-explicitly under STORAGE=s3."
+            exit 1
+        fi
+        if [[ ! -f "$_s3snap" ]]; then
+            error "STORAGE=s3 but the bucket half of the snapshot is missing:"
+            error "  $_s3snap"
+            error "Refusing a half restore (nothing has been touched)."
+            error "Re-create both halves: ./testbed.sh snapshot"
+            exit 1
+        fi
+        if [[ "$(_s3_manifest_state)" == "unreachable" ]]; then
+            error "MinIO is unreachable — cannot restore the bucket half."
+            error "Start it first: make start   (nothing has been touched)"
+            exit 1
+        fi
+    fi
+
     info "Clearing existing repository data ..."
     sudo rm -rf \
         "${TESTBED_ROOT}/repos/${REPO_NAME}" \
@@ -719,6 +853,30 @@ cmd_restore() {
 
     info "Extracting snapshot ..."
     tar --extract --gzip --file="$snap" --directory="$TESTBED_ROOT"
+
+    # ── Bucket half (import) ──────────────────────────────────────────────────
+    # Preconditions verified above.  --remove --overwrite makes the mirror
+    # authoritative, so a leftover previous generation cannot stay interleaved
+    # with the restored one.  The anonymous-download policy is re-applied —
+    # minio-init sets it only at container start, and a bucket recreated by the
+    # mirror would otherwise answer 403 (= unreachable to the probe).  This is
+    # the ONLY place testbed.sh deletes bucket contents.
+    if [[ "$_storage" == "s3" ]]; then
+        info "Restoring bucket ${S3_BUCKET:-cvmfs}/${REPO_NAME} from $(basename "$_s3snap") ..."
+        local _imp="$TESTBED_ROOT/data/s3-import"
+        rm -rf "$_imp" && mkdir -p "$_imp"
+        if tar -xzf "$_s3snap" -C "$_imp" \
+           && _mc_run "$_imp" mirror --remove --overwrite --quiet /x "L/${S3_BUCKET:-cvmfs}/${REPO_NAME}" >/dev/null \
+           && _mc_run "" anonymous set download "L/${S3_BUCKET:-cvmfs}" >/dev/null; then
+            rm -rf "$_imp"
+            ok "Bucket restored."
+        else
+            rm -rf "$_imp"
+            error "Bucket restore FAILED — the bucket may now be empty or partial."
+            error "Re-run restore, or re-bootstrap: ./testbed.sh bootstrap"
+            exit 1
+        fi
+    fi
 
     # Restore broad write permissions so container services (running as non-root)
     # can write to the CAS and spool.  Matches what init.sh sets after mkfs.
@@ -1651,10 +1809,34 @@ cmd_clean() {
         local _snap
         _snap="$(_snapshot_path)"
         local _snap_bak=""
-        if [[ -f "$_snap" ]] && ! $_purge_snapshot; then
-            _snap_bak=$(mktemp)
-            cp "$_snap" "$_snap_bak"
-            info "Preserving snapshot: $(basename "$_snap")"
+        # The bucket half travels with the repository half, each keyed on its
+        # OWN existence (keying one on the other orphans a half, and a
+        # mismatched pair restores a split repository).
+        local _s3snap="${_snap%.tar.gz}-s3.tar.gz"
+        local _s3snap_bak=""
+        if ! $_purge_snapshot; then
+            if [[ -f "$_snap" ]]; then
+                _snap_bak=$(mktemp)
+                cp "$_snap" "$_snap_bak"
+                info "Preserving snapshot: $(basename "$_snap")"
+            fi
+            if [[ -f "$_s3snap" ]]; then
+                _s3snap_bak=$(mktemp)
+                cp "$_s3snap" "$_s3snap_bak"
+                info "Preserving bucket snapshot: $(basename "$_s3snap")"
+            fi
+        else
+            # Purge semantics differ by backend, deliberately.  Local keeps its
+            # historical accident — the repo half lives outside the wipe loop
+            # and has always survived purge; changing that would ride an
+            # unrelated behaviour change into an s3 commit.  Under s3 the
+            # halves are a PAIR: keeping one sets up a half restore, so both go.
+            if [[ "${STORAGE:-local}" == "s3" ]]; then
+                rm -f "$_snap" "$_s3snap"
+                info "Snapshot pair purged (both halves)."
+            else
+                rm -f "$_s3snap"
+            fi
         fi
 
         # Preserve performance history across clean (always, unless --purge-history).
@@ -1703,6 +1885,11 @@ cmd_clean() {
             mkdir -p "$(dirname "$_snap")"
             mv "$_snap_bak" "$_snap"
             ok "Snapshot preserved at: $_snap"
+        fi
+        if [[ -n "$_s3snap_bak" ]]; then
+            mkdir -p "$(dirname "$_s3snap")"
+            mv "$_s3snap_bak" "$_s3snap"
+            ok "Bucket snapshot preserved at: $_s3snap"
         fi
         if [[ -n "$_hist_bak" ]]; then
             mkdir -p "${TESTBED_ROOT}/data"
@@ -2826,7 +3013,7 @@ case "$CMD" in
     bootstrap)      cmd_bootstrap ;;
     fix-perms)      cmd_fix_perms ;;
     snapshot)       cmd_snapshot ;;
-    restore)        cmd_restore ;;
+    restore)        _RESTORE_EXPLICIT=1 cmd_restore ;;
     mkdirp)         cmd_mkdirp ;;
     idem)           cmd_idem ;;
     test)           cmd_test ;;
