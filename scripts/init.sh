@@ -183,6 +183,7 @@ mkdir -p \
     "$TESTBED_ROOT/repos" \
     "$TESTBED_ROOT/config/s3" \
     "$TESTBED_ROOT/data/spool" \
+    "$TESTBED_ROOT/data/spool/ingest-tmp" \
     "$TESTBED_ROOT/data/spool/dist-queue" \
     "$TESTBED_ROOT/data/s1a" \
     "$TESTBED_ROOT/data/s1b" \
@@ -341,6 +342,27 @@ case "$STORAGE" in
     *) error "STORAGE must be 's3' or 'local', got '${STORAGE}'."; exit 1 ;;
 esac
 info "Storage backend: STORAGE=${STORAGE}"
+
+# Where containers and clients fetch the repository from.  Under s3 that is the
+# bucket — the whole repository lives in MinIO, and pointing consumers at the
+# stratum0 Apache (which serves repos/, empty under s3) is what made a
+# direct-S3 publish unreadable.  STRATUM0_URL is persisted to .env because
+# docker-compose interpolates it into the cvmfs-client environment.
+if [[ "$STORAGE" == "s3" ]]; then
+    # The client entrypoint and every *_URL below build <base>/cvmfs/<repo>, so
+    # the bucket MUST be named "cvmfs" for object paths to line up.  Refuse
+    # loudly instead of producing URLs that 404 while the probes still pass.
+    if [[ "${S3_BUCKET:-cvmfs}" != "cvmfs" ]]; then
+        error "STORAGE=s3 requires S3_BUCKET=cvmfs (got '${S3_BUCKET}'):"
+        error "clients resolve <endpoint>/cvmfs/<repo>, so a differently named"
+        error "bucket needs the client entrypoint changed too.  Not supported."
+        exit 1
+    fi
+    _STRATUM0_BASE="http://${S3_HOST:-minio}:${S3_PORT:-9000}"
+else
+    _STRATUM0_BASE="http://stratum0"
+fi
+_CLIENT_SERVER_URL="${_STRATUM0_BASE}/cvmfs/${REPO_NAME}"
 # Persist it: STORAGE must survive into later inits and into testbed.sh
 # (load_env), or a plain re-init silently flips an s3 testbed back to local.
 if [[ -f "$ENV_FILE" ]]; then
@@ -349,7 +371,13 @@ if [[ -f "$ENV_FILE" ]]; then
     else
         printf 'STORAGE=%s\n' "$STORAGE" >> "$ENV_FILE"
     fi
+    if grep -q '^STRATUM0_URL=' "$ENV_FILE"; then
+        sed -i "s|^STRATUM0_URL=.*|STRATUM0_URL=${_STRATUM0_BASE}|" "$ENV_FILE"
+    else
+        printf 'STRATUM0_URL=%s\n' "$_STRATUM0_BASE" >> "$ENV_FILE"
+    fi
 fi
+info "Clients will fetch from: ${_CLIENT_SERVER_URL}"
 
 # ── Canonical <repo>.s3.conf ──────────────────────────────────────────────────
 # ONE file, written here, mounted read-only wherever it is needed: the gateway
@@ -406,6 +434,26 @@ EOF
     chmod 644 "$_S3_CONF" 2>/dev/null || true
     unset -f _sq
     success "Canonical S3 config written: config/s3/${REPO_NAME}.s3.conf"
+    # PREPUB-FACING pair.  prepub's Go S3 backend follows
+    # server.conf -> CVMFS_UPSTREAM_STORAGE -> s3.conf, but (a) the server.conf
+    # prepub mounts at /etc/cvmfs/repositories.d/<repo> carries the GW upstream
+    # (it is a publisher config — correct for publishing), and (b) the Go
+    # reader REFUSES a world-accessible s3.conf (perm & 007), while the 0644 on
+    # the canonical file is required by the non-root C++ receiver.  So prepub
+    # gets its own chain inside config/s3/: a one-line server.conf shim plus a
+    # 0600 copy of the s3.conf owned by the container's prepub user (uid 999).
+    cat > "$_S3_CONF_DIR/${REPO_NAME}.prepub.server.conf" <<EOF
+CVMFS_UPSTREAM_STORAGE=S3,/data/spool/ingest-tmp,${REPO_NAME}@/etc/cvmfs/s3/${REPO_NAME}.prepub.s3.conf
+EOF
+    chmod 644 "$_S3_CONF_DIR/${REPO_NAME}.prepub.server.conf" 2>/dev/null || true
+    # sudo install, not cp: after the first run this file is owned by uid 999
+    # mode 600, so a plain cp onto it fails with EACCES and set -e kills every
+    # subsequent init — found by exactly that happening on the testbed.
+    if ! sudo install -o 999 -g 999 -m 600 "$_S3_CONF" \
+            "$_S3_CONF_DIR/${REPO_NAME}.prepub.s3.conf" 2>/dev/null; then
+        warn "could not install prepub s3.conf (uid 999) — prepub's S3 CAS will refuse it"
+    fi
+
     # HOST-FACING twin at a STABLE path.  mkfs runs on the host and bakes the
     # -s path VERBATIM into /etc/cvmfs/repositories.d/<repo>/server.conf
     # (make_s3_upstream), so a mktemp path would be recorded into host state
@@ -585,11 +633,19 @@ success "Gateway config written."
 # (re)provisioned by the post-mkfs step below — a single init run suffices.
 INGEST_DIR="$TESTBED_ROOT/config/cvmfs-prepub/gateway-client/$REPO_NAME"
 mkdir -p "$INGEST_DIR"
+# STORAGE-aware: ingestsql runs inside the prepub container, so under s3 the
+# upstream points at the canonical S3 config at its in-container mount point,
+# and the stratum0 URL at the bucket.
+if [[ "$STORAGE" == "s3" ]]; then
+    _INGEST_UPSTREAM="S3,/data/spool/ingest-tmp,${REPO_NAME}@/etc/cvmfs/s3/${REPO_NAME}.s3.conf"
+else
+    _INGEST_UPSTREAM="local,/data/cas/data/txn,/data/cas"
+fi
 cat > "$INGEST_DIR/config" <<EOF
 CVMFS_GATEWAY=http://gateway:4929/api/v1
-CVMFS_STRATUM0=http://stratum0/cvmfs/$REPO_NAME
+CVMFS_STRATUM0=${_STRATUM0_BASE}/cvmfs/$REPO_NAME
 CVMFS_HTTP_PROXY=DIRECT
-CVMFS_UPSTREAM_STORAGE=local,/data/cas/data/txn,/data/cas
+CVMFS_UPSTREAM_STORAGE=${_INGEST_UPSTREAM}
 EOF
 # gatewaykey: same plain_text format as the gateway .gw key (id + secret).
 # 644, not 600: cvmfs_swissknife runs as the container's non-root `prepub` user,
@@ -641,6 +697,19 @@ gateway:
 # 30m is generous for typical payloads; increase for very large repos.
 job_timeout: 30m
 EOFCONFIG
+# The heredoc above is quoted (no expansion), so backend-dependent values are
+# patched in afterwards.  Under s3 prepub's CAS follows the repository's OWN
+# server.conf -> CVMFS_UPSTREAM_STORAGE -> s3.conf chain (cvmfs-bits
+# internal/cas/s3config.go), so it cannot drift from what the receiver and the
+# ingest path use; stratum0_url points at the bucket, where the catalogs are.
+_PREPUB_CFG="$TESTBED_ROOT/config/cvmfs-prepub/config.yaml"
+sed -i "s|^stratum0_url: .*|stratum0_url: ${_STRATUM0_BASE}/cvmfs|" "$_PREPUB_CFG"
+if [[ "$STORAGE" == "s3" ]]; then
+    sed -i \
+        -e "s|^  type: localfs\$|  type: s3|" \
+        -e "s|^  root: /data/cas\$|  server_conf: /etc/cvmfs/s3/${REPO_NAME}.prepub.server.conf|" \
+        "$_PREPUB_CFG"
+fi
 success "cvmfs-prepub config written."
 
 info "Writing stratum1-a config..."
@@ -771,11 +840,16 @@ if [[ -f "$_config_server_conf" ]]; then
         sudo chown "$USER:$(id -gn)" "$_native_client_conf"
         chmod 644 "$_native_client_conf"
         info "Copied native-publisher/client.conf from host repository config."
+        # mkfs wrote CVMFS_SERVER_URL from -w, which under s3 is the HOST-facing
+        # http://localhost:9000/... — patch to the container-facing URL, the
+        # same treatment server.conf's CVMFS_STRATUM0 gets after mkfs.
+        sed -i "s|^CVMFS_SERVER_URL=.*|CVMFS_SERVER_URL=${_CLIENT_SERVER_URL}|" \
+            "$_native_client_conf"
     else
         # Minimal client.conf: stratum0 URL and public key path as seen inside
         # the container (Docker service name + mounted key directory).
         cat > "$_native_client_conf" <<EOF
-CVMFS_SERVER_URL=http://stratum0/cvmfs/${REPO_NAME}
+CVMFS_SERVER_URL=${_CLIENT_SERVER_URL}
 CVMFS_PUBLIC_KEY=/etc/cvmfs/keys/${REPO_NAME}.pub
 CVMFS_REPOSITORY_NAME=${REPO_NAME}
 CVMFS_HTTP_PROXY=DIRECT

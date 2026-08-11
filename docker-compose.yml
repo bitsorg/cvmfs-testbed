@@ -267,6 +267,8 @@ services:
       # libs installed into SOFTWARE_ROOT.  LD_LIBRARY_PATH makes them findable
       # without needing ldconfig inside the container.
       LD_LIBRARY_PATH: /opt/cvmfs-software
+      # native-stress.sh / native-smoke.sh read back over this base URL.
+      STRATUM0_URL: ${STRATUM0_URL:-http://stratum0}
       RUN_LOG_FILE: /data/runs.ndjson
     volumes:
       # Inject all CVMFS server binaries and shared libraries from SOFTWARE_ROOT.
@@ -308,7 +310,10 @@ services:
       service: cvmfs-client
     environment:
       REPO_NAME: ${REPO_NAME}
-      STRATUM0_URL: http://stratum0
+      # Written to .env by init.sh from STORAGE: http://stratum0 for the local
+      # backend, http://minio:9000 when the repository is served from the
+      # bucket.  The entrypoint builds ${STRATUM0_URL}/cvmfs/${REPO_NAME}.
+      STRATUM0_URL: ${STRATUM0_URL:-http://stratum0}
       PREPUB_URL: http://cvmfs-prepub:8080
       PREPUB_API_TOKEN: ${PREPUB_API_TOKEN}
     volumes:

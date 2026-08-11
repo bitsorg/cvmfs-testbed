@@ -574,8 +574,8 @@ cmd_bootstrap() {
     section "Bootstrapping repository nested-catalog structure"
     load_env
 
-    local _published="${TESTBED_ROOT}/repos/${REPO_NAME}/.cvmfspublished"
-    if [[ ! -f "$_published" ]]; then
+    # Backend-aware: under s3 the manifest lives in the bucket, never on disk.
+    if ! _repo_present; then
         error "Repository not initialised.  Run init and start first:"
         error "  ./testbed.sh init && ./testbed.sh start"
         exit 1
@@ -667,6 +667,19 @@ _s3_manifest_state() {
         404) echo absent ;;
         *)   echo unreachable ;;
     esac
+}
+
+# ── _repo_present ─────────────────────────────────────────────────────────────
+# "Does the repository exist" for the current backend.  Under s3 the on-disk
+# .cvmfspublished proves nothing (it never exists); under local the bucket
+# proves nothing.  Callers deciding anything DESTRUCTIVE must not use this —
+# it maps unreachable to "no", acceptable for read-only gates only.
+_repo_present() {
+    if [[ "${STORAGE:-local}" == "s3" ]]; then
+        [[ "$(_s3_manifest_state)" == "present" ]]
+    else
+        [[ -f "${TESTBED_ROOT}/repos/${REPO_NAME}/.cvmfspublished" ]]
+    fi
 }
 
 # ── _mc_run ───────────────────────────────────────────────────────────────────
@@ -1218,6 +1231,14 @@ _ensure_payload() {
 # exists (/golden/smoke is a path INSIDE the CVMFS catalog, not on the host).
 _have_golden_catalog() {
     local cas="${TESTBED_ROOT}/repos/${REPO_NAME}"
+    if [[ "${STORAGE:-local}" == "s3" ]]; then
+        # Catalogs are in the bucket; the sqlite inspection below reads local
+        # files.  Use the bootstrap sentinel (written to the repo dir on disk
+        # in BOTH modes) so cmd_ensure does not re-run the non-idempotent
+        # bootstrap ingest on every invocation.
+        [[ -f "${TESTBED_ROOT}/repos/${REPO_NAME}/.bootstrap_complete" ]] || return 1
+        return 0
+    fi
     [[ -f "$cas/.cvmfspublished" ]] || return 1
     CAS="$cas" python3 - <<'PY' 2>/dev/null
 import os, sys, zlib, sqlite3, tempfile
@@ -1663,6 +1684,11 @@ cmd_catdump() {
     local cas_root="${TESTBED_ROOT}/repos/${REPO_NAME}"
     local out_dir="${TESTBED_ROOT}/data/catalog-dumps/${label}"
 
+    if [[ "${STORAGE:-local}" == "s3" ]]; then
+        error "catdump reads catalogs from the local CAS; under STORAGE=s3 they"
+        error "live in the bucket.  Not supported yet."
+        exit 1
+    fi
     if [[ ! -f "$cas_root/.cvmfspublished" ]]; then
         error "No .cvmfspublished found at $cas_root"
         error "Run a publish test first: ./testbed.sh test --method $label"
@@ -2616,7 +2642,7 @@ PY
 # bootstrap step seeds and the snapshot captures. We probe for the bootstrap
 # sentinel files restored from the snapshot.
 _suite_have_bootstrap() {
-    [[ -f "${TESTBED_ROOT}/repos/${REPO_NAME}/.cvmfspublished" ]] || return 1
+    _repo_present || return 1
     return 0
 }
 
@@ -2636,6 +2662,12 @@ _suite_have_wss() {
 # could never detect a present golden tree. Use the authoritative check:
 # inspect the published root catalog for a nested catalog rooted at /golden.
 _suite_have_golden() {
+    if [[ "${STORAGE:-local}" == "s3" ]]; then
+        # The golden verifiers (_golden_entry_count, verify-chunking,
+        # content checks) read catalogs from the LOCAL CAS; under s3 those are
+        # in the bucket.  Skip rather than fail on a misleading count of 0.
+        return 1
+    fi
     _have_golden_catalog
 }
 
@@ -2715,6 +2747,9 @@ _suite_run_one() {
             method="bits"
             if ! _stack_healthy; then
                 _RT_MSG="skipped: stack not running (run: make ensure)"; rm -f "$log"; return 2
+            fi
+            if [[ "${STORAGE:-local}" == "s3" ]]; then
+                _RT_MSG="skipped: chunk verification reads the local CAS; catalogs are in the bucket under STORAGE=s3"; rm -f "$log"; return 2
             fi
             # Publish via bits, then verify chunk boundaries against the xor32
             # oracle. Chunk sizes come from config.yaml (not hard-coded) so they
@@ -2860,9 +2895,12 @@ cmd_check() {
     if ! _stack_healthy; then error "stack not running — run: make ensure"; exit 1; fi
     local repo="${REPO_NAME:?REPO_NAME not set}"
     section "Checking repository ${repo} (catalogs + data objects)"
+    local _check_url="http://stratum0/cvmfs/${repo}"
+    [[ "${STORAGE:-local}" == "s3" ]] && \
+        _check_url="http://${S3_HOST:-minio}:${S3_PORT:-9000}/${S3_BUCKET:-cvmfs}/${repo}"
     run_compose exec -T cvmfs-native-publisher \
         cvmfs_swissknife check \
-            -r "http://stratum0/cvmfs/${repo}" \
+            -r "${_check_url}" \
             -N "${repo}" \
             -k "/etc/cvmfs/keys/${repo}.pub" \
             -t /tmp -c -l 3
