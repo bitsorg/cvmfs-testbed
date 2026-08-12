@@ -697,8 +697,13 @@ _mc_run() {
         error "MinIO credentials not found in $TESTBED_DIR/.env.s3"
         return 1
     fi
+    # --user: without it the mc container writes the mirrored objects as root
+    # into the bind-mounted export dir, and the operator's cleanup rm fails —
+    # found on the first s3 snapshot.
     docker run --rm --network cvmfs-testbed_cvmfs-net \
+        --user "$(id -u):$(id -g)" \
         ${_vol:+-v "$_vol":/x} \
+        -e MC_CONFIG_DIR=/tmp/.mc \
         -e MC_HOST_L="http://${_us}:${_pw}@minio:9000" \
         minio/mc:RELEASE.2025-04-16T18-13-26Z "$@"
 }
@@ -736,8 +741,10 @@ cmd_snapshot() {
 
     info "Archiving repository state → $(basename "$snap") ..."
 
-    # upstream-scratch is a transient scratch directory used during publish.
-    # Excluding it keeps the snapshot lean and avoids partial-chunk confusion.
+    # upstream-scratch and the receiver's spool tmp are transient scratch used
+    # during publish; the latter is root-owned under an S3 upstream (the
+    # receiver's tmpdir), which tar cannot read as the operator.  Excluding
+    # both keeps the snapshot lean and permission-clean.
     # Only repos/<repo> is legitimately optional (mkfs does not create it for
     # a non-local upstream).  The other members are mandatory in BOTH modes:
     # optional would turn "keys are missing" into a snapshot that succeeds and
@@ -763,6 +770,7 @@ cmd_snapshot() {
         --file="${snap}.tmp" \
         --directory="$TESTBED_ROOT" \
         --exclude="repos/${REPO_NAME}/upstream-scratch" \
+        --exclude="data/gateway-spool/${REPO_NAME}/tmp" \
         ${_members[@]+"${_members[@]}"}
 
     # ── Bucket half (export) ──────────────────────────────────────────────────
@@ -772,7 +780,11 @@ cmd_snapshot() {
     if [[ "$_storage" == "s3" ]]; then
         info "Exporting bucket ${S3_BUCKET:-cvmfs}/${REPO_NAME} → $(basename "$_s3snap") ..."
         local _exp="$TESTBED_ROOT/data/s3-export"
-        rm -rf "$_exp" && mkdir -p "$_exp"
+        # sudo: a pre---user run of _mc_run left root-owned children here, and
+        # the operator's rm aborts cmd_snapshot under set -e before the error
+        # branch can clean up.
+        sudo rm -rf "$_exp" 2>/dev/null || rm -rf "$_exp"
+        mkdir -p "$_exp"
         if _mc_run "$_exp" mirror --quiet "L/${S3_BUCKET:-cvmfs}/${REPO_NAME}" /x >/dev/null \
            && tar -czf "${_s3snap}.tmp" -C "$_exp" .; then
             rm -rf "$_exp"
@@ -877,7 +889,8 @@ cmd_restore() {
     if [[ "$_storage" == "s3" ]]; then
         info "Restoring bucket ${S3_BUCKET:-cvmfs}/${REPO_NAME} from $(basename "$_s3snap") ..."
         local _imp="$TESTBED_ROOT/data/s3-import"
-        rm -rf "$_imp" && mkdir -p "$_imp"
+        sudo rm -rf "$_imp" 2>/dev/null || rm -rf "$_imp"
+        mkdir -p "$_imp"
         if tar -xzf "$_s3snap" -C "$_imp" \
            && _mc_run "$_imp" mirror --remove --overwrite --quiet /x "L/${S3_BUCKET:-cvmfs}/${REPO_NAME}" >/dev/null \
            && _mc_run "" anonymous set download "L/${S3_BUCKET:-cvmfs}" >/dev/null; then

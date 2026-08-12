@@ -336,7 +336,14 @@ fi
 # An explicit STORAGE from the command line must win over .env: both source
 # lines above overwrite it, which made `STORAGE=s3 ./init.sh` a silent no-op.
 [[ -n "${_STORAGE_CLI:-}" ]] && STORAGE="$_STORAGE_CLI"
-STORAGE="${STORAGE:-local}"
+# Fresh installs get s3 from .env.example.  An EXISTING .env with no STORAGE
+# line predates the knob and belongs to a local-backend testbed — defaulting it
+# to s3 would silently rewrite the receiver upstream at a bucket that is not
+# there.  (An explicit STORAGE=s3 env/CLI still wins via _STORAGE_CLI.)
+if [[ -z "${STORAGE:-}" && -f "$ENV_FILE" ]] && ! grep -q '^STORAGE=' "$ENV_FILE"; then
+    STORAGE=local
+fi
+STORAGE="${STORAGE:-s3}"
 case "$STORAGE" in
     s3|local) ;;
     *) error "STORAGE must be 's3' or 'local', got '${STORAGE}'."; exit 1 ;;
@@ -370,6 +377,20 @@ if [[ -f "$ENV_FILE" ]]; then
         sed -i "s|^STORAGE=.*|STORAGE=${STORAGE}|" "$ENV_FILE"
     else
         printf 'STORAGE=%s\n' "$STORAGE" >> "$ENV_FILE"
+    fi
+    # One variable drives the compose profile (docs/storage-topology.md,
+    # decision 1): under s3, MinIO and minio-init must be inside the enabled
+    # profile or a fresh `make` stalls with the store forever down.
+    if [[ "$STORAGE" == "s3" && -f "$_ENV_S3_FILE" ]]; then
+        for _kv in "S3_ENABLED=1" "COMPOSE_PROFILES=s3"; do
+            _k="${_kv%%=*}"
+            if grep -q "^${_k}=" "$_ENV_S3_FILE"; then
+                sed -i "s|^${_k}=.*|${_kv}|" "$_ENV_S3_FILE"
+            else
+                printf '%s\n' "$_kv" >> "$_ENV_S3_FILE"
+            fi
+        done
+        info "S3 profile enabled in .env.s3 (S3_ENABLED=1, COMPOSE_PROFILES=s3)."
     fi
     if grep -q '^STRATUM0_URL=' "$ENV_FILE"; then
         sed -i "s|^STRATUM0_URL=.*|STRATUM0_URL=${_STRATUM0_BASE}|" "$ENV_FILE"
