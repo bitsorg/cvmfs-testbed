@@ -182,6 +182,7 @@ mkdir -p \
     "$TESTBED_ROOT/software" \
     "$TESTBED_ROOT/repos" \
     "$TESTBED_ROOT/config/s3" \
+    "$TESTBED_ROOT/config/prepub-publisher" \
     "$TESTBED_ROOT/data/spool" \
     "$TESTBED_ROOT/data/spool/ingest-tmp" \
     "$TESTBED_ROOT/data/spool/dist-queue" \
@@ -429,6 +430,12 @@ mkdir -p "$_S3_CONF_DIR"
 # `set -euo pipefail` aborts the whole init — a failure mode this script has
 # already been bitten by and guards against elsewhere.
 chmod 755 "$_S3_CONF_DIR" 2>/dev/null || true
+# Docker auto-creates bind-mount sources root-owned; a root-owned
+# config/prepub-publisher made init's own write die with EACCES on the testbed.
+if [[ -d "$TESTBED_ROOT/config/prepub-publisher" && ! -w "$TESTBED_ROOT/config/prepub-publisher" ]]; then
+    sudo chown "$USER:$(id -gn)" "$TESTBED_ROOT/config/prepub-publisher" 2>/dev/null \
+        || warn "config/prepub-publisher is not writable — prepub config generation will fail"
+fi
 if [[ -n "${MINIO_ROOT_USER:-}" && -n "${MINIO_ROOT_PASSWORD:-}" ]]; then
     # CVMFS parses this by SOURCING it — BashOptionsManager::ParsePath opens a
     # real shell and feeds it every line — so an unquoted value containing $,
@@ -1437,8 +1444,33 @@ else
                     sudo chown "$USER:$(id -gn)" \
                         "$TESTBED_ROOT/config/native-publisher/client.conf"
                     chmod 644 "$TESTBED_ROOT/config/native-publisher/client.conf"
+                    # Under s3 the mkfs-written URL is host-facing; keep the
+                    # container-facing one, same as the pre-mkfs branch does.
+                    sed -i "s|^CVMFS_SERVER_URL=.*|CVMFS_SERVER_URL=${_CLIENT_SERVER_URL}|" \
+                        "$TESTBED_ROOT/config/native-publisher/client.conf"
                     info "Copied native-publisher/client.conf from mkfs output."
                 fi
+
+                # ── prepub-publisher/, post-mkfs ─────────────────────────────
+                # The pre-mkfs generation is gated on repo-config/server.conf
+                # existing, which on a FRESH install it does not — so a cold
+                # init used to finish without this config, and every prepub
+                # `cvmfs_server ingest` (plain and --direct-s3) failed with
+                # "The repository test.cvmfs.io does not exist".  Regenerate it
+                # here, where native-publisher/ has just been written, exactly
+                # as the pre-mkfs branch would have (CVMFS_USER=prepub; see the
+                # get_user_shell() rationale at that block).
+                mkdir -p "$TESTBED_ROOT/config/prepub-publisher" 2>/dev/null \
+                    || sudo mkdir -p "$TESTBED_ROOT/config/prepub-publisher"
+                sudo chown "$USER:$(id -gn)" "$TESTBED_ROOT/config/prepub-publisher" 2>/dev/null || true
+                sed "s|^CVMFS_USER=.*|CVMFS_USER=prepub|" \
+                    "$TESTBED_ROOT/config/native-publisher/server.conf" \
+                    > "$TESTBED_ROOT/config/prepub-publisher/server.conf"
+                cp "$TESTBED_ROOT/config/native-publisher/client.conf" \
+                   "$TESTBED_ROOT/config/prepub-publisher/client.conf"
+                chmod 644 "$TESTBED_ROOT/config/prepub-publisher/server.conf" \
+                          "$TESTBED_ROOT/config/prepub-publisher/client.conf"
+                info "prepub-publisher/{server,client}.conf regenerated post-mkfs."
             else
                 warn "server.conf not found at $_server_conf — cvmfs_receiver will fail."
                 warn "Copy manually: sudo cp $_server_conf $TESTBED_ROOT/config/repo-config/server.conf"
