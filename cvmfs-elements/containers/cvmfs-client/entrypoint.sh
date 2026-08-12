@@ -34,6 +34,21 @@ CVMFS_SERVER_URL=${STRATUM0_URL}/cvmfs/${REPO_NAME}
 CVMFS_PUBLIC_KEY=/etc/cvmfs/keys/${REPO_NAME}.pub
 # Write a debug log so we can diagnose mount failures:
 CVMFS_DEBUGLOG=/tmp/cvmfs-debug.log
+# Testbed freshness: check for a new root catalog every 10 s instead of the
+# repository default 240 s. CVMFS_MAX_TTL_SECS caps the effective TTL
+# client-side — min(max_ttl, catalog TTL), no floor (mountpoint.cc,
+# GetEffectiveTtlSec) — which is the ONLY reliable knob on this testbed:
+# server-side CVMFS_REPOSITORY_TTL is not honored by any publish path here
+# (cvmfs_server ingest never passes -T, and the gateway receiver rebuilds the
+# root catalog without copying the publisher's TTL property), so the served
+# catalogs always carry the 240 s default.
+CVMFS_MAX_TTL_SECS=10
+# Drain kernel dentry/attr caches on the same scale (default 60 s) — this is
+# also the drainout wait for forced remounts on the no-notify-inval fallback
+# path (kcache+1 s). Worst-case passive visibility of a publish is roughly
+# CVMFS_MAX_TTL_SECS + this value; cvmfs_talk remount sync remains the
+# immediate option for scripts.
+CVMFS_KCACHE_TIMEOUT=10
 EOF
 
 # ── Generate per-repository configuration ────────────────────────────────────
