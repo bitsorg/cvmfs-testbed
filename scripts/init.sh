@@ -918,6 +918,21 @@ fi
 # Requires cvmfs_server and a writable /srv for the symlink.
 # Failures here are non-fatal: all config files are already written and
 # containers that don't touch the CVMFS repo will start correctly.
+# Under s3 the store must answer before ANY repository decision: the probe
+# below and the mkfs guard both refuse on "unreachable", which is correct but
+# leaves a cold `make` unable to sequence itself.  Start MinIO the same way
+# this script already starts the stratum0 Apache for the local backend —
+# idempotent, and only after .env/.env.s3/configs exist (they do, above).
+if [[ "$STORAGE" == "s3" ]]; then
+    if ! curl -sf --max-time 2 -o /dev/null \
+            "http://localhost:${S3_PORT:-9000}/${S3_BUCKET:-cvmfs}/"; then
+        info "Object store not up yet — starting minio + minio-init ..."
+        if ! bash "$SCRIPT_DIR/testbed.sh" store-up; then
+            warn "Could not bring the object store up; repository init will be skipped."
+        fi
+    fi
+fi
+
 info "Checking CVMFS repository..."
 # Check both the direct path and via the /srv/cvmfs symlink (they should be the
 # same after a successful init, but may differ if TESTBED_ROOT changed).

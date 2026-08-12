@@ -708,6 +708,25 @@ _mc_run() {
         minio/mc:RELEASE.2025-04-16T18-13-26Z "$@"
 }
 
+# ── cmd_store_up ──────────────────────────────────────────────────────────────
+# Bring up ONLY MinIO and its bucket-init one-shot, idempotently.  Exists so
+# init.sh can start the store before mkfs the same way it already starts the
+# stratum0 Apache for the local backend — without this, a cold `make` under
+# STORAGE=s3 cannot sequence itself: init needs the store, and only init knows
+# the configs.  Waits for the bucket to answer.
+cmd_store_up() {
+    load_env
+    run_compose up -d minio minio-init
+    local _i
+    for _i in $(seq 1 30); do
+        curl -sf --max-time 2 -o /dev/null \
+            "http://localhost:${S3_PORT:-9000}/${S3_BUCKET:-cvmfs}/" && return 0
+        sleep 2
+    done
+    error "MinIO/bucket did not become reachable within 60 s."
+    return 1
+}
+
 cmd_snapshot() {
     section "Creating repository snapshot"
     load_env
@@ -3065,6 +3084,7 @@ case "$CMD" in
     fix-perms)      cmd_fix_perms ;;
     snapshot)       cmd_snapshot ;;
     restore)        _RESTORE_EXPLICIT=1 cmd_restore ;;
+    store-up)       cmd_store_up ;;
     mkdirp)         cmd_mkdirp ;;
     idem)           cmd_idem ;;
     test)           cmd_test ;;
