@@ -714,6 +714,27 @@ server:
   listen: ":8080"
 gateway:
   url: http://gateway:4929
+# Coarse publish (ADR-0007) requires FIXED 6 MiB chunk boundaries: ingestsql
+# reconstructs chunk offsets as k*6MiB and the descriptor emitter enforces
+# chunk-count == ceil(size/6MiB). min==avg==max makes the xor32 chunker cut at
+# exactly 6 MiB (it forces the boundary at max), so every file yields
+# ceil(size/6MiB) chunks. Content-defined sizes (e.g. 4/8/16 MiB) break coarse
+# finalize with "hash count N != ceil(size/6MiB)".
+#
+# 6 MiB, not 24 MiB: ingestsql selects kInternalChunkSize for internal=1
+# files, and the descriptor writes internal=1 so the client fetches content
+# from the repository CAS rather than from CVMFS_EXTERNAL_URL.  Keep in
+# lockstep with cvmfsdescriptor.ChunkGrid.
+#
+# The binary's built-in default is currently the same 6 MiB grid, but that is
+# an implementation detail — this block is the pin. This heredoc never had
+# it: 2d251cf pinned chunking only in the then-tracked sample config, which
+# init.sh never read, so the runtime config was never pinned at all and
+# publishes worked only because the binary default coincides.
+chunking:
+  min: 6291456
+  avg: 6291456
+  max: 6291456
 # Stratum 1 distribution is now driven by the embedded MQTT-over-WSS pull
 # broker: receivers learn of new commits over the control plane and pull the
 # objects from Stratum 0 themselves. The cvmfs-prepub binary no longer reads
