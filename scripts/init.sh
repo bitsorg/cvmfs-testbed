@@ -1237,6 +1237,58 @@ else
         fi  # CVMFS_REPO_INIT_OK re-test
 
         if $_mkfs_ok; then
+            # ── Share the spool with a second local user (optional) ──────────
+            # mkfs creates /var/spool/cvmfs/<repo> from scratch and chowns it to
+            # CVMFS_USER (cvmfs_server_common.sh: mkdir -p ... ; chown -R
+            # $CVMFS_USER).  On a RE-init that directory has already been
+            # rm -rf'd a few lines above, so anything granted on the old tree --
+            # a chgrp, an ACL -- is gone with it.  The symptom is remote from
+            # the cause: the next `bits cvmfs-stage` on the staged publish path
+            # dies with EACCES creating its scratch directory, looking like a
+            # fresh permissions bug rather than the consequence of an init.
+            #
+            # ADR-0011's staged path needs this because the PRODUCER runs
+            # cvmfs_swissknife directly on the host, as the CI runner's user,
+            # while the repository belongs to CVMFS_USER.  It writes two things
+            # under the spool: a per-invocation scratch directory and the
+            # per-repository prepare lock.  (It only READS <spool>/rdonly, so a
+            # future --scratch that moves both writes elsewhere would remove
+            # the need for this entirely; until then, the grant has to survive
+            # an init.)
+            #
+            # Opt-in.  Unset means the spool stays private to CVMFS_USER, which
+            # is the right default and the behaviour every existing testbed has.
+            # A group-writable spool lets anyone in that group alter transaction
+            # state; that is acceptable under the same threat model that already
+            # writes a 0644 s3.conf holding the MinIO secret, but it should be
+            # asked for by name rather than assumed.
+            if [[ -n "${SPOOL_SHARED_GROUP:-}" ]]; then
+                _spool_share="/var/spool/cvmfs/$REPO_NAME"
+                if getent group "$SPOOL_SHARED_GROUP" >/dev/null 2>&1; then
+                    sudo chgrp -R "$SPOOL_SHARED_GROUP" "$_spool_share" \
+                        && sudo chmod -R g+rwX "$_spool_share" \
+                        && sudo find "$_spool_share" -type d -exec chmod g+s {} + \
+                        || warn "could not share $_spool_share with group $SPOOL_SHARED_GROUP"
+                    # setgid propagates the GROUP to entries created later; it
+                    # does NOT propagate write permission.  The default ACL does
+                    # that.  Both are needed: cvmfs_swissknife creates a fresh
+                    # directory under <spool>/tmp on EVERY prepare, so a scheme
+                    # that only fixes today's directories fails on the next one.
+                    if command -v setfacl >/dev/null 2>&1; then
+                        sudo setfacl -R -m "g:${SPOOL_SHARED_GROUP}:rwx" "$_spool_share" \
+                            && sudo setfacl -R -d -m "g:${SPOOL_SHARED_GROUP}:rwx" "$_spool_share" \
+                            || warn "setfacl on $_spool_share failed — new scratch dirs may not be writable by $SPOOL_SHARED_GROUP"
+                    else
+                        warn "setfacl(1) not found — group can write today's spool," \
+                             "\n       but directories cvmfs_swissknife creates later may not inherit it." \
+                             "\n       Install acl, or expect EACCES on a later prepare."
+                    fi
+                    success "Spool $_spool_share shared with group $SPOOL_SHARED_GROUP"
+                else
+                    warn "SPOOL_SHARED_GROUP=$SPOOL_SHARED_GROUP does not exist on this host — spool not shared"
+                fi
+            fi
+
             # Copy signing keys produced by mkfs into our config tree.
             for _keyfile in \
                 "/etc/cvmfs/keys/$REPO_NAME.crt" \
