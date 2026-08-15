@@ -21,6 +21,9 @@
 #                   Auto-restores from repo-seed.tar.gz if the repo is absent.
 #   stop            Stop containers without removing state.
 #   restart         Stop then start.
+#   compose <args>  Run docker compose with this testbed's file set and env
+#                   files (.env + .env.s3). Use instead of a hand-typed
+#                   'docker compose', which reads only .env.
 #   status          Show container status and key service health.
 #   info            Print all service endpoints, ports, and credentials.
 #   logs            Tail logs (all services, or pass a service name).
@@ -166,6 +169,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTBED_DIR="$(dirname "$SCRIPT_DIR")"   # root of cvmfs-testbed checkout
 
 # ── Default flags ─────────────────────────────────────────────────────────────
+WSS_EXPLICIT=false      # set when --wss/--no-wss is given, so _resolve_wss defers to it
 USE_WSS=true            # ADR-0001 pull distribution (embedded MQTT-over-WSS broker) — default;
                         # disable with --no-wss for the bare base stack.
 SOFTWARE_ROOT_OVERRIDE=""
@@ -183,11 +187,22 @@ FOLLOW_LOGS=false       # set by -f/--follow; makes 'logs' stream continuously
 CMD="${1:-help}"
 shift || true
 
+# `compose` is a verbatim passthrough: its arguments belong to docker compose,
+# not to this script.  Parsing them here would reject every compose flag this
+# script does not happen to know (--force-recreate, --remove-orphans, ...) as
+# "Unknown option", which would make the passthrough useless for exactly the
+# cases it exists to serve.
+COMPOSE_ARGS=()
+if [[ "$CMD" == "compose" ]]; then
+    COMPOSE_ARGS=("$@")
+    set --
+fi
+
 POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --wss)                 USE_WSS=true;                     shift ;;
-        --no-wss)              USE_WSS=false;                    shift ;;
+        --wss)                 USE_WSS=true;  WSS_EXPLICIT=true; shift ;;
+        --no-wss)              USE_WSS=false; WSS_EXPLICIT=true; shift ;;
         --software-root)
             [[ $# -ge 2 ]] || { error "--software-root requires a value"; exit 1; }
             SOFTWARE_ROOT_OVERRIDE="$2"; shift 2 ;;
@@ -524,6 +539,25 @@ _resolve_method() {
     fi
 }
 
+# _resolve_wss mirrors _resolve_method for the pull-wss overlay.
+#
+# The make-time WSS variable is not the source of truth: `make WSS=0 start`
+# then a plain `make redeploy-prepub` would otherwise recreate prepub WITH the
+# overlay -- a different command line and different volumes -- from a target
+# that claims to change nothing but the container. The overlay actually in use
+# is the one recorded at start time.
+_resolve_wss() {
+    if $WSS_EXPLICIT; then return; fi
+    local cf; cf="$(_testbed_config_path)"
+    [[ -f "$cf" ]] || return
+    local w
+    w="$(sed -n 's/.*"wss"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$cf" | head -1)"
+    case "$w" in
+        true)  USE_WSS=true  ;;
+        false) USE_WSS=false ;;
+    esac
+}
+
 # ── cmd_bootstrap ─────────────────────────────────────────────────────────────
 # Run the privileged cvmfs-bootstrap container once to seed the repository with
 # the nested-catalog structure required by cvmfs_server ingest.
@@ -567,7 +601,7 @@ cmd_fix_perms() {
     load_env
     fix_repo_perms || exit 1
     info "Restart prepub to clear a failed startup probe:"
-    info "  docker compose up -d cvmfs-prepub && ./testbed logs cvmfs-prepub | tail -5"
+    info "  ./testbed compose up -d cvmfs-prepub && ./testbed logs cvmfs-prepub | tail -5"
 }
 
 cmd_bootstrap() {
@@ -1145,6 +1179,46 @@ cmd_restart() {
     cmd_start
 }
 
+
+# ── compose ───────────────────────────────────────────────────────────────────
+# Passthrough to `docker compose` with THIS testbed's file set and env sources
+# already applied:
+#
+#   ./testbed compose up -d cvmfs-prepub
+#
+# It exists because the alternative is typing docker compose by hand, and a
+# hand-typed command reads only .env -- not .env.s3, which is where S3_ENABLED
+# lives.  That is not hypothetical: recreating one container that way brought
+# prepub up with S3 disabled, and the next 170-package publish failed on
+# "S3 config does not exist" while .env.s3 still said S3_ENABLED=1.
+#
+# Not quite verbatim in one place: run_compose appends </dev/null to `exec`
+# (it has its own reason -- see there), so an interactive
+# `compose exec -it ... sh` gets a shell with closed stdin. Use `docker exec`
+# directly for interactive work; nothing about that reads the env files.
+cmd_compose() {
+    # The overlay flags decide the FILE SET, not the compose arguments, so they
+    # are consumed here rather than passed on. Without this, `make WSS=0` could
+    # not express itself through the passthrough and prepub would be recreated
+    # with docker-compose.pull-wss.yml applied -- a different command line and
+    # different volumes, silently, from a target that claims to change nothing
+    # but the container.
+    while [[ ${#COMPOSE_ARGS[@]} -gt 0 ]]; do
+        case "${COMPOSE_ARGS[0]}" in
+            --wss)    USE_WSS=true;  WSS_EXPLICIT=true; COMPOSE_ARGS=("${COMPOSE_ARGS[@]:1}") ;;
+            --no-wss) USE_WSS=false; WSS_EXPLICIT=true; COMPOSE_ARGS=("${COMPOSE_ARGS[@]:1}") ;;
+            *) break ;;
+        esac
+    done
+    load_env
+    _resolve_wss   # match the overlay the stack was STARTED with
+    if [[ ${#COMPOSE_ARGS[@]} -eq 0 ]]; then
+        error "compose: nothing to run — e.g. ./testbed compose up -d cvmfs-prepub"
+        exit 1
+    fi
+    run_compose "${COMPOSE_ARGS[@]}"
+}
+
 # ── Status helpers ─────────────────────────────────────────────────────────────
 # _cmd_status_inner does the actual work without calling load_env, so it is safe
 # to call from within cmd_start (where load_env already ran).
@@ -1181,7 +1255,7 @@ _cmd_status_inner() {
              | grep -q "startup probe failed.*permission denied"; then
             error "cvmfs-prepub cannot write to its CAS (the repository tree)."
             error "This is a permissions problem, not a startup delay — repair it with:"
-            error "  ./testbed fix-perms && docker compose up -d cvmfs-prepub"
+            error "  ./testbed fix-perms && ./testbed compose up -d cvmfs-prepub"
         fi
     fi
 }
@@ -3100,6 +3174,7 @@ case "$CMD" in
     pulltest)       cmd_pulltest ;;
     pullstatus)     cmd_pullstatus ;;
     unittest)       cmd_unittest ;;
+    compose)        cmd_compose ;;
     clean)          cmd_clean ;;
     reset)          cmd_reset ;;
     help|--help|-h) cmd_help ;;
