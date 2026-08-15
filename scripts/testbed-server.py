@@ -1818,7 +1818,7 @@ def main():
     print(f'  Listening : {args.bind}:{args.port}')
     print(f'  Testbed   : {args.testbed_root}')
     print(f'  Script    : {args.script}')
-    print(f'  Overlays  : bits={args.bits}  mqtt={args.mqtt}')
+    print(f'  Overlays  : mqtt={args.mqtt}  wss={args.wss}')
     if use_tls:
         print(f'  TLS cert  : {cert_path}')
         print(f'  Fingerprint: {fingerprint}')
