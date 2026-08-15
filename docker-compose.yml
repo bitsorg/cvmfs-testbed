@@ -165,6 +165,7 @@ services:
       /usr/local/bin/cvmfs-prepub
       --config /etc/cvmfs-prepub/config.yaml
       --ingest-publish
+      --replace-on-conflict=${REPLACE_ON_CONFLICT:-false}
     ports:
       - "8080:8080"
     depends_on:
