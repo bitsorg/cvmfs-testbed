@@ -121,7 +121,7 @@ _METHOD := $(if $(METHOD),--method $(METHOD),)
 .PHONY: all build install init start start-wss ensure bootstrap snapshot restore redeploy clean cleanall baseline \
         test test-suite test-ingest test-bits test-pull test-pull-wss pull-status \
         test-chunking test-content test-stress test-mkdirp test-idem test-check check \
-        s3-on s3-off s3-status _s3-set \
+        s3-on s3-off s3-status _s3-set check-env redeploy-prepub \
         stresstest stresstest-ingest \
         verify verify-chunking verify-content \
         catdump-ingest catdump-bits catdiff \
@@ -176,6 +176,7 @@ init: $(MAKE_DIR)/init
 start: $(MAKE_DIR)/init
 	@echo "── Starting testbed ──────────────────────────────────────────────────"
 	bash "$(TESTBED)" start $(_WSS) $(_METHOD)
+	@$(MAKE) --no-print-directory check-env
 
 # Back-compat alias — the pull overlay is on by default, so this == start.
 start-wss: start
@@ -200,6 +201,7 @@ start-wss: start
 ensure: | $(MAKE_DIR)
 	bash "$(TESTBED)" ensure $(_WSS) $(_METHOD)
 	@touch $(MAKE_DIR)/init $(MAKE_DIR)/bootstrap
+	@$(MAKE) --no-print-directory check-env
 
 # ── bootstrap ─────────────────────────────────────────────────────────────────
 # Run once: seeds the nested-catalog structure required by cvmfs_server ingest,
@@ -287,7 +289,9 @@ _s3-set:
 	@printf '\n'
 	@printf '    make start          (or: make ensure)\n'
 	@printf '\n'
-	@printf 'Then  make s3-status  to confirm the container agrees with the file.\n'
+	@printf 'Then  make redeploy-prepub  to recreate prepub with the new value\n'
+	@printf '(make ensure will NOT recreate a healthy container), and\n'
+	@printf 'make check-env  to confirm it agrees with the file.\n'
 	@printf '\n'
 	@$(MAKE) --no-print-directory s3-status
 
@@ -306,6 +310,80 @@ s3-status:
 	    "$$(docker exec cvmfs-prepub sh -c 'p=$${CVMFS_INGEST_DIRECT_S3_CONFIG:-/etc/cvmfs/'"$$(grep -m1 "^REPO_NAME=" "$(MAKEFILE_DIR)/.env" | cut -d= -f2- | tr -d " \r")"'.s3.conf}; if [ -r "$$p" ]; then echo "$$p (readable)"; elif [ -e "$$p" ]; then echo "$$p (EXISTS BUT UNREADABLE)"; else echo "$$p (absent — direct_s3 builds will fail)"; fi' 2>/dev/null || echo '<not running>')"
 	@printf 'minio       : %s\n' "$$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^cvmfs-minio$$' | sed 's/^0$$/not running/; s/^1$$/running/')"
 	@printf 'path choice : per build (job field direct_s3), not set here\n' 
+
+# ── check-env ─────────────────────────────────────────────────────────────────
+# Refuse to proceed when the RUNNING containers disagree with the files on
+# disk.  The drift this catches is not theoretical: a container recreated with
+# a hand-typed `docker compose` reads only .env, so prepub came up with
+# S3_ENABLED=0 while .env.s3 said 1 — and the next 170-package publish died on
+# "Direct-to-S3 upload requested but S3 config does not exist".  `make
+# s3-status` showed the mismatch all along; nothing was looking at it.
+#
+# Silent-pass when nothing is running (a stopped testbed cannot drift) or when
+# .env.s3 is absent (the S3 variant is genuinely optional).
+check-env:
+	@_fail=0; \
+	if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^cvmfs-prepub$$'; then \
+	    printf '[check-env] cvmfs-prepub is not running - nothing to check.\n'; \
+	    exit 0; \
+	fi; \
+	if [ ! -f "$(MAKEFILE_DIR)/.env.s3" ]; then \
+	    printf '[check-env] no .env.s3 - S3 variant not configured, skipping.\n'; \
+	    exit 0; \
+	fi; \
+	want=$$(sed -n 's|^S3_ENABLED=||p' "$(MAKEFILE_DIR)/.env.s3" | tail -1 \
+	    | tr -d '\r' | sed -e 's/[[:space:]]#.*$$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' \
+	                       -e 's/^"\(.*\)"$$/\1/' -e "s/^'\(.*\)'$$/\1/"); \
+	want=$${want:-0}; \
+	if ! have=$$(docker exec cvmfs-prepub sh -c 'echo $${S3_ENABLED:-<unset>}' 2>/dev/null); then \
+	    printf '[check-env] WARNING: cannot exec into cvmfs-prepub (restarting or\n'; \
+	    printf '            unhealthy?) - environment NOT verified. Diagnose with:\n'; \
+	    printf '                docker logs cvmfs-prepub; make status\n'; \
+	    exit 0; \
+	fi; \
+	if [ "$$want" != "$$have" ]; then \
+	    printf '[check-env] DRIFT: .env.s3 says S3_ENABLED=%s, cvmfs-prepub is running with %s.\n' "$$want" "$$have"; \
+	    printf '            The container was created without .env.s3 - a hand-typed\n'; \
+	    printf '            "docker compose" reads only .env.  Recreate it properly:\n'; \
+	    printf '                make redeploy-prepub\n'; \
+	    _fail=1; \
+	fi; \
+	if [ "$$want" = "1" ]; then \
+	    cfg=$$(docker exec cvmfs-prepub sh -c 'echo $${CVMFS_INGEST_DIRECT_S3_CONFIG:-}' 2>/dev/null || echo ''); \
+	    if [ -z "$$cfg" ]; then \
+	        printf '[check-env] DRIFT: S3 enabled but CVMFS_INGEST_DIRECT_S3_CONFIG is unset in the\n'; \
+	        printf '            container, so a direct_s3 build looks for /etc/cvmfs/<repo>.s3.conf\n'; \
+	        printf '            and aborts.  Recreate: make redeploy-prepub\n'; \
+	        _fail=1; \
+	    elif ! docker exec cvmfs-prepub test -r "$$cfg" 2>/dev/null; then \
+	        printf '[check-env] DRIFT: S3 config %s is not readable in the container.\n' "$$cfg"; \
+	        _fail=1; \
+	    fi; \
+	fi; \
+	if [ $$_fail -eq 0 ]; then \
+	    printf '[check-env] cvmfs-prepub environment matches .env.s3.\n'; \
+	fi; \
+	exit $$_fail
+
+# ── redeploy-prepub ───────────────────────────────────────────────────────────
+# Recreate the prepub container through the testbed's own compose wrapper, so
+# .env AND .env.s3 both apply. With the pull-wss overlay prepub depends_on
+# gateway and stratum0, so those enter the target set (and are recreated only
+# if their own config changed); on the base stack it has no dependencies and
+# nothing else is touched. The published repository is a bind mount either way.
+#
+# This is the supported way to pick up a changed flag or env value without
+# touching the published repository: a full 'make redeploy' re-inits and wipes
+# it, and a hand-typed docker compose silently drops .env.s3.
+#
+# Deliberately does NOT depend on 'install': recreating a container to pick up
+# an env change should not also git-pull and rebuild cvmfs-bits.  To deploy a
+# NEW BINARY, ask for both:  make install redeploy-prepub
+redeploy-prepub:
+	@echo "── Recreating cvmfs-prepub (repository state untouched) ──────────────"
+	bash "$(TESTBED)" compose $(_WSS) up -d cvmfs-prepub
+	@sleep 2
+	@$(MAKE) --no-print-directory check-env
 
 # ── redeploy ──────────────────────────────────────────────────────────────────
 # Full rebuild: wipe sentinels + state, then run the full pipeline from scratch.
@@ -465,9 +543,15 @@ help:
 	@echo "  make bootstrap            Seed nested catalog + create snapshot (once)"
 	@echo "  make snapshot             Save repo state to repo-seed.tar.gz"
 	@echo "  make restore              Restore repo state from repo-seed.tar.gz"
-	@echo "  make redeploy             Full rebuild from scratch"
+	@echo "  make redeploy             Full rebuild from scratch (re-inits: WIPES the repository)"
+	@echo "  make redeploy-prepub      Recreate ONLY prepub (repository untouched; add 'install' to rebuild)"
+	@echo "  make check-env            Verify the running prepub matches .env.s3"
 	@echo "  make clean                Stop + wipe state (keeps snapshot and .env)"
 	@echo "  make cleanall             Stop + wipe state + delete .env (fresh credentials)"
+	@echo ""
+	@echo "  Never run 'docker compose' by hand: it reads .env but NOT .env.s3, so a"
+	@echo "  container recreated that way comes up with S3 disabled. Use"
+	@echo "  'make redeploy-prepub', or './testbed compose <args>' for anything else."
 	@echo ""
 	@echo "  All test/verify/stress targets auto-run 'ensure' first, so they work"
 	@echo "  from ANY state (fresh checkout, after 'make clean', stopped or running)."
