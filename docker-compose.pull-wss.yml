@@ -48,6 +48,7 @@ services:
       --ingest-env LD_LIBRARY_PATH=/opt/cvmfs-software
       --ingest-publish
       --replace-on-conflict=${REPLACE_ON_CONFLICT:-false}
+      --promote-workers=${PROMOTE_WORKERS:-16}
 
   stratum1-a:
     depends_on:
