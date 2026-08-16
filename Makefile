@@ -44,6 +44,8 @@
 #   make stresstest    Stress test — bits method, N jobs (default N=10)
 #   make stresstest-ingest  Stress test — ingest path
 #   make catdiff       Diff catalog dumps: ingest vs bits
+#   make runner-perms  Grant the CI runner access to the testbed + spool
+#   make check-runner-access  Check that access, read-only
 #   make help          Print this summary
 #
 # Variables (override on the command line or in the environment):
@@ -52,6 +54,9 @@
 #                 Example: make BITS_DIR=/home/user/src/cvmfs-bits
 #   TESTBED_ROOT  Path to testbed data root (default: $HOME/cvmfs-testbed).
 #                 Used to locate repo-seed.tar.gz for the bootstrap target.
+#   RUNNER_USER   CI user that runs producer-side publish steps, for
+#                 runner-perms / check-runner-access (default: gitlab-runner)
+#   ADVISORY      Set to 1 to make check-runner-access report without failing
 #   N             Number of jobs for stresstest targets (default: 10)
 #   C             Concurrency (max parallel jobs) for the bits stresstest (default: unset = script default of 2)
 #
@@ -90,6 +95,16 @@ GET_TESTBED_ROOT = r=$$(sed -n 's/^TESTBED_ROOT=//p' "$(MAKEFILE_DIR)/.env" 2>/d
 	| tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' -e 's/^"\(.*\)"$$/\1/' -e "s/^'\(.*\)'$$/\1/"); \
 	echo "$${r:-$(MAKEFILE_DIR)}"
 
+# Read one key from .env, applying the same trimming as GET_TESTBED_ROOT plus
+# an inline-comment strip (check-env already needed that for S3_ENABLED).
+# The '\#' escape is required: in a variable assignment an unescaped '#'
+# starts a Make comment and silently truncates the pipeline.
+# Three ad-hoc sed pipelines over one file is how they come to disagree about
+# quoting.  Usage: v=$$($(call GET_ENV_VAR,REPO_NAME))
+GET_ENV_VAR = sed -n 's/^$(1)=//p' "$(MAKEFILE_DIR)/.env" 2>/dev/null | tail -1 \
+	| tr -d '\r' | sed -e 's/[[:space:]]\#.*$$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' \
+	                    -e 's/^"\(.*\)"$$/\1/' -e "s/^'\(.*\)'$$/\1/"
+
 # "MIN AVG MAX" chunk sizes, read from config.yaml by testbed.sh (single source
 # of truth) so verify-chunking never hard-codes them and can't report a false
 # divergence when config.yaml changes.
@@ -111,6 +126,10 @@ _CONCURRENCY := $(if $(C),--concurrency $(C),)
 WSS ?= 1
 _WSS := $(if $(filter 0 no false,$(WSS)),--no-wss,)
 
+# The CI user that runs producer-side steps (staged prepares run as this user,
+# not as the testbed owner). Override: make RUNNER_USER=someone runner-perms
+RUNNER_USER ?= gitlab-runner
+
 # Publishing method (bits|ingest) passed to start/ensure for this invocation.
 METHOD ?= bits
 _METHOD := $(if $(METHOD),--method $(METHOD),)
@@ -122,6 +141,7 @@ _METHOD := $(if $(METHOD),--method $(METHOD),)
         test test-suite test-ingest test-bits test-pull test-pull-wss pull-status \
         test-chunking test-content test-stress test-mkdirp test-idem test-check check \
         s3-on s3-off s3-status _s3-set check-env redeploy-prepub \
+        runner-perms _grant-spool check-runner-access \
         stresstest stresstest-ingest \
         verify verify-chunking verify-content \
         catdump-ingest catdump-bits catdiff \
@@ -311,6 +331,182 @@ s3-status:
 	@printf 'minio       : %s\n' "$$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^cvmfs-minio$$' | sed 's/^0$$/not running/; s/^1$$/running/')"
 	@printf 'path choice : per build (job field direct_s3), not set here\n' 
 
+# ── runner-perms ──────────────────────────────────────────────────────────────
+# Make the testbed reachable by the CI runner that runs producer-side steps
+# (the staged publish path prepares with `bits cvmfs-stage` AS THE RUNNER, not
+# as the testbed owner).
+#
+# NOT the same thing as `./testbed fix-perms`, which repairs REPOSITORY TREE
+# ownership so the containers can write. Different problem, different fix.
+#
+# Two distinct things have to be true, and only one survives a re-init:
+#
+#   1. the runner can WRITE the publisher spool -- init.sh does this via
+#      SPOOL_SHARED_GROUP (chgrp + setgid + a default ACL), re-applied here so
+#      a spool recreated by mkfs is repaired without a full init;
+#   2. the runner can TRAVERSE to the testbed root -- and $$HOME is 0750 on a
+#      stock Ubuntu account, so it cannot.
+#
+# A staged run that hits (2) dies in the first package's prepare, before any
+# job reaches the prepub, so it leaves no measurement record and no service-log
+# entry -- the failure that cost a run on 2026-08-15.
+#
+# Traversal is granted with a per-user ACL, NOT chmod o+x: this host also runs
+# CI for other projects, and o+x on a home directory opens it to every uid on
+# the box. `setfacl -m u:<runner>:x` names one user and grants search only.
+# Two caveats, neither hidden: setfacl RECALCULATES the ACL mask, so on a
+# directory that already carries other named entries this can widen THEIR
+# effective rights -- the walk prints the exact `setfacl -x` line for each
+# grant so it can be undone, and skips directories that already work.
+#
+# The walk goes TOP-DOWN and re-probes the target after each grant: `test -x`
+# on a deep path fails when any ancestor blocks, so a bottom-up walk grants an
+# ACL to every directory below the real blocker. Top-down touches the blocker
+# and stops. Component splitting is done with ${} rather than a word-split
+# list so a path containing spaces still works.
+#
+# Deliberately split across three recipe lines. A recipe line containing
+# $(MAKE) is executed even under `make -n`, so the setfacl walk MUST NOT share
+# a line with a sub-make, or a dry run would apply the grants for real.
+runner-perms:
+	@set -u; \
+	runner="$(RUNNER_USER)"; \
+	if ! id -u "$$runner" >/dev/null 2>&1; then \
+	    printf '[runner-perms] no such user %s - set RUNNER_USER=<user> if the CI runs as someone else.\n' "$$runner"; \
+	    exit 0; \
+	fi; \
+	if ! sudo -n -u "$$runner" true 2>/dev/null; then \
+	    printf '[runner-perms] cannot run commands as %s: no passwordless sudo, or no\n' "$$runner"; \
+	    printf '                sudoers rule permitting -u %s (running as root is a\n' "$$runner"; \
+	    printf '                different privilege). Without it every probe fails the same\n'; \
+	    printf '                way as a real permission problem, and this would grant ACLs\n'; \
+	    printf '                on directories that do not need them. Refusing.\n'; \
+	    exit 1; \
+	fi; \
+	grp=$$($(call GET_ENV_VAR,SPOOL_SHARED_GROUP)); \
+	repo=$$($(call GET_ENV_VAR,REPO_NAME)); \
+	if [ -z "$$repo" ]; then \
+	    printf '[runner-perms] REPO_NAME is not set in .env - skipping the spool grant.\n'; \
+	elif ! printf '%s' "$$repo" | grep -qE '^[A-Za-z0-9._-]+$$'; then \
+	    printf '[runner-perms] REPO_NAME=%s is not a plain repository name - refusing to\n' "$$repo"; \
+	    printf '                interpolate it into a privileged command.\n'; \
+	    exit 1; \
+	elif [ -z "$$grp" ]; then \
+	    printf '[runner-perms] SPOOL_SHARED_GROUP is not set in .env - skipping the spool grant.\n'; \
+	elif ! getent group "$$grp" >/dev/null 2>&1; then \
+	    printf '[runner-perms] group %s does not exist on this host - skipping the spool grant.\n' "$$grp"; \
+	else \
+	    $(MAKE) --no-print-directory _grant-spool GRP="$$grp" REPO="$$repo"; \
+	fi
+	@set -u; \
+	runner="$(RUNNER_USER)"; \
+	id -u "$$runner" >/dev/null 2>&1 || exit 0; \
+	root=$$($(GET_TESTBED_ROOT)); \
+	root=$$(cd "$$root" 2>/dev/null && pwd -P) || { \
+	    printf '[runner-perms] TESTBED_ROOT does not resolve to a directory - fix .env first.\n'; \
+	    exit 1; }; \
+	printf '[runner-perms] runner=%s  testbed=%s\n' "$$runner" "$$root"; \
+	command -v setfacl >/dev/null 2>&1 || { \
+	    printf '[runner-perms] setfacl not found - install the acl package.\n'; exit 1; }; \
+	d=""; rest="$${root#/}"; \
+	while [ -n "$$rest" ]; do \
+	    comp="$${rest%%/*}"; d="$$d/$$comp"; \
+	    case "$$rest" in */*) rest="$${rest#*/}";; *) rest="";; esac; \
+	    sudo -n -u "$$runner" test -x "$$root" 2>/dev/null && break; \
+	    sudo -n -u "$$runner" test -x "$$d" 2>/dev/null && continue; \
+	    printf '[runner-perms] granting %s search access to %s\n' "$$runner" "$$d"; \
+	    if sudo -n setfacl -m "u:$$runner:x" "$$d"; then \
+	        printf '[runner-perms]   undo with: sudo setfacl -x u:%s %s\n' "$$runner" "$$d"; \
+	    else \
+	        printf '[runner-perms] WARNING: setfacl failed on %s (no ACL support on this fs?)\n' "$$d"; \
+	    fi; \
+	done
+	@$(MAKE) --no-print-directory check-runner-access
+
+# Re-apply init.sh's SPOOL_SHARED_GROUP grant to the paths the producer writes.
+# Deliberately NOT a blanket recursion over <spool>/<repo>: that contains
+# rdonly, the read-only CVMFS mount, where a recursive chmod returns EROFS for
+# every published file.
+#
+# The three paths, from bits/bits_helpers/cvmfs_stage*.py: tmp/ (per-invocation
+# scratch and the prepare lock), scratch/, and stats.db in the spool ROOT --
+# which every prepare writes unless swissknife is given -n. Missing the last
+# one made the "repair without a full init" case fail on the statistics DB.
+#
+# Steps are ';'-separated, not '&&'-chained: one failure must not skip setgid.
+_grant-spool:
+	@set -u; \
+	[ -n "$(REPO)" ] && [ -n "$(GRP)" ] || { \
+	    printf '[runner-perms] _grant-spool needs REPO= and GRP= - refusing.\n'; exit 1; }; \
+	spool="/var/spool/cvmfs/$(REPO)"; \
+	[ -d "$$spool" ] || { printf '[runner-perms] %s does not exist - skipping.\n' "$$spool"; exit 0; }; \
+	printf '[runner-perms] re-applying the %s grant under %s\n' "$(GRP)" "$$spool"; \
+	sudo -n chgrp "$(GRP)" "$$spool" \
+	  || printf '[runner-perms] WARNING: chgrp failed on %s\n' "$$spool"; \
+	sudo -n chmod g+rwxs "$$spool" \
+	  || printf '[runner-perms] WARNING: chmod failed on %s\n' "$$spool"; \
+	if [ -e "$$spool/stats.db" ]; then \
+	    sudo -n chgrp "$(GRP)" "$$spool/stats.db" || true; \
+	    sudo -n chmod g+rw "$$spool/stats.db" \
+	      || printf '[runner-perms] WARNING: chmod failed on stats.db\n'; \
+	fi; \
+	for sub in tmp scratch; do \
+	    [ -d "$$spool/$$sub" ] || continue; \
+	    sudo -n chgrp -R "$(GRP)" "$$spool/$$sub" \
+	      || printf '[runner-perms] WARNING: chgrp failed on %s\n' "$$spool/$$sub"; \
+	    sudo -n chmod -R g+rwX "$$spool/$$sub" \
+	      || printf '[runner-perms] WARNING: chmod failed on %s\n' "$$spool/$$sub"; \
+	    sudo -n find "$$spool/$$sub" -xdev -type d -exec chmod g+s {} + \
+	      || printf '[runner-perms] WARNING: setgid failed on %s\n' "$$spool/$$sub"; \
+	    if command -v setfacl >/dev/null 2>&1; then \
+	        sudo -n setfacl -R -m "g:$(GRP):rwx" "$$spool/$$sub" || true; \
+	        sudo -n setfacl -R -d -m "g:$(GRP):rwx" "$$spool/$$sub" || true; \
+	    else \
+	        printf '[runner-perms] setfacl not found - group grant without ACLs.\n'; \
+	    fi; \
+	done
+
+# ── check-runner-access ───────────────────────────────────────────────────────
+# Verify, as the runner itself, what a producer-side publish needs. Read-only.
+# Exits non-zero so `make runner-perms` fails when it did not work; callers that
+# treat it as advisory pass ADVISORY=1.
+check-runner-access:
+	@set -u; \
+	runner="$(RUNNER_USER)"; \
+	if ! id -u "$$runner" >/dev/null 2>&1; then \
+	    printf '[runner-access] no user %s on this host - producer-side access NOT checked.\n' "$$runner"; \
+	    exit 0; \
+	fi; \
+	if ! sudo -n -u "$$runner" true 2>/dev/null; then \
+	    printf '[runner-access] cannot probe as %s (no passwordless sudo) - NOT verified.\n' "$$runner"; \
+	    exit 0; \
+	fi; \
+	root=$$($(GET_TESTBED_ROOT)); \
+	root=$$(cd "$$root" 2>/dev/null && pwd -P) || root=$$($(GET_TESTBED_ROOT)); \
+	repo=$$($(call GET_ENV_VAR,REPO_NAME)); \
+	_bad=0; \
+	if sudo -n -u "$$runner" test -x "$$root" 2>/dev/null; then \
+	    printf '[runner-access] %s can reach %s\n' "$$runner" "$$root"; \
+	else \
+	    printf '[runner-access] %s CANNOT reach %s - a staged publish dies in the\n' "$$runner" "$$root"; \
+	    printf '                first prepare, before any job reaches the prepub.  Fix: make runner-perms\n'; \
+	    _bad=1; \
+	fi; \
+	spool="/var/spool/cvmfs/$$repo"; \
+	if [ -n "$$repo" ] && [ -d "$$spool" ]; then \
+	    for t in "$$spool" "$$spool/tmp"; do \
+	        [ -d "$$t" ] || continue; \
+	        if sudo -n -u "$$runner" test -w "$$t"; then \
+	            printf '[runner-access] %s can write %s\n' "$$runner" "$$t"; \
+	        else \
+	            printf '[runner-access] %s CANNOT write %s - Fix: make runner-perms\n' "$$runner" "$$t"; \
+	            _bad=1; \
+	        fi; \
+	    done; \
+	fi; \
+	if [ -n "$(ADVISORY)" ]; then exit 0; fi; \
+	exit $$_bad
+
 # ── check-env ─────────────────────────────────────────────────────────────────
 # Refuse to proceed when the RUNNING containers disagree with the files on
 # disk.  The drift this catches is not theoretical: a container recreated with
@@ -322,6 +518,7 @@ s3-status:
 # Silent-pass when nothing is running (a stopped testbed cannot drift) or when
 # .env.s3 is absent (the S3 variant is genuinely optional).
 check-env:
+	@$(MAKE) --no-print-directory ADVISORY=1 check-runner-access
 	@_fail=0; \
 	if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^cvmfs-prepub$$'; then \
 	    printf '[check-env] cvmfs-prepub is not running - nothing to check.\n'; \
@@ -546,6 +743,8 @@ help:
 	@echo "  make redeploy             Full rebuild from scratch (re-inits: WIPES the repository)"
 	@echo "  make redeploy-prepub      Recreate ONLY prepub (repository untouched; add 'install' to rebuild)"
 	@echo "  make check-env            Verify the running prepub matches .env.s3"
+	@echo "  make runner-perms         Let the CI runner reach the testbed + spool (staged path)"
+	@echo "  make check-runner-access  Check that access, read-only (no changes)"
 	@echo "  make clean                Stop + wipe state (keeps snapshot and .env)"
 	@echo "  make cleanall             Stop + wipe state + delete .env (fresh credentials)"
 	@echo ""
