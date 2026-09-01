@@ -180,7 +180,10 @@ services:
       service: stratum1
     container_name: cvmfs-stratum1-a
     environment:
-      PREPUB_HMAC_SECRET: ${PREPUB_HMAC_SECRET}
+      # H2: a receiver holds ONLY its own per-node enrollment key, never the
+      # master secret (provisioned by init.sh / `cvmfs-prepub node-key`).
+      PREPUB_HMAC_SECRET: ""
+      PREPUB_NODE_KEY: ${PREPUB_NODE_KEY_STRATUM1_A}
       NODE_ID: stratum1-a
     volumes:
       - ${SOFTWARE_ROOT}/cvmfs-prepub:/usr/local/bin/cvmfs-prepub:ro
@@ -196,7 +199,10 @@ services:
       service: stratum1
     container_name: cvmfs-stratum1-b
     environment:
-      PREPUB_HMAC_SECRET: ${PREPUB_HMAC_SECRET}
+      # H2: a receiver holds ONLY its own per-node enrollment key, never the
+      # master secret (provisioned by init.sh / `cvmfs-prepub node-key`).
+      PREPUB_HMAC_SECRET: ""
+      PREPUB_NODE_KEY: ${PREPUB_NODE_KEY_STRATUM1_B}
       NODE_ID: stratum1-b
     volumes:
       - ${SOFTWARE_ROOT}/cvmfs-prepub:/usr/local/bin/cvmfs-prepub:ro

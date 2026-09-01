@@ -11,7 +11,9 @@
 #         service: stratum1
 #       container_name: cvmfs-stratum1-a
 #       environment:
-#         PREPUB_HMAC_SECRET: ${PREPUB_HMAC_SECRET}
+#         # H2: receivers hold only their own per-node key, never the master.
+#         PREPUB_HMAC_SECRET: ""
+#         PREPUB_NODE_KEY: ${PREPUB_NODE_KEY_STRATUM1_A}
 #         NODE_ID: stratum1-a
 #       volumes:
 #         - ${SOFTWARE_ROOT}/cvmfs-prepub:/usr/local/bin/cvmfs-prepub:ro
