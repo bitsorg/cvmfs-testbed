@@ -559,9 +559,9 @@ _upsert_env() {
 }
 for node in stratum1-a stratum1-b; do
     nk=$(printf '%s' "$node" | openssl dgst -sha256 -hmac "$PREPUB_HMAC_SECRET" | awk '{print $NF}')
-    _upsert_env "PREPUB_NODE_KEY_$(echo "$node" | tr 'a-z-' 'A-Z_')" "$nk"
+    _upsert_env "S1_NODE_KEY_$(echo "$node" | tr 'a-z-' 'A-Z_')" "$nk"
 done
-success "Per-node enrollment keys provisioned (PREPUB_NODE_KEY_*)"
+success "Per-node enrollment keys provisioned (S1_NODE_KEY_*)"
 
 # ── Write service config files ────────────────────────────────────────────────
 # Done unconditionally — always re-written from templates so they stay in sync

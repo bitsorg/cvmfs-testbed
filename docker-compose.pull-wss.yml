@@ -56,7 +56,7 @@ services:
       - stratum0
     environment:
       PREPUB_HMAC_SECRET: ""
-      PREPUB_NODE_KEY: ${PREPUB_NODE_KEY_STRATUM1_A}
+      S1_NODE_KEY: ${S1_NODE_KEY_STRATUM1_A}
     volumes:
       - ${TESTBED_ROOT}/config/broker-tls/ca.crt:/etc/cvmfs-prepub/tls/ca.crt:ro
       - ${TESTBED_ROOT}/config/discovery-keys/discovery.pub:/etc/cvmfs-prepub/discovery.pub:ro
@@ -79,7 +79,7 @@ services:
       - stratum0
     environment:
       PREPUB_HMAC_SECRET: ""
-      PREPUB_NODE_KEY: ${PREPUB_NODE_KEY_STRATUM1_B}
+      S1_NODE_KEY: ${S1_NODE_KEY_STRATUM1_B}
     volumes:
       - ${TESTBED_ROOT}/config/broker-tls/ca.crt:/etc/cvmfs-prepub/tls/ca.crt:ro
       - ${TESTBED_ROOT}/config/discovery-keys/discovery.pub:/etc/cvmfs-prepub/discovery.pub:ro

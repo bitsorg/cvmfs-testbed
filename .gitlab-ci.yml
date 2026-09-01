@@ -30,8 +30,8 @@ validate:pull-profile:
     CVMFS_GATEWAY_SECRET: ci-secret
     CVMFS_GATEWAY_KEY_ID: ci-key
     PREPUB_HMAC_SECRET: ci-hmac
-    PREPUB_NODE_KEY_STRATUM1_A: ci-nodekey-a
-    PREPUB_NODE_KEY_STRATUM1_B: ci-nodekey-b
+    S1_NODE_KEY_STRATUM1_A: ci-nodekey-a
+    S1_NODE_KEY_STRATUM1_B: ci-nodekey-b
     GIT_SUBMODULE_STRATEGY: recursive
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
