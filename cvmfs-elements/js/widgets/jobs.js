@@ -42,6 +42,7 @@ function _resolveStage(s) {
 export function stateBadge(s) {
   const m = {
     published:    'ok',
+    accumulated:  'ok',   // coarse publish: committed by the build's finalize
     failed:       'err',
     aborted:      'err',
     incoming:     'warn',
@@ -69,7 +70,7 @@ export function miniPipeline(state, failedAtState) {
   return `<div class="pipeline">${STAGES.map((s, i) => {
     let c = '';
     if (terminal && i === ai)                          c = 'failed';
-    else if (state === 'published' || (!terminal && i < ai)) c = 'done';
+    else if (state === 'published' || state === 'accumulated' || (!terminal && i < ai)) c = 'done';
     else if (!terminal && i === ai)                    c = 'active';
     else if (terminal && ai >= 0 && i < ai)            c = 'done';
     return `<div class="pipe-step ${c}" style="font-size:10px;padding:3px">${s.slice(0, 4)}</div>`;

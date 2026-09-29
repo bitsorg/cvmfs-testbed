@@ -1643,12 +1643,14 @@ class TestbedServer(ThreadingHTTPServer):
                     safe = state.replace('"', '')
                     lines.append(f'testbed_jobs_total{{state="{safe}"}} {count} {ts_ms}')
 
-                # ── Publish duration percentiles (published jobs only) ─────────
+                # ── Publish duration percentiles (published/accumulated jobs) ──
+                # A coarse-publish package job ends in "accumulated" with no
+                # published_at; its pipeline/distribution end marks completion.
                 # Try ISO-8601 created_at / published_at first; fall back to
                 # pre-computed duration_s or duration_seconds fields.
                 durations: list[float] = []
                 for j in jobs:
-                    if str(j.get('state') or '') != 'published':
+                    if str(j.get('state') or '') not in ('published', 'accumulated'):
                         continue
                     d = j.get('duration_s') or j.get('duration_seconds') or j.get('publish_duration_s')
                     if d is not None:
@@ -1659,7 +1661,9 @@ class TestbedServer(ThreadingHTTPServer):
                             pass
                     # Compute from timestamps
                     ca = j.get('created_at') or j.get('start_time') or ''
-                    pa = j.get('published_at') or j.get('finish_time') or ''
+                    pa = next((t for t in (j.get('published_at'), j.get('distributing_ended_at'),
+                                           j.get('pipeline_ended_at'), j.get('finish_time'))
+                               if t and not str(t).startswith('0001-')), '')
                     if ca and pa:
                         try:
                             import datetime as _dt

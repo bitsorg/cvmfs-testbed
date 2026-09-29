@@ -365,7 +365,7 @@
     <div class="card"><div class="card-label">Median publish</div><div class="card-value blue" id="m-p50">–</div><div class="card-sub">seconds</div></div>
     <div class="card"><div class="card-label">p95 publish</div><div class="card-value orange" id="m-p95">–</div><div class="card-sub">seconds</div></div>
     <div class="card"><div class="card-label">Throughput</div><div class="card-value" id="m-tput">–</div><div class="card-sub">jobs / hour</div></div>
-    <div class="card"><div class="card-label">Success rate</div><div class="card-value green" id="m-rate">–</div><div class="card-sub">% published</div></div>
+    <div class="card"><div class="card-label">Success rate</div><div class="card-value green" id="m-rate">–</div><div class="card-sub">% published / accumulated</div></div>
     <div class="card"><div class="card-label">Total jobs</div><div class="card-value blue" id="m-total">–</div></div>
   </div>
 
@@ -1389,9 +1389,9 @@ function applyJobsFilter(fromId){
   if($('c-active')){ $('c-active').textContent=active; $('c-active').className='card-value '+(active?'orange':'green'); }
   if($('c-today'))  $('c-today').textContent=today;
 
-  // Average publish time from published jobs
-  const pubJobs=_jobs.filter(j=>j.state?.toLowerCase()==='published'&&j.created_at&&(j.published_at||j.updated_at));
-  const durs=pubJobs.map(j=>((new Date(j.published_at||j.updated_at)-new Date(j.created_at))/1000)).filter(v=>v>0&&v<86400);
+  // Average publish time from successfully finished jobs
+  const pubJobs=_jobs.filter(j=>jobDone(j)&&j.created_at);
+  const durs=pubJobs.map(j=>((new Date(jobDoneAt(j))-new Date(j.created_at))/1000)).filter(v=>v>0&&v<86400);
   const avgDur=durs.length?durs.reduce((a,b)=>a+b,0)/durs.length:null;
   if($('c-avg-pub')) $('c-avg-pub').textContent=avgDur!==null?fmtSec(avgDur):'–';
 
@@ -1432,6 +1432,14 @@ async function submitJob(){
 
 // ═══════════════════════════ Monitoring ══════════════════════════════════════
 let _charts={}, _rawMetrics=[], _monRange=20;
+// A coarse-publish package job ends in "accumulated" (its build's finalize job
+// does the commit), so it counts as done; it has no published_at.
+function jobDone(j){ return ['published','accumulated'].includes((j.state||'').toLowerCase()); }
+// An older prepub sends unset timestamps as year 1 ("0001-01-01T…"): skip those.
+function jobDoneAt(j){
+  return [j.published_at, j.distributing_ended_at, j.pipeline_ended_at, j.updated_at]
+    .find(t => t && !String(t).startsWith('0001-'));
+}
 let _monSince=null; // if set, only jobs created at or after this Date are counted
 let _testRecords=[];       // raw per-test records (newest first) from /api/test-results
 let _timingsSel='__all__'; // current Timings selection: '__all__' or a test name
@@ -1455,9 +1463,9 @@ async function refreshMonitoring(){
   buildPullCharts();
   // Host metrics (server mode only)
   refreshHostMetrics();
-  // Schedule host-metrics auto-refresh every 30 s while on this tab
+  // Auto-refresh the whole tab (jobs, charts, host metrics) every 30 s while open
   clearTimeout(_hmTimer);
-  _hmTimer = setTimeout(()=>{ if(document.getElementById('tab-monitoring')?.classList.contains('active')) refreshHostMetrics(); }, 30000);
+  _hmTimer = setTimeout(()=>{ if(document.getElementById('tab-monitoring')?.classList.contains('active')) refreshMonitoring(); }, 30000);
 }
 
 function buildMonitoringCharts(){
@@ -1466,9 +1474,9 @@ function buildMonitoringCharts(){
   const jobsInWindow=_monSince
     ? _jobs.filter(j=>j.created_at && new Date(j.created_at)>=_monSince)
     : _jobs;
-  const published=jobsInWindow.filter(j=>j.state?.toLowerCase()==='published').slice(0,_monRange);
+  const published=jobsInWindow.filter(jobDone).slice(0,_monRange);
   const durs=published.map(j=>{
-    const e=j.published_at||j.updated_at, s=j.created_at;
+    const e=jobDoneAt(j), s=j.created_at;
     if(!e||!s) return null;
     const v=(new Date(e)-new Date(s))/1000;
     return v>0&&v<86400?v:null;
@@ -1488,7 +1496,7 @@ function buildMonitoringCharts(){
     }
   }
   const total=jobsInWindow.length;
-  const pubCount=jobsInWindow.filter(j=>j.state?.toLowerCase()==='published').length;
+  const pubCount=jobsInWindow.filter(jobDone).length;
   $('m-total').textContent=total;
   $('m-rate').textContent=total?`${~~(pubCount/total*100)}%`:'–';
 
@@ -1677,6 +1685,7 @@ function buildMonitoringCharts(){
   jobsInWindow.forEach(j=>{ const s=(j.state||'unknown').toLowerCase(); states[s]=(states[s]||0)+1; });
   const stateColors={
     published:'#2ea44f',
+    accumulated:'#85d196', // light green — coarse package, committed by its build's finalize
     failed:'#d73a49', aborted:'#e87c7c',
     incoming:'#e36209',
     staging:'#388bfd',      // blue — pipeline running
