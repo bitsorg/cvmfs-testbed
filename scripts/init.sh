@@ -188,8 +188,6 @@ mkdir -p \
     "$TESTBED_ROOT/data/spool/dist-queue" \
     "$TESTBED_ROOT/data/s1a" \
     "$TESTBED_ROOT/data/s1b" \
-    "$TESTBED_ROOT/data/monitoring/vm" \
-    "$TESTBED_ROOT/data/monitoring/vmagent" \
     "$TESTBED_ROOT/data/cvmfs-client" \
     "$TESTBED_ROOT/data/mosquitto" \
     "$TESTBED_ROOT/data/mosquitto-log" \
@@ -211,14 +209,12 @@ mkdir -p \
 # as non-root users need to be world-writable on the host.  The affected
 # services and their in-container UIDs are:
 #   cvmfs-prepub / stratum1-a / stratum1-b  — 'prepub' (system UID, ~100-999)
-#   vmagent / victoriametrics               — UID 1000 (victoriametrics image)
+# (Monitoring and its data live in bits-services now.)
 chmod 777 \
     "$TESTBED_ROOT/data/spool" \
     "$TESTBED_ROOT/data/spool/dist-queue" \
     "$TESTBED_ROOT/data/s1a" \
     "$TESTBED_ROOT/data/s1b" \
-    "$TESTBED_ROOT/data/monitoring/vm" \
-    "$TESTBED_ROOT/data/monitoring/vmagent" \
     "$TESTBED_ROOT/data/cvmfs-client" \
     "$TESTBED_ROOT/data/receiver-logs" \
     "$TESTBED_ROOT/data/gateway-spool" \

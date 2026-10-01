@@ -2330,10 +2330,11 @@ cmd_info() {
    ── MONITORING ────────────────────────────────────────────────────────────────
 
      ┌──────────┐  scrape  ┌───────────────────┐
-     │  vmagent │─────────►│  victoriametrics  │
-     └──────────┘          └───────────────────┘
+     │  vmagent │─────────►│  victoriametrics  │   (in bits-services, shared;
+     └──────────┘          └───────────────────┘    data kept across runs)
           │
-          └── scrapes: prepub :8080, gateway :4929, stratum1-a/b :9100
+          └── scrapes this testbed's published ports: prepub :8080,
+              stratum1-a :9101, stratum1-b :9102
           (metrics visible in the testbed console Monitoring tab)
 
 EOF
