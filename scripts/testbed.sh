@@ -2280,7 +2280,7 @@ cmd_info() {
 
     _isep
     echo "║  ── Monitoring ────────────────────────────────────────────────────────║"
-    _iline "  VictoriaMetrics:" "internal only (scraped by vmagent)"
+    _iline "  VictoriaMetrics:" "bits-services, http://localhost:8428"
 
     echo "╠══════════════════════════════════════════════════════════════════════╣"
     echo "║  Full secrets: ${TESTBED_ROOT:-\$TESTBED_ROOT}/.env"

@@ -17,7 +17,7 @@ The system simulates the complete CVMFS publishing workflow:
 
 Two control-plane modes are available. The default mode uses direct HTTP announces between cvmfs-prepub and the Stratum 1 receivers. Activating `docker-compose.mqtt.yml` instead routes all control-plane signalling through a Mosquitto MQTT broker, exercising the Option B MQTT path described in REFERENCE.md §20.11.
 
-Monitoring is built in with VictoriaMetrics and vmagent; real-time host metrics and run history are shown directly in the testbed web console.
+Monitoring (VictoriaMetrics and vmagent) runs in `bits-services` on the same host, shared with bits-console; it scrapes this testbed through its published ports and keeps the data across testbed runs. Real-time host metrics and run history are shown directly in the testbed web console.
 
 ## Architecture Diagrams
 
