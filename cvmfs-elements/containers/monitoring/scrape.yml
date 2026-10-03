@@ -57,6 +57,7 @@ scrape_configs:
   # labels. Runner-sd serves [] until RUNNER_SD_TOKEN is configured.
   - job_name: 'runner-nodes'
     metrics_path: '/metrics'
+    # No refresh_interval here: vmagent rejects it (fatal at startup) and
+    # re-reads http_sd every -promscrape.httpSDCheckInterval (default 1m).
     http_sd_configs:
       - url: 'http://runner-sd:8080/'
-        refresh_interval: 60s

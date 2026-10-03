@@ -186,6 +186,32 @@ if [[ $_fuse_copied -eq 0 ]]; then
     warn "libfuse3 runtime not found on host — cvmfs-client container may fail to mount"
 fi
 
+# ── 3c. Bundle host nettle runtime ───────────────────────────────────────────
+# libcvmfs_crypto.so links libnettle, and cvmfs 2.15 is built against the HOST's
+# nettle, which can be NEWER than the one in the ubuntu:24.04 containers — e.g. it
+# needs nettle_sha3_128_init@NETTLE_8, absent from 24.04's libnettle 3.9.1. Copy
+# the host's libnettle into SOFTWARE_ROOT so the container resolves it via
+# LD_LIBRARY_PATH=/opt/cvmfs-software (same trick as the FUSE bundling above).
+# Without it the client fails to mount: "undefined symbol: nettle_sha3_128_init".
+# (If a future build also links libhogweed, add libhogweed.so.* here as the
+# matched nettle sibling.)
+info "Bundling host nettle runtime library → $SOFTWARE_ROOT ..."
+_nettle_copied=0
+for _nl in \
+        /usr/lib/x86_64-linux-gnu/libnettle.so.* \
+        /usr/lib/aarch64-linux-gnu/libnettle.so.* \
+        /lib/x86_64-linux-gnu/libnettle.so.* \
+        /usr/lib/libnettle.so.*; do
+    [[ -f "$_nl" ]] || continue
+    cp -a "$_nl" "$SOFTWARE_ROOT/"
+    info "  $(basename "$_nl")"
+    (( _nettle_copied++ )) || true
+done
+if [[ $_nettle_copied -eq 0 ]]; then
+    warn "libnettle not found on host — cvmfs-client may fail to mount"
+    warn "(undefined symbol: nettle_sha3_128_init@NETTLE_8)"
+fi
+
 # ── 4. Resolve .so symlinks ───────────────────────────────────────────────────
 # setcap refuses to operate on symlinks; copy the real files so no ldconfig is needed.
 while IFS= read -r _link; do
