@@ -2272,10 +2272,8 @@ cmd_info() {
 
     _isep
     echo "║  ── Stratum 1 receivers ───────────────────────────────────────────────║"
-    _iline "  stratum1-a control:" "http://localhost:9101"
-    _iline "  stratum1-a data:"    "http://localhost:9111"
-    _iline "  stratum1-b control:" "http://localhost:9102"
-    _iline "  stratum1-b data:"    "http://localhost:9112"
+    _iline "  stratum1-a metrics:" "http://localhost:9101/metrics"
+    _iline "  stratum1-b metrics:" "http://localhost:9102/metrics"
     _iline "  HMAC secret:"        "${PREPUB_HMAC_SECRET:-(see .env)}"
 
     _isep
@@ -2313,8 +2311,8 @@ cmd_info() {
             └── stratum0     → /htdocs/cvmfs         (ro)
               │
               │  replicate  (after successful publish)
-              ├──────────────────────────────────────────► stratum1-a  :9101/9111
-              └──────────────────────────────────────────► stratum1-b  :9102/9112
+              ├──────────────────────────────────────────► stratum1-a  :9101
+              └──────────────────────────────────────────► stratum1-b  :9102
 
    ── SERVE FLOW ────────────────────────────────────────────────────────────────
 
@@ -2451,9 +2449,8 @@ cmd_pulltest() {
     fi
     error "Pull quorum NOT reached: ${warmed_count}/${#receivers[@]} warmed (need ${quorum})."
     error "Likely causes:"
-    error "  • publisher-side commit orchestration not yet wired into the publish loop"
-    error "    (ADR-0001 P3 — Notifier.Announce / manifest POST); or"
-    error "  • receivers cannot reach the manifest at http://stratum0/cvmfs/s1/{txn}/manifest"
+    error "  • the publisher is not announcing (needs --prewarm and --pull-object-base-url); or"
+    error "  • receivers cannot reach the manifest at {--receiver-stratum0-url}/s1/{txn}/manifest (http://cvmfs-prepub:8080/s1/{txn}/manifest)"
     error "Inspect with: ./testbed.sh pullstatus --wss"
     exit 1
 }

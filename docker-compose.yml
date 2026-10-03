@@ -191,7 +191,6 @@ services:
       - ${TESTBED_ROOT}/config/stratum1-a/config.yaml:/etc/cvmfs-prepub/config.yaml:ro
     ports:
       - "9101:9100"
-      - "9111:9101"
 
   stratum1-b:
     extends:
@@ -210,7 +209,6 @@ services:
       - ${TESTBED_ROOT}/config/stratum1-b/config.yaml:/etc/cvmfs-prepub/config.yaml:ro
     ports:
       - "9102:9100"
-      - "9112:9101"
 
   # ── publisher — bits publish jobs via cvmfs-prepub REST API ─────────────
   publisher:

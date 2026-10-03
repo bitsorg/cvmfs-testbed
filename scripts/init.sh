@@ -765,11 +765,7 @@ log_level: info
 cas:
   type: localfs
   root: /data/cas
-control_addr: ":9100"
-data_addr: ":9101"
-# data_host is the hostname cvmfs-prepub uses to open the data (TCP) channel.
-# Must be the Docker service name, not "localhost", to avoid SSRF detection.
-data_host: stratum1-a
+control_addr: ":9100"   # /metrics
 node_id: "stratum1-a"
 EOFCONFIG
 success "stratum1-a config written."
@@ -782,11 +778,7 @@ log_level: info
 cas:
   type: localfs
   root: /data/cas
-control_addr: ":9100"
-data_addr: ":9101"
-# data_host is the hostname cvmfs-prepub uses to open the data (TCP) channel.
-# Must be the Docker service name, not "localhost", to avoid SSRF detection.
-data_host: stratum1-b
+control_addr: ":9100"   # /metrics
 node_id: "stratum1-b"
 EOFCONFIG
 success "stratum1-b config written."

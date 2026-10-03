@@ -26,7 +26,7 @@
 #   5. Rebuilds the cvmfs_server shell script from the patched source files in
 #      cvmfs/cvmfs/server/ (the patches add CVMFS_TESTBED support) and installs
 #      it as software/cvmfs_server.
-#   6. Copies cvmfs-prepub and prepubctl from the cvmfs-bits build into software/.
+#   6. Copies cvmfs-prepub from the cvmfs-bits build into software/.
 #
 # Nothing is ever written to /usr/bin or any other system directory.
 #
@@ -253,10 +253,10 @@ done
 [[ $_patched -gt 0 ]] && success "Patched $_patched hardcoded path(s) in cvmfs_server."
 
 # ── 6. Copy cvmfs-bits binaries ───────────────────────────────────────────────
-# cvmfs-prepub and prepubctl are built by  make -C cvmfs-bits build  and land in
-# cvmfs-bits/bin/.  They are NOT produced by the cmake build, so the cvmfs_* glob
-# above never picks them up.  docker-compose bind-mounts them from SOFTWARE_ROOT,
-# so they must exist there before containers start.
+# cvmfs-prepub is built by  make -C cvmfs-bits build  and lands in
+# cvmfs-bits/bin/.  It is NOT produced by the cmake build, so the cvmfs_* glob
+# above never picks it up.  docker-compose bind-mounts it from SOFTWARE_ROOT,
+# so it must exist there before containers start.
 info "Copying cvmfs-bits binaries → $SOFTWARE_ROOT ..."
 _bits_bin="$BITS_DIR/bin"
 if [[ ! -d "$_bits_bin" ]]; then
@@ -265,7 +265,7 @@ if [[ ! -d "$_bits_bin" ]]; then
     warn "(or in the testbed Makefile:  make build)"
 else
     _bits_copied=0
-    for _bin in cvmfs-prepub prepubctl; do
+    for _bin in cvmfs-prepub; do
         _src="$_bits_bin/$_bin"
         if [[ -f "$_src" && -x "$_src" ]]; then
             cp "$_src" "$SOFTWARE_ROOT/$_bin"

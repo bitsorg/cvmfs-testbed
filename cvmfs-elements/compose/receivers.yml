@@ -21,7 +21,6 @@
 #         - ${TESTBED_ROOT}/config/stratum1-a/config.yaml:/etc/cvmfs-prepub/config.yaml:ro
 #       ports:
 #         - "9101:9100"
-#         - "9111:9101"
 #
 # Note: container_name is intentionally absent from the base — it must be
 # set per instance so multiple receivers can coexist on the same host.
