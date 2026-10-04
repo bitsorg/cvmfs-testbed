@@ -109,6 +109,7 @@ RESPONSE=$(curl -sf --max-time 120 \
     -F "path=${INGEST_PATH}" \
     -F "tar=@${SMOKE_TAR}" \
     -F "tag_name=${TAG_NAME}" \
+    -F "prewarm=true" \
     "${PREPUB_URL}/api/v1/jobs") || RESPONSE=""
 
 JOB_ID=$(echo "$RESPONSE" | jq -r '.job_id // empty')

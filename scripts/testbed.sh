@@ -2449,7 +2449,7 @@ cmd_pulltest() {
     fi
     error "Pull quorum NOT reached: ${warmed_count}/${#receivers[@]} warmed (need ${quorum})."
     error "Likely causes:"
-    error "  • the publisher is not announcing (needs --prewarm and --pull-object-base-url); or"
+    error "  • the publisher is not announcing (needs --prewarm and --pull-object-base-url, and the job's prewarm=true); or"
     error "  • receivers cannot reach the manifest at {--receiver-stratum0-url}/s1/{txn}/manifest (http://cvmfs-prepub:8080/s1/{txn}/manifest)"
     error "Inspect with: ./testbed.sh pullstatus --wss"
     exit 1
