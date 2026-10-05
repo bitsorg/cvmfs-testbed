@@ -5,16 +5,17 @@
 # e2e-staged-conflict.sh — staged replace_on_conflict, end to end THROUGH prepub.
 #
 # probe-staged-conflict.py proved the remediation by driving the gateway by hand
-# (MEASUREMENTS §29). This proves the SAME thing through prepub's real
-# replaceOnConflict: two staged publishes into one path, the second replacing
-# the first, driven by nothing but a normal job submission.
+# (MEASUREMENTS §29). This proves the SAME thing through prepub's replace: two
+# staged publishes into one path, the second replacing the first, driven by
+# nothing but normal job submissions.
 #
 #   1. publish A into a fresh path P          -> expect job "published"
 #   2. publish B into the SAME occupied P     -> expect job "published" (replaced)
-#      the producer prepare uses -D P -f so it can extract over the occupied
-#      path; prepub's graft is refused (merge_error), then replaceOnConflict
-#      releases the lease, ingest -f deletes the subtree, re-acquires and
-#      re-grafts B — all inside prepub.
+#      each payload carries a .meta.json with its own hash; B is submitted with
+#      identity_path=P, identity_hash and replace=true. The producer prepare
+#      uses -D P -f so it can extract over the occupied path; before the graft,
+#      prepub sees another build's hash at P, releases the lease, ingest -f
+#      deletes the subtree, re-acquires and grafts B — all inside prepub.
 #   3. the client reads B, not A.
 #
 # Requires prepub started with --replace-on-conflict AND --ingest-publish. The
@@ -111,7 +112,9 @@ publish_staged() {
 
   dex sh -c "rm -rf /tmp/e2c && mkdir -p /tmp/e2c/sub && \
     for i in 1 2 3; do head -c 32768 /dev/urandom > /tmp/e2c/sub/f\$i.bin; done && \
-    echo ${tag} > /tmp/e2c/marker.txt && tar -cf /tmp/e2c.tar -C /tmp/e2c ." \
+    echo ${tag} > /tmp/e2c/marker.txt && \
+    echo '{\"package\":{\"hash\":\"${tag}\"}}' > /tmp/e2c/.meta.json && \
+    tar -cf /tmp/e2c.tar -C /tmp/e2c ." \
     || { echo "FATAL: payload build failed for ${tag}" >&2; return 1; }
 
   local args=(cvmfs_swissknife ingest
@@ -130,10 +133,14 @@ publish_staged() {
         "${MINIO}/${stage}" "${MINIO}/${REPO}" "$mroot" "/${P}")
   [[ -n "$cat" && "$cat" != "$mroot" ]] || { echo "FATAL: walk failed for ${tag} (got '${cat}')" >&2; return 1; }
 
+  # Replace asks with the job's own hash; prepub compares it with the
+  # .meta.json published at P.
+  local replace=""
+  [[ "$delete" == "1" ]] && replace="-F identity_path=${P} -F identity_hash=${tag} -F replace=true"
   resp=$(docker exec cvmfs-prepub sh -c "curl -s -w '\n%{http_code}' -X POST http://localhost:8080/api/v1/jobs \
     -H 'Authorization: Bearer ${TOKEN}' \
     -F repo=${REPO} -F path=${P} -F publish_path=staged \
-    -F staging_prefix=${stage} -F catalog_hash=${cat}C")
+    -F staging_prefix=${stage} -F catalog_hash=${cat}C ${replace}")
   job=$(echo "$resp" | head -1 | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
   [[ -n "$job" ]] || { echo "FATAL: prepub refused ${tag}: ${resp}" >&2; return 1; }
 
@@ -144,7 +151,7 @@ publish_staged() {
     sleep 2
   done
   echo "  ${tag}: job ${job} -> ${st}" >&2
-  docker logs cvmfs-prepub 2>&1 | grep -F "$job" | grep -iE "replace_on_conflict|deleting|replaced" | tail -4 >&2
+  docker logs cvmfs-prepub 2>&1 | grep -F "$job" | grep -iE "replace|deleting|replaced" | tail -4 >&2
   echo "$st"
 }
 
