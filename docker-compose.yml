@@ -390,7 +390,10 @@ services:
       retries: 24
 
   # One-shot: create the bucket and make it world-readable, so a CVMFS client
-  # can fetch objects over plain HTTP the way it would from stratum0.
+  # can fetch objects over plain HTTP the way it would from stratum0. With a
+  # BITS_STORE_S3_PASSWORD, also bits-store's private bucket and its user, allowed
+  # that bucket alone (listing it too: on S3 servers following AWS, a missing
+  # object reads as 403 otherwise). Repeatable: each run sets them again.
   minio-init:
     profiles: ["s3"]
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
@@ -402,12 +405,26 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-}
       S3_BUCKET: ${S3_BUCKET:-cvmfs}
+      BITS_STORE_BUCKET: ${BITS_STORE_BUCKET:-bits-store}
+      BITS_STORE_S3_USER: ${BITS_STORE_S3_USER:-bits-store}
+      BITS_STORE_S3_PASSWORD: ${BITS_STORE_S3_PASSWORD:-}
     entrypoint: >
       /bin/sh -c "
         mc alias set tb http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
         mc mb --ignore-existing tb/\"$$S3_BUCKET\" &&
         mc anonymous set download tb/\"$$S3_BUCKET\" &&
-        echo 'minio-init: bucket ready'
+        echo 'minio-init: bucket ready' &&
+        if [ -n \"$$BITS_STORE_S3_PASSWORD\" ]; then
+          b=\"$$BITS_STORE_BUCKET\"; u=\"$$BITS_STORE_S3_USER\";
+          mc mb --ignore-existing tb/\"$$b\" &&
+          printf '{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:DeleteObject\"],\"Resource\":[\"arn:aws:s3:::%s/*\"]},{\"Effect\":\"Allow\",\"Action\":[\"s3:ListBucket\",\"s3:GetBucketLocation\"],\"Resource\":[\"arn:aws:s3:::%s\"]}]}' \"$$b\" \"$$b\" > /tmp/bits-store-policy.json &&
+          mc admin policy create tb \"$$u\" /tmp/bits-store-policy.json &&
+          mc admin user add tb \"$$u\" \"$$BITS_STORE_S3_PASSWORD\" &&
+          { mc admin policy attach tb \"$$u\" --user \"$$u\" 2>/dev/null || true; } &&
+          { mc admin user info tb \"$$u\" | grep -q \"PolicyName: *$$u\" ||
+            { echo \"minio-init: policy $$u not attached to user $$u\" >&2; false; }; } &&
+          echo \"minio-init: bucket $$b and its user $$u ready\";
+        fi
       "
     networks:
       - cvmfs-net

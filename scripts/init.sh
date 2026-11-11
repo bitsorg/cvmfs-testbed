@@ -291,14 +291,24 @@ fi
 _ENV_S3_FILE="$TESTBED_DIR/.env.s3"
 if [[ ! -f "$_ENV_S3_FILE" && -f "$TESTBED_DIR/.env.s3.example" ]]; then
     _minio_pw=$(openssl rand -hex 16)
-    awk -v PW="$_minio_pw" \
+    _bs_pw=$(openssl rand -hex 16)
+    awk -v PW="$_minio_pw" -v BS="$_bs_pw" \
         'BEGIN { FS="="; OFS="=" }
          /^MINIO_ROOT_PASSWORD=$/ { $2=PW; print; next }
+         /^BITS_STORE_S3_PASSWORD=$/ { $2=BS; print; next }
          { print }' \
         "$TESTBED_DIR/.env.s3.example" > "$_ENV_S3_FILE"
     chmod 600 "$_ENV_S3_FILE"
-    unset _minio_pw
+    unset _minio_pw _bs_pw
     success "Wrote $(basename "$_ENV_S3_FILE") (S3_ENABLED=0 — capability off)"
+elif [[ -f "$_ENV_S3_FILE" ]] && ! grep -q '^BITS_STORE_S3_PASSWORD=' "$_ENV_S3_FILE"; then
+    # An older .env.s3: only the missing bits-store keys are added (an empty
+    # password, set by hand, stays: no bits-store bucket or user).
+    [[ -s "$_ENV_S3_FILE" && -n "$(tail -c1 "$_ENV_S3_FILE")" ]] && echo >> "$_ENV_S3_FILE"
+    grep -q '^BITS_STORE_BUCKET=' "$_ENV_S3_FILE" || echo 'BITS_STORE_BUCKET=bits-store' >> "$_ENV_S3_FILE"
+    grep -q '^BITS_STORE_S3_USER=' "$_ENV_S3_FILE" || echo 'BITS_STORE_S3_USER=bits-store' >> "$_ENV_S3_FILE"
+    echo "BITS_STORE_S3_PASSWORD=$(openssl rand -hex 16)" >> "$_ENV_S3_FILE"
+    success "Added bits-store's MinIO user to $(basename "$_ENV_S3_FILE")"
 else
     info "$(basename "$_ENV_S3_FILE") present — left untouched"
 fi
