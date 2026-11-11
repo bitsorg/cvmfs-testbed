@@ -34,6 +34,8 @@
 #   make test-suite    Alias of `make test` (honors TESTS=)
 #   make test-ingest   Suite: cvmfs_server ingest smoke (auto-ensure; skips if no golden)
 #   make test-bits     Suite: cvmfs-prepub REST API smoke
+#   make bits-store-on   Run the bits-store service (needs make s3-on; make start applies it)
+#   make test-bits-store Upload, download and refusals through bits-store
 #   make test-chunking Suite: bits publish + xor32 chunk verify
 #   make test-content  Suite: compare-trees vs golden/smoke
 #   make test-stress   Suite: stress N=10 (bits)
@@ -145,6 +147,7 @@ _METHOD := $(if $(METHOD),--method $(METHOD),)
         test test-suite test-ingest test-bits test-pull test-pull-wss pull-status \
         test-chunking test-content test-stress test-mkdirp test-idem test-check check \
         s3-on s3-off s3-status _s3-set check-env redeploy-prepub \
+        bits-store-on bits-store-off test-bits-store \
         runner-perms _grant-spool check-runner-access \
         stresstest stresstest-ingest \
         verify verify-chunking verify-content \
@@ -341,6 +344,31 @@ s3-status:
 	    "$$(docker exec cvmfs-prepub sh -c 'p=$${CVMFS_INGEST_DIRECT_S3_CONFIG:-/etc/cvmfs/'"$$(grep -m1 "^REPO_NAME=" "$(MAKEFILE_DIR)/.env" | cut -d= -f2- | tr -d " \r")"'.s3.conf}; if [ -r "$$p" ]; then echo "$$p (readable)"; elif [ -e "$$p" ]; then echo "$$p (EXISTS BUT UNREADABLE)"; else echo "$$p (absent — direct_s3 builds will fail)"; fi' 2>/dev/null || echo '<not running>')"
 	@printf 'minio       : %s\n' "$$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^cvmfs-minio$$' | sed 's/^0$$/not running/; s/^1$$/running/')"
 	@printf 'path choice : per build (job field direct_s3), not set here\n' 
+
+# ── bits-store-on / bits-store-off / test-bits-store ──────────────────────────
+# The bits-store service (profile bits-store) runs beside MinIO, so it needs the
+# S3 capability on: make s3-on first (which, like s3-off, leaves bits-store off).
+# Its binary comes from software/ (make install, with BITS_STORE_DIR), its
+# configuration and token key from init.sh. Applied by the next make start.
+bits-store-on:
+	@grep -q '^S3_ENABLED=1' "$(MAKEFILE_DIR)/.env.s3" 2>/dev/null || \
+	    { printf '[ERR] bits-store needs MinIO: make s3-on first.\n'; exit 1; }
+	@sw=$$($(call GET_ENV_VAR,SOFTWARE_ROOT)); test -x "$${sw:-$(MAKEFILE_DIR)/software}/bits-store" || \
+	    { printf '[ERR] no software/bits-store: make install with BITS_STORE_DIR.\n'; exit 1; }
+	@test -f "$$($(GET_TESTBED_ROOT))/config/bits-store/config.json" || \
+	    { printf '[ERR] no config/bits-store/config.json: re-run init (bash scripts/init.sh).\n'; exit 1; }
+	@sed -i 's|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=s3,bits-store|' "$(MAKEFILE_DIR)/.env.s3"
+	@printf 'COMPOSE_PROFILES=s3,bits-store in .env.s3: make start, then make test-bits-store\n'
+bits-store-off:
+	@sed -i 's|^COMPOSE_PROFILES=s3,bits-store$$|COMPOSE_PROFILES=s3|' "$(MAKEFILE_DIR)/.env.s3"
+	@docker rm -f cvmfs-bits-store >/dev/null 2>&1 || true
+	@printf 'bits-store off (COMPOSE_PROFILES=s3)\n'
+
+# Upload, download and every refusal through bits-store (scripts/e2e-bits-store.py).
+test-bits-store:
+	@port=$$(sed -n 's/^BITS_STORE_PORT=//p' "$(MAKEFILE_DIR)/.env.s3" 2>/dev/null | tail -1); \
+	python3 "$(MAKEFILE_DIR)/scripts/e2e-bits-store.py" --dir "$$($(GET_TESTBED_ROOT))/config/bits-store" \
+	    --url "http://127.0.0.1:$${port:-8099}"
 
 # ── runner-perms ──────────────────────────────────────────────────────────────
 # Make the testbed reachable by the CI runner that runs producer-side steps

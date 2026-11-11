@@ -389,7 +389,9 @@ if [[ -f "$ENV_FILE" ]]; then
     # decision 1): under s3, MinIO and minio-init must be inside the enabled
     # profile or a fresh `make` stalls with the store forever down.
     if [[ "$STORAGE" == "s3" && -f "$_ENV_S3_FILE" ]]; then
-        for _kv in "S3_ENABLED=1" "COMPOSE_PROFILES=s3"; do
+        _profiles=s3   # bits-store (make bits-store-on) stays on across a re-init
+        grep -q '^COMPOSE_PROFILES=s3,bits-store$' "$_ENV_S3_FILE" && _profiles=s3,bits-store
+        for _kv in "S3_ENABLED=1" "COMPOSE_PROFILES=$_profiles"; do
             _k="${_kv%%=*}"
             if grep -q "^${_k}=" "$_ENV_S3_FILE"; then
                 sed -i "s|^${_k}=.*|${_kv}|" "$_ENV_S3_FILE"
@@ -397,7 +399,7 @@ if [[ -f "$ENV_FILE" ]]; then
                 printf '%s\n' "$_kv" >> "$_ENV_S3_FILE"
             fi
         done
-        info "S3 profile enabled in .env.s3 (S3_ENABLED=1, COMPOSE_PROFILES=s3)."
+        info "S3 profile enabled in .env.s3 (S3_ENABLED=1, COMPOSE_PROFILES=$_profiles)."
     fi
     if grep -q '^STRATUM0_URL=' "$ENV_FILE"; then
         sed -i "s|^STRATUM0_URL=.*|STRATUM0_URL=${_STRATUM0_BASE}|" "$ENV_FILE"
@@ -506,6 +508,44 @@ else
     # rather than leaving a config pointing at a MinIO that is not running.
     rm -f "$_S3_CONF" "$_S3_CONF_DIR/${REPO_NAME}.host.s3.conf"
     info "No MinIO credentials — S3 config not written (STORAGE=local)."
+fi
+
+# ── bits-store: its token key and configuration ───────────────────────────────
+# For the bits-store service (make bits-store-on), with bits-store's own MinIO
+# user. token.key (0600) signs the test tokens of make test-bits-store;
+# config.json (0644, no secret) has its public key. The volume names the host,
+# not "minio": the presigned URLs bits-store gives out must work outside too.
+# Optional: a failure here is a warning, never the end of init.
+_BS_DIR="$TESTBED_ROOT/config/bits-store"
+if [[ -z "${BITS_STORE_S3_PASSWORD:-}" ]]; then
+    info "No bits-store MinIO user in .env.s3 — bits-store config not written."
+elif ! { mkdir -p "$_BS_DIR" && [[ -w "$_BS_DIR" ]]; }; then
+    warn "$_BS_DIR is not writable (root-owned?) — bits-store config not written."
+elif [[ ! -s "$_BS_DIR/token.key" ]] && \
+        ! ( umask 077; openssl genpkey -algorithm ed25519 -out "$_BS_DIR/token.key" >/dev/null ); then
+    rm -f "$_BS_DIR/token.key"
+    warn "openssl could not make an Ed25519 key — bits-store config not written."
+else
+    chmod 755 "$_BS_DIR" 2>/dev/null || true
+    _bs_x=$(openssl pkey -in "$_BS_DIR/token.key" -pubout -outform DER \
+        | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')
+    _bs_ep="${BITS_STORE_S3_ENDPOINT:-http://$(hostname -f 2>/dev/null || hostname):${S3_PORT:-9000}}"
+    cat > "$_BS_DIR/config.json" <<EOF
+{
+ "issuer": "https://bits-store.testbed",
+ "audience": "testbed/store",
+ "url_lifetime": "5m",
+ "keys": {"testbed-1": {"x": "$_bs_x", "signer": "user"}},
+ "volumes": {"testbed": {"endpoint": "$_bs_ep", "bucket": "${BITS_STORE_BUCKET:-bits-store}",
+                         "region": "${S3_REGION:-us-east-1}", "allow_http": true,
+                         "access_key_env": "BITS_STORE_S3_ACCESS_KEY",
+                         "secret_key_env": "BITS_STORE_S3_SECRET_KEY"}},
+ "bindings": [{"prefix": "/store", "volume": "testbed", "key_prefix": "TARS"}]
+}
+EOF
+    chmod 644 "$_BS_DIR/config.json"
+    unset _bs_x _bs_ep
+    success "bits-store config written: config/bits-store/config.json"
 fi
 
 # ── Mint embedded-broker TLS material (wss://) ────────────────────────────────
