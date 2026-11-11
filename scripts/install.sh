@@ -27,6 +27,8 @@
 #      cvmfs/cvmfs/server/ (the patches add CVMFS_TESTBED support) and installs
 #      it as software/cvmfs_server.
 #   6. Copies cvmfs-prepub from the cvmfs-bits build into software/.
+#   7. Copies bits-store from the bits-store build into software/, when that
+#      tree is there (optional: the bits-store service needs it).
 #
 # Nothing is ever written to /usr/bin or any other system directory.
 #
@@ -35,6 +37,9 @@
 #   --bits-dir PATH        Path to the cvmfs-bits source tree.
 #                          Default: <cvmfs-testbed>/cvmfs-bits
 #                          The binaries are expected at <bits-dir>/bin/.
+#   --bits-store-dir PATH  Path to the bits-store source tree (optional).
+#                          Default: <cvmfs-testbed>/bits-store; its binary is
+#                          expected at <bits-store-dir>/bin/bits-store.
 
 set -euo pipefail
 
@@ -63,6 +68,7 @@ else
 fi
 SOFTWARE_ROOT="${SOFTWARE_ROOT:-$TESTBED_DIR/software}"
 BITS_DIR="${BITS_DIR:-$TESTBED_DIR/cvmfs-bits}"
+BITS_STORE_DIR="${BITS_STORE_DIR:-$TESTBED_DIR/bits-store}"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -75,6 +81,10 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { error "--bits-dir requires a value"; exit 1; }
             BITS_DIR="$2"; shift 2 ;;
         --bits-dir=*) BITS_DIR="${1#*=}"; shift ;;
+        --bits-store-dir)
+            [[ $# -ge 2 ]] || { error "--bits-store-dir requires a value"; exit 1; }
+            BITS_STORE_DIR="$2"; shift 2 ;;
+        --bits-store-dir=*) BITS_STORE_DIR="${1#*=}"; shift ;;
         -h|--help)
             sed -n '2,/^[^#]/p' "${BASH_SOURCE[0]}" | grep '^#' | sed 's/^# \?//'; exit 0 ;;
         *) error "Unknown option: $1"; exit 1 ;;
@@ -84,6 +94,7 @@ done
 info "CVMFS source:   $CVMFS_SRC"
 info "Software root:  $SOFTWARE_ROOT"
 info "Bits dir:       $BITS_DIR"
+info "bits-store dir: $BITS_STORE_DIR"
 
 # ── 1. Verify source tree ─────────────────────────────────────────────────────
 if [[ ! -f "$CVMFS_SRC/cvmfs/make_cvmfs_server.sh" ]]; then
@@ -282,6 +293,21 @@ else
     fi
 fi
 
+# ── 7. Copy bits-store (optional) ─────────────────────────────────────────────
+# Built by  make -C bits-store build  into bits-store/bin/; the bits-store
+# service bind-mounts it from SOFTWARE_ROOT. Without the tree, nothing changes.
+if [[ ! -d "$BITS_STORE_DIR" ]]; then
+    info "bits-store not found at $BITS_STORE_DIR: skipped (optional)"
+elif [[ -f "$BITS_STORE_DIR/bin/bits-store" && -x "$BITS_STORE_DIR/bin/bits-store" ]]; then
+    # a new file renamed in place: a running service keeps its old one ("text file busy")
+    cp "$BITS_STORE_DIR/bin/bits-store" "$SOFTWARE_ROOT/.bits-store.new"
+    chmod 755 "$SOFTWARE_ROOT/.bits-store.new"
+    mv -f "$SOFTWARE_ROOT/.bits-store.new" "$SOFTWARE_ROOT/bits-store"
+    success "Copied bits-store ($("$SOFTWARE_ROOT/bits-store" -version))."
+else
+    warn "bits-store not built in $BITS_STORE_DIR/bin"
+    warn "Run: make -C \"$BITS_STORE_DIR\" build"
+fi
 
 # ── 8. Install gateway stub scripts ──────────────────────────────────────────
 # Some cvmfs-gateway actions invoke scripts that are part of the full

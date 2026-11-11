@@ -52,6 +52,8 @@
 #   BITS_DIR      Path to the cvmfs-bits source tree.
 #                 Default: $(CURDIR)/cvmfs-bits
 #                 Example: make BITS_DIR=/home/user/src/cvmfs-bits
+#   BITS_STORE_DIR  Path to the bits-store source tree (optional: without it the
+#                 bits-store service is not installed). Default: $(CURDIR)/bits-store
 #   TESTBED_ROOT  Path to testbed data root (default: $HOME/cvmfs-testbed).
 #                 Used to locate repo-seed.tar.gz for the bootstrap target.
 #   RUNNER_USER   CI user that runs producer-side publish steps, for
@@ -82,6 +84,8 @@ MAKE_DIR     := $(MAKEFILE_DIR)/.make
 
 # cvmfs-bits source directory — override if your clone lives elsewhere.
 BITS_DIR ?= $(MAKEFILE_DIR)/cvmfs-bits
+# bits-store source directory (optional): built and installed when present.
+BITS_STORE_DIR ?= $(MAKEFILE_DIR)/bits-store
 
 # ── Runtime introspection helpers (used by verify-* recipes) ───────────────────
 # Resolve the testbed data root: prefer TESTBED_ROOT from .env, else CURDIR.
@@ -170,13 +174,20 @@ build:
 	cd "$(BITS_DIR)" && git pull
 	@echo "── Building cvmfs-bits ───────────────────────────────────────────────"
 	cd "$(BITS_DIR)" && $(MAKE) build
+	@if [[ -d "$(BITS_STORE_DIR)" ]]; then \
+	    echo "── Pulling and building bits-store ───────────────────────────────────"; \
+	    (cd "$(BITS_STORE_DIR)" && git pull && $(MAKE) build) || \
+	        echo "[WARN] bits-store pull/build failed: the testbed goes on without it"; \
+	else \
+	    echo "── bits-store not found at $(BITS_STORE_DIR): skipped (optional) ──────"; \
+	fi
 
 # ── install ───────────────────────────────────────────────────────────────────
 # Always runs: copies fresh binaries from both build trees into software/.
 # Depends on build so bits is up to date before the copy.
 install: build
 	@echo "── Installing binaries into software/ ────────────────────────────────"
-	BITS_DIR="$(BITS_DIR)" bash "$(INSTALL_SH)"
+	BITS_DIR="$(BITS_DIR)" BITS_STORE_DIR="$(BITS_STORE_DIR)" bash "$(INSTALL_SH)"
 
 # ── init ──────────────────────────────────────────────────────────────────────
 # Sentinel-protected: runs only once (or after make clean).
@@ -789,6 +800,7 @@ help:
 	@echo ""
 	@echo "  Variables:"
 	@echo "    BITS_DIR  = $(BITS_DIR)"
+	@echo "    BITS_STORE_DIR = $(BITS_STORE_DIR)  (optional)"
 	@echo "    N         = $(N)  (jobs for stresstest)"
 	@echo "    C         = $(if $(C),$(C),(unset = script default of 2))  (concurrency for stresstest)"
 	@echo ""
