@@ -364,11 +364,12 @@ bits-store-off:
 	@docker rm -f cvmfs-bits-store >/dev/null 2>&1 || true
 	@printf 'bits-store off (COMPOSE_PROFILES=s3)\n'
 
-# Upload, download and every refusal through bits-store (scripts/e2e-bits-store.py).
+# Upload, download and every refusal through bits-store (scripts/e2e-bits-store.py);
+# TOKEN=~/.bits/token: the uploads and downloads with bits login's token.
 test-bits-store:
 	@port=$$(sed -n 's/^BITS_STORE_PORT=//p' "$(MAKEFILE_DIR)/.env.s3" 2>/dev/null | tail -1); \
 	python3 "$(MAKEFILE_DIR)/scripts/e2e-bits-store.py" --dir "$$($(GET_TESTBED_ROOT))/config/bits-store" \
-	    --url "http://127.0.0.1:$${port:-8099}"
+	    --url "http://127.0.0.1:$${port:-8099}" $(if $(TOKEN),--token "$(TOKEN)")
 
 # ── runner-perms ──────────────────────────────────────────────────────────────
 # Make the testbed reachable by the CI runner that runs producer-side steps

@@ -5,7 +5,8 @@
 
 Signs short-lived store tokens with the key init.sh made (config/bits-store/
 token.key, its public half in config.json), uploads a file through bits-store,
-downloads it and checks every refusal. Needs python3 and cryptography.
+downloads it and checks every refusal. With --token FILE (bits login's), the
+uploads and downloads use that token, its group's. Needs python3 and cryptography.
 """
 import argparse, base64, hashlib, json, os, secrets, sys, time
 import urllib.error, urllib.request
@@ -23,7 +24,7 @@ def b64(b): return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 
 def token(grp, caps, life=600, now=None, sub="alice"):
     now = int(time.time()) if now is None else now
-    kid = next(iter(CFG["keys"]))
+    kid = "testbed-1"
     hdr = {"alg": "EdDSA", "typ": "bits-store+jwt", "kid": kid}
     pl = {"iss": CFG["issuer"], "aud": CFG["audience"], "sub": sub, "grp": grp, "iat": now,
           "exp": now + life, "jti": secrets.token_urlsafe(12),
@@ -60,6 +61,11 @@ def call(method, url, tok=None, body=None, headers=None):
 def roundtrip(a):
     base, g = a.url.rstrip("/"), a.group
     ok = token(g, [("GET", "/store/%s/**" % g), ("PUT", "/store/%s/**" % g)])
+    if a.token:
+        with open(os.path.expanduser(a.token)) as fh:
+            ok = fh.read().strip()
+        g = json.loads(base64.urlsafe_b64decode(ok.split(".")[1] + "=="))["grp"]
+        print("with the token of %s (%s)" % (a.token, g))
     name = "/store/%s/x86_64-test/rt/%s" % (g, secrets.token_hex(8))
     data = os.urandom(200000) + b"bits-store round trip\n"
     meta = {"size": len(data), "md5": base64.b64encode(hashlib.md5(data).digest()).decode(),
@@ -87,7 +93,8 @@ def roundtrip(a):
         check("download: same bytes", (s2, hashlib.sha256(got).hexdigest()),
               (200, meta["sha256"]))
     check("same name again: 409", call("POST", base + name + "?uploads", ok, meta)[0], 409)
-    other = token("lhcb", [("GET", "/store/lhcb/**")])
+    og = "lhcb" if g != "lhcb" else "atlas"
+    other = token(og, [("GET", "/store/%s/**" % og)])
     check("another group's token: 403", call("GET", base + name, other)[0], 403)
     old = token(g, [("GET", "/store/%s/**" % g)], life=600, now=int(time.time()) - 3600)
     check("expired token: 401", call("GET", base + name, old)[0], 401)
@@ -112,6 +119,7 @@ def main():
     ap.add_argument("--dir", required=True, help="config/bits-store under TESTBED_ROOT")
     ap.add_argument("--url", default="http://127.0.0.1:8099")
     ap.add_argument("--group", default="testbed")
+    ap.add_argument("--token", help="a store token file (bits login's ~/.bits/token)")
     a = ap.parse_args()
     with open(os.path.join(a.dir, "config.json")) as fh:
         CFG = json.load(fh)

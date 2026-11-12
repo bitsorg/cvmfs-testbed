@@ -513,8 +513,9 @@ fi
 # ── bits-store: its token key and configuration ───────────────────────────────
 # For the bits-store service (make bits-store-on), with bits-store's own MinIO
 # user. token.key (0600) signs the test tokens of make test-bits-store;
-# config.json (0644, no secret) has its public key. The volume names the host,
-# not "minio": the presigned URLs bits-store gives out must work outside too.
+# config.json (0644, no secret) has its public key, and the console's
+# (BITS_STORE_CONSOLE_KEY) if given. The volume names the host, not "minio":
+# the presigned URLs bits-store gives out must work outside too.
 # Optional: a failure here is a warning, never the end of init.
 _BS_DIR="$TESTBED_ROOT/config/bits-store"
 if [[ -z "${BITS_STORE_S3_PASSWORD:-}" ]]; then
@@ -530,12 +531,18 @@ else
     _bs_x=$(openssl pkey -in "$_BS_DIR/token.key" -pubout -outform DER \
         | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')
     _bs_ep="${BITS_STORE_S3_ENDPOINT:-http://$(hostname -f 2>/dev/null || hostname):${S3_PORT:-9000}}"
+    _bs_console=""
+    if [[ "${BITS_STORE_CONSOLE_KEY:-}" =~ ^[A-Za-z0-9_-]{43}$ ]]; then
+        _bs_console=", \"console-1\": {\"x\": \"$BITS_STORE_CONSOLE_KEY\", \"signer\": \"user\"}"
+    elif [[ -n "${BITS_STORE_CONSOLE_KEY:-}" ]]; then
+        warn "BITS_STORE_CONSOLE_KEY is not a base64url Ed25519 public key — not trusted."
+    fi
     cat > "$_BS_DIR/config.json" <<EOF
 {
  "issuer": "https://bits-store.testbed",
  "audience": "testbed/store",
  "url_lifetime": "5m",
- "keys": {"testbed-1": {"x": "$_bs_x", "signer": "user"}},
+ "keys": {"testbed-1": {"x": "$_bs_x", "signer": "user"}$_bs_console},
  "volumes": {"testbed": {"endpoint": "$_bs_ep", "bucket": "${BITS_STORE_BUCKET:-bits-store}",
                          "region": "${S3_REGION:-us-east-1}", "allow_http": true,
                          "access_key_env": "BITS_STORE_S3_ACCESS_KEY",
@@ -544,7 +551,7 @@ else
 }
 EOF
     chmod 644 "$_BS_DIR/config.json"
-    unset _bs_x _bs_ep
+    unset _bs_x _bs_ep _bs_console
     success "bits-store config written: config/bits-store/config.json"
 fi
 
